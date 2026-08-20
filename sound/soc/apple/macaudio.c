@@ -192,7 +192,7 @@ static struct snd_soc_dai_link macaudio_fe_links[] = {
 		.dai_fmt = (SND_SOC_DAIFMT_I2S | \
 					SND_SOC_DAIFMT_CBP_CFP | \
 					SND_SOC_DAIFMT_GATED | \
-					SND_SOC_DAIFMT_IB_IF),
+					SND_SOC_DAIFMT_NB_IF),
 		SND_SOC_DAILINK_REG(sense),
 	},
 };
