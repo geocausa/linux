@@ -80,8 +80,6 @@ pub(crate) use pgtable::{
     UAT_PGSZ, //
 };
 
-use pgtable::UAT_IAS;
-
 use pin_init;
 
 const DEBUG_CLASS: DebugFlags = DebugFlags::Mmu;
@@ -98,8 +96,11 @@ const UAT_USER_CTX: usize = UAT_NUM_CTX - UAT_USER_CTX_START;
 
 /// Lower/user base VA
 pub(crate) const IOVA_USER_BASE: u64 = UAT_PGSZ as u64;
-/// Lower/user top VA
-pub(crate) const IOVA_USER_TOP: u64 = 1 << (UAT_IAS as u64);
+/// Current userspace ABI aperture. Keep this independent from the hardware UAT IAS
+/// until the G15 userspace VA contract is characterized.
+const UAT_USER_IAS: u32 = 39;
+/// Lower/user top VA.
+pub(crate) const IOVA_USER_TOP: u64 = 1 << UAT_USER_IAS;
 /// Lower/user VA range
 pub(crate) const IOVA_USER_RANGE: Range<u64> = IOVA_USER_BASE..IOVA_USER_TOP;
 
@@ -1017,9 +1018,9 @@ impl Vm {
         let is_kernel = ttb.is_some();
 
         let page_table = if let Some(ttb) = ttb {
-            UatPageTable::new_with_ttb(ttb, IOVA_KERN_RANGE, cfg.uat_oas)?
+            UatPageTable::new_with_ttb(ttb, IOVA_KERN_RANGE, cfg.uat_ias, cfg.uat_oas)?
         } else {
-            UatPageTable::new(cfg.uat_oas)?
+            UatPageTable::new(cfg.uat_ias, cfg.uat_oas)?
         };
 
         let (va_range, gpuvm_range) = if is_kernel {

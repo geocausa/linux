@@ -979,6 +979,15 @@ impl<'a> InitDataBuilder::ver<'a> {
         let fw_status = self.fw_status()?;
         let shared_ro = &mut self.alloc.shared_ro;
 
+        // 16 KiB UAT pages use 11 index bits at the lower levels. G15 keeps
+        // the same three-level layout but widens the root (shift 36) from
+        // 8 entries (39-bit IAS) to 64 entries (42-bit IAS).
+        let root_bits = self.cfg.uat_ias.checked_sub(36).ok_or(EINVAL)?;
+        if root_bits > 11 {
+            return Err(EINVAL);
+        }
+        let root_entries = 1usize << root_bits;
+
         let obj = self.alloc.private.new_init(
             try_init!(InitData::ver {
                 unk_buf: shared_ro.array_empty_tagged(0x4000, b"IDTA")?,
@@ -1003,7 +1012,7 @@ impl<'a> InitDataBuilder::ver<'a> {
                     uat_page_bits: 14,
                     uat_num_levels: 3,
                     uat_level_info: Array::new([
-                        Self::uat_level_info(cfg, 36, 8),
+                        Self::uat_level_info(cfg, 36, root_entries),
                         Self::uat_level_info(cfg, 25, 2048),
                         Self::uat_level_info(cfg, 14, 2048),
                     ]),
