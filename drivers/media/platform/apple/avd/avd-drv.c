@@ -520,10 +520,10 @@ static const struct avd_variant avd_t8122_variant = {
 	},
 	.fifo_slots = 15,
 	.configure_stream = t8122_configure_stream,
+	/* AV1 is not yet safe on T8122: do not advertise it to userspace. */
 	.capabilities = AVD_CAPABILITY_HEVC |
 			AVD_CAPABILITY_H264 |
-			AVD_CAPABILITY_VP9 |
-			AVD_CAPABILITY_AV1,
+			AVD_CAPABILITY_VP9,
 	.fw_name = "apple/avd-fw-v4-t0.bin",
 	.revision = 4,
 	.vp_slot_offset = 0xc,
