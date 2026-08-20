@@ -17,6 +17,7 @@
 #include "linux/dev_printk.h"
 #include <linux/v4l2-controls.h>
 #include <linux/delay.h>
+#include <linux/iopoll.h>
 
 #include <media/v4l2-mem2mem.h>
 #include <media/videobuf2-dma-contig.h>
@@ -752,16 +753,22 @@ static int avd_wait_submission_queue(struct avd_ctx *ctx)
 
 	/* pr_info("%d/%d\n", cur, max); */
 
-	if (cur == max) {
-		dev_err(avd->dev, "instruction que full! %d/%d",
-				    cur, max);
-		return 1;
+	/* The status register reports available queue entries, not occupancy. */
+	if (cur == 0) {
+		u32 avail;
+
+		if (readl_poll_timeout(avd->ctrl +
+				       avd->variant->submit_queue_status_offset +
+				       (ctx->vp_slot) * 4,
+				       avail, avail != 0, 10, 1000)) {
+			dev_err(avd->dev, "instruction queue has no free entries");
+			return 1;
+		}
+		cur = avail;
 	}
 
-	if (cur >= max / 2) {
-		/* TODO: to high? low? Has weird side effects??? */
+	if (cur <= max / 2)
 		usleep_range(100, 150);
-	}
 	return 0;
 }
 
@@ -946,6 +953,8 @@ static void stream_slices(struct avd_ctx *ctx, struct avd_hevc_run *run)
 
 			slice_segment_offset += new_offset;
 
+			/* VP_DONE may race stream construction once the final EXEC is queued. */
+			WRITE_ONCE(hevc_ctx->submit_num, pos);
 			if (avd_wait_submission_queue(ctx))
 				goto done;
 		}
@@ -1178,8 +1187,9 @@ static void avd_hevc_submit(struct avd_ctx *ctx)
 {
 	struct avd_hevc_ctx *hevc_ctx = ctx->priv;
 	struct avd_dev *avd = ctx->dev;
+	int submit_num = READ_ONCE(hevc_ctx->submit_num);
 
-	for (int i = 0; i < hevc_ctx->submit_num; i++) {
+	for (int i = 0; i < submit_num; i++) {
 		writel(0x2b000000
 				| (i == 0 ? (avd->variant->revision == 3 ? 0x100 : 0x200) : 0)
 				| (ctx->fifo_idx << 4) | avd->variant->fifo_slots,
