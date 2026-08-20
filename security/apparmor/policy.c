@@ -81,14 +81,20 @@
 #include "include/file.h"
 #include "include/ipc.h"
 #include "include/match.h"
+#include "include/net.h"
 #include "include/path.h"
 #include "include/policy.h"
 #include "include/policy_ns.h"
 #include "include/policy_unpack.h"
 #include "include/resource.h"
 
+int aa_skb_packet_mediation = IS_ENABLED(CONFIG_SECURITY_APPARMOR_PACKET_MEDIATION);
 int unprivileged_userns_apparmor_policy = 1;
+int aa_unprivileged_userns_restricted = IS_ENABLED(CONFIG_SECURITY_APPARMOR_RESTRICT_USERNS);
+int aa_unprivileged_userns_restricted_force;
+int aa_unprivileged_userns_restricted_complain;
 int aa_unprivileged_unconfined_restricted;
+int aa_unprivileged_uring_restricted;
 
 const char *const aa_profile_mode_names[] = {
 	"enforce",
@@ -232,6 +238,13 @@ static void __remove_profile(struct aa_profile *profile)
 	aa_label_remove(&profile->label);
 	__aafs_profile_rmdir(profile);
 	__list_remove_profile(profile);
+	/* rawdata is only ever referenced by fs lookup, that is no
+	 * longer possible here, so put the reference to it. This will
+	 * enable the rawdata to be freed if for some reason the profile
+	 * is pinned and going to live for a while.
+	 */
+	aa_put_profile_loaddata(profile->rawdata);
+	profile->rawdata = NULL;
 }
 
 /**
@@ -330,8 +343,17 @@ void aa_free_profile(struct aa_profile *profile)
 	aa_put_ns(profile->ns);
 	kfree_sensitive(profile->rename);
 	kfree_sensitive(profile->disconnected);
+	/*
+	 * If disconnected is specified while disconnected_ipc is not,
+	 * disconnected_ipc will be set to disconnected in unpack_profile().
+	 * Thus, we need to check that the pointers are distinct in order to
+	 * prevent a double free.
+	 */
+	if (profile->disconnected_ipc != profile->disconnected)
+		kfree_sensitive(profile->disconnected_ipc);
 
 	free_attachment(&profile->attach);
+	kfree_sensitive(profile->net_compat);
 
 	/*
 	 * at this point there are no tasks that can have a reference
@@ -352,6 +374,7 @@ void aa_free_profile(struct aa_profile *profile)
 	kfree_sensitive(profile->hash);
 	aa_put_profile_loaddata(profile->rawdata);
 	aa_label_destroy(&profile->label);
+	aa_audit_cache_destroy(&profile->learning_cache);
 
 	kfree_sensitive(profile);
 }
@@ -402,6 +425,8 @@ struct aa_profile *aa_alloc_profile(const char *hname, struct aa_proxy *proxy,
 	profile->label.vec[0] = profile;
 
 	profile->signal = SIGKILL;
+	aa_audit_cache_init(&profile->learning_cache);
+
 	/* refcount released by caller */
 	return profile;
 
@@ -1151,6 +1176,8 @@ static struct aa_profile *update_to_newest_parent(struct aa_profile *new)
  * @label: label that is attempting to load/replace policy
  * @mask: permission mask
  * @udata: serialized data stream  (NOT NULL)
+ * @compressed_profile: The userspace-provided compressed profile. May be NULL
+ * @compressed_size: If compressed_data is not NULL, the compressed data size
  *
  * unpack and replace a profile on the profile list and uses of that profile
  * by any task creds via invalidating the old version of the profile, which
@@ -1160,7 +1187,8 @@ static struct aa_profile *update_to_newest_parent(struct aa_profile *new)
  * Returns: size of data consumed else error code on failure.
  */
 ssize_t aa_replace_profiles(struct aa_ns *policy_ns, struct aa_label *label,
-			    u32 mask, struct aa_loaddata *udata)
+			    u32 mask, struct aa_loaddata *udata,
+			    char *compressed_profile, size_t compressed_size)
 {
 	const char *ns_name = NULL, *info = NULL;
 	struct aa_ns *ns = NULL;
@@ -1173,7 +1201,7 @@ ssize_t aa_replace_profiles(struct aa_ns *policy_ns, struct aa_label *label,
 	op = mask & AA_MAY_REPLACE_POLICY ? OP_PROF_REPL : OP_PROF_LOAD;
 	aa_get_profile_loaddata(udata);
 	/* released below */
-	error = aa_unpack(udata, &lh, &ns_name);
+	error = aa_unpack(udata, &lh, &ns_name, compressed_profile, compressed_size);
 	if (error)
 		goto out;
 
@@ -1223,12 +1251,8 @@ ssize_t aa_replace_profiles(struct aa_ns *policy_ns, struct aa_label *label,
 			if (aa_rawdata_eq(rawdata_ent, udata)) {
 				struct aa_loaddata *tmp;
 
-				/*
-				 * Entries remain on rawdata_list with
-				 * pcount == 0 until do_ploaddata_rmfs()
-				 * runs; only take a live profile ref.
-				 */
-				tmp = aa_get_profile_loaddata_not0(rawdata_ent);
+				tmp = aa_get_profile_loaddata(rawdata_ent);
+				/* check we didn't fail the race */
 				if (tmp) {
 					aa_put_profile_loaddata(udata);
 					udata = tmp;
@@ -1334,7 +1358,8 @@ ssize_t aa_replace_profiles(struct aa_ns *policy_ns, struct aa_label *label,
 		list_del_init(&ent->list);
 		op = (!ent->old && !ent->rename) ? OP_PROF_LOAD : OP_PROF_REPL;
 
-		if (ent->old && ent->old->rawdata == ent->new->rawdata &&
+		if (ent->old && ent->old->learning_cache.size == 0 &&
+		    ent->old->rawdata == ent->new->rawdata &&
 		    ent->new->rawdata) {
 			/* dedup actual profile replacement */
 			audit_policy(label, op, ns_name, ent->new->base.hname,
@@ -1344,16 +1369,6 @@ ssize_t aa_replace_profiles(struct aa_ns *policy_ns, struct aa_label *label,
 			aa_put_proxy(ent->new->label.proxy);
 			ent->new->label.proxy = NULL;
 			goto skip;
-		}
-
-		if (!aa_g_export_binary) {
-			if (ent->old && ent->old->rawdata &&
-			    ent->old->dents[AAFS_LOADDATA_DIR]) {
-				/* remove rawdata symlinks because the symlink
-				 * target will be removed
-				 */
-				__aa_remove_rawdata_symlink_dents(ent->old);
-			}
 		}
 
 		/*
@@ -1366,11 +1381,6 @@ ssize_t aa_replace_profiles(struct aa_ns *policy_ns, struct aa_label *label,
 		if (ent->old) {
 			share_name(ent->old, ent->new);
 			__replace_profile(ent->old, ent->new);
-			if (aa_g_export_binary) {
-				/* recreate rawdata symlinks */
-				if (!ent->old->rawdata)
-					__aa_create_rawdata_symlink_dents(ent->new);
-			}
 		} else {
 			struct list_head *lh;
 
@@ -1390,10 +1400,9 @@ ssize_t aa_replace_profiles(struct aa_ns *policy_ns, struct aa_label *label,
 	mutex_unlock(&ns->lock);
 
 out:
-	aa_put_ns(ns);
-
 	ssize_t udata_sz = udata->size;
 
+	aa_put_ns(ns);
 	aa_put_profile_loaddata(udata);
 	kfree(ns_name);
 

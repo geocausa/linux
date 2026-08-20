@@ -24,6 +24,7 @@
 #include <linux/zstd.h>
 #include <uapi/linux/major.h>
 #include <uapi/linux/magic.h>
+#include <uapi/linux/apparmor.h>
 
 #include "include/apparmor.h"
 #include "include/apparmorfs.h"
@@ -32,10 +33,12 @@
 #include "include/crypto.h"
 #include "include/ipc.h"
 #include "include/label.h"
+#include "include/net.h"
 #include "include/lib.h"
 #include "include/policy.h"
 #include "include/policy_ns.h"
 #include "include/resource.h"
+#include "include/path.h"
 #include "include/policy_unpack.h"
 #include "include/task.h"
 
@@ -151,7 +154,8 @@ static int aafs_count;
 
 static int aafs_show_path(struct seq_file *seq, struct dentry *dentry)
 {
-	seq_printf(seq, "%s:[%llu]", AAFS_NAME, d_inode(dentry)->i_ino);
+	seq_printf(seq, "%s:[%llu]", AAFS_NAME,
+		   (unsigned long long)d_inode(dentry)->i_ino);
 	return 0;
 }
 
@@ -173,16 +177,6 @@ static struct aa_proxy *get_proxy_common_ref(struct aa_common_ref *ref)
 
 	return NULL;
 }
-
-#ifdef CONFIG_SECURITY_APPARMOR_EXPORT_BINARY
-static struct aa_loaddata *get_loaddata_common_ref(struct aa_common_ref *ref)
-{
-	if (ref)
-		return aa_get_i_loaddata(container_of(ref, struct aa_loaddata,
-						      count));
-	return NULL;
-}
-#endif
 
 static void aa_put_common_ref(struct aa_common_ref *ref)
 {
@@ -353,24 +347,35 @@ static struct dentry *aafs_create(const char *name, umode_t mode,
 
 	dir = d_inode(parent);
 
-	dentry = simple_start_creating(parent, name);
+	inode_lock(dir);
+	dentry = lookup_noperm(&QSTR(name), parent);
 	if (IS_ERR(dentry)) {
 		error = PTR_ERR(dentry);
-		goto fail;
+		goto fail_lock;
+	}
+
+	if (d_really_is_positive(dentry)) {
+		error = -EEXIST;
+		goto fail_dentry;
 	}
 
 	error = __aafs_setup_d_inode(dir, dentry, mode, data, link, fops, iops);
-	simple_done_creating(dentry);
 	if (error)
-		goto fail;
+		goto fail_dentry;
+	inode_unlock(dir);
 
 	if (data)
 		aa_get_common_ref(data);
 
 	return dentry;
 
-fail:
+fail_dentry:
+	dput(dentry);
+
+fail_lock:
+	inode_unlock(dir);
 	simple_release_fs(&aafs_mnt, &aafs_count);
+
 	return ERR_PTR(error);
 }
 
@@ -480,6 +485,69 @@ static struct aa_loaddata *aa_simple_write_to_buffer(const char __user *userbuf,
 
 	return data;
 }
+static int decompress_zstd(char *src, size_t slen, char *dst, size_t dlen);
+/**
+ * aa_get_data_from_compressed - common routine for getting compressed policy
+ * from user and get both compressed and uncompressed version.
+ * @userbuf: user buffer to copy data from  (NOT NULL)
+ * @buffer_size: size of user buffer
+ * @pos: position write is at in the file (NOT NULL)
+ * @compressed_data Ptr on compressed data. *compressed_data is allocated there
+ *
+ * Returns: kernel buffer containing copy of user buffer data or an
+ *          ERR_PTR on failure.
+ */
+
+static struct aa_loaddata *aa_get_data_from_compressed(const char __user *userbuf,
+						  size_t buffer_size,
+						  loff_t *pos,
+						  char **compressed_data)
+{
+	struct aa_loaddata *data;
+	zstd_frame_header header;
+	int error;
+
+	if (!userbuf || !pos)
+		return ERR_PTR(-EINVAL);
+	if (*pos)
+		return ERR_PTR(-ESPIPE);
+
+	*compressed_data = kvmalloc(buffer_size, GFP_KERNEL);
+	if (!*compressed_data)
+		return ERR_PTR(-ENOMEM);
+	error = copy_from_user(*compressed_data, userbuf, buffer_size);
+	if (error)
+		goto fail;
+
+	error = zstd_get_frame_header(&header, *compressed_data, buffer_size);
+	if (error || header.frameContentSize == ZSTD_CONTENTSIZE_UNKNOWN ||
+	    header.frameContentSize == ZSTD_CONTENTSIZE_ERROR) {
+		error = -EINVAL;
+		goto fail;
+	}
+
+	data = aa_loaddata_alloc(header.frameContentSize);
+	if (IS_ERR(data)) {
+		error = PTR_ERR(data);
+		goto fail;
+	}
+
+	// We then decompress the data
+	error = decompress_zstd(*compressed_data, buffer_size, data->data,
+				header.frameContentSize);
+	if (error)
+		goto fail_decompress;
+
+	data->size = header.frameContentSize;
+	return data;
+
+fail_decompress:
+	aa_put_i_loaddata(data);
+fail:
+	kvfree(*compressed_data);
+	return ERR_PTR(error);
+
+}
 
 static ssize_t policy_update(u32 mask, const char __user *buf, size_t size,
 			     loff_t *pos, struct aa_ns *ns,
@@ -488,6 +556,9 @@ static ssize_t policy_update(u32 mask, const char __user *buf, size_t size,
 	struct aa_loaddata *data;
 	struct aa_label *label;
 	ssize_t error;
+	char *compressed_data = NULL;
+	__le32 magic_le;
+	bool is_compressed;
 
 	label = begin_current_label_crit_section();
 
@@ -498,10 +569,33 @@ static ssize_t policy_update(u32 mask, const char __user *buf, size_t size,
 	if (error)
 		goto end_section;
 
-	data = aa_simple_write_to_buffer(buf, size, size, pos);
-	error = PTR_ERR(data);
+	/* If the policy is userspace compressed we start by decompressing it
+	 * to make the required checks (computing hash, verifying profile, ...)
+	 *
+	 * Getting a userspace-compressed version then decompressing it in the
+	 * kernel actually makes sense since zstd decompression is ~3.5x faster
+	 * than compression. This also allow to increase the compression level.
+	 */
+
+	if (size >= sizeof(__le32) &&
+	    !copy_from_user(&magic_le, buf, sizeof(magic_le)) &&
+	    le32_to_cpu(magic_le) == ZSTD_MAGICNUMBER)
+		is_compressed = true;
+	else
+		is_compressed = false;
+
+	if (is_compressed) {
+
+		data = aa_get_data_from_compressed(buf, size, pos, &compressed_data);
+		error = PTR_ERR(data);
+	} else {
+		data = aa_simple_write_to_buffer(buf, size, size, pos);
+		error = PTR_ERR(data);
+	}
+
 	if (!IS_ERR(data)) {
-		error = aa_replace_profiles(ns, label, mask, data);
+		error = aa_replace_profiles(ns, label, mask, data,
+					    compressed_data, size);
 		/* put pcount, which will put count and free if no
 		 * profiles referencing it.
 		 */
@@ -547,6 +641,7 @@ static const struct file_operations aa_fs_profile_replace = {
 	.write = profile_replace,
 	.llseek = default_llseek,
 };
+
 
 /* .remove file hook fn to remove loaded policy */
 static ssize_t profile_remove(struct file *f, const char __user *buf,
@@ -684,6 +779,369 @@ static const struct file_operations aa_fs_ns_revision_fops = {
 	.release	= ns_revision_release,
 };
 
+
+/* file hook fn for notificaions of policy actions */
+static int listener_release(struct inode *inode, struct file *file)
+{
+	struct aa_listener_proxy *proxy = file->private_data;
+
+	if (!aa_current_policy_admin_capable(NULL))
+		return -EPERM;
+	AA_DEBUG(DEBUG_UPCALL, "file %p, listener %p, id %llu", file, proxy->listener, proxy->listener->listener_id);
+	if (proxy) {
+		AA_DEBUG(DEBUG_UPCALL, "file putting proxy");
+		aa_delayed_free_listener_proxy(proxy);
+	}
+	return 0;
+}
+
+static int listener_open(struct inode *inode, struct file *file)
+{
+	struct aa_listener_proxy *proxy;
+	struct aa_listener *listener;
+	struct aa_ns *ns = NULL;
+
+	if (!aa_current_policy_admin_capable(NULL))
+		return -EPERM;
+	listener = aa_new_listener(NULL, GFP_KERNEL);
+	if (!listener)
+		return -ENOMEM;
+	proxy = aa_new_listener_proxy(listener, ns);
+	aa_put_listener(listener);
+	if (!proxy)
+		return -ENOMEM;
+	AA_DEBUG(DEBUG_UPCALL, "Registered listener using protocol version %d",
+		 listener->version);
+	file->private_data = proxy;
+	return 0;
+}
+
+static bool notif_supported_version(struct apparmor_notif_common *unotif)
+{
+	return (unotif->version == 3 || unotif->version == 5);
+}
+
+/* todo: separate register and set filter */
+static long notify_set_filter(struct aa_listener *listener,
+			      unsigned long arg)
+{
+	union apparmor_notif_filters *unotif;
+	struct aa_ns *ns = NULL;
+	long ret;
+	u16 size;
+	void __user *buf = (void __user *)arg;
+
+	if (copy_from_user(&size, buf, sizeof(size)))
+		return -EFAULT;
+	if (size < sizeof(*unotif))
+		return -EINVAL;
+	/* size is capped at U16_MAX by data type */
+	unotif = kzalloc(size, GFP_KERNEL);
+	if (!unotif)
+		return -ENOMEM;
+
+	if (copy_from_user(unotif, buf, size)) {
+		ret = -EFAULT;
+		goto out;
+	}
+	ret = size;
+
+	if (!notif_supported_version((struct apparmor_notif_common *)unotif)) {
+		AA_DEBUG(DEBUG_UPCALL, "Failed to Register listener using unsupported protocol version %d", unotif->base.version);
+		ret = -EPROTONOSUPPORT;
+		goto out;
+	}
+
+	listener->version = unotif->base.version;
+	/* todo validate to known modes */
+	listener->mask = unotif->modeset;
+	AA_DEBUG(DEBUG_UPCALL, "setting filter mask to 0x%x", listener->mask);
+	if (unotif->ns)
+		/* todo */
+		ns = NULL;
+	if (unotif->filter) {
+		struct aa_dfa *dfa;
+		void *pos = (void *) unotif + unotif->filter;
+
+		if (unotif->filter >= size ||
+		    ALIGN((size_t) pos, 8) != (size_t)pos) {
+			ret = -EINVAL;
+			goto out;
+		}
+		dfa = aa_dfa_unpack(pos, size - unotif->filter,
+				    DFA_FLAG_VERIFY_STATES |
+				    TO_ACCEPT1_FLAG(YYTD_DATA32));
+		if (IS_ERR(dfa)) {
+			ret = PTR_ERR(dfa);
+			goto out;
+		}
+		listener->filter = dfa;
+	}
+
+out:
+	kfree(unotif);
+
+	return ret;
+}
+
+
+static long notify_user_recv(struct aa_listener *listener,
+			     unsigned long arg)
+{
+	struct apparmor_notif_common common;
+	void __user *buf = (void __user *)arg;
+	__u16 version;
+
+	if (copy_from_user(&common.len, buf, sizeof(common.len)))
+		return -EFAULT;
+	if (listener->version >= 5) {
+		/* allow individual messages to specify version */
+		if (common.len < sizeof(common))
+			return -EMSGSIZE;
+		if (copy_from_user(&common, buf, sizeof(common)))
+			return -EFAULT;
+		version = common.version;
+	} else {
+		version = listener->version;
+	}
+	/* size check handled by individual message handlers */
+	return aa_listener_unotif_recv(listener, buf, common.len,
+				       version);
+}
+
+static long notify_user_response(struct aa_listener *listener,
+				 unsigned long arg)
+{
+	union apparmor_notif_resp uresp = {};
+	union apparmor_notif_resp *big_resp = NULL;
+	union apparmor_notif_resp *p_uresp = NULL;
+	long error;
+	u16 size;
+	void __user *buf = (void __user *)arg;
+
+	if (copy_from_user(&size, buf, sizeof(size)))
+		return -EFAULT;
+	if (size > aa_g_path_max)
+		return -EMSGSIZE;
+	if (size > sizeof(uresp)) {
+		/* TODO: put max size on message */
+		big_resp = (union apparmor_notif_resp *) aa_get_buffer(false);
+		if (!big_resp)
+			return -ENOMEM;
+		p_uresp = big_resp;
+	} else {
+		size = min_t(size_t, size, sizeof(uresp));
+		p_uresp = &uresp;
+	}
+
+	if (copy_from_user(p_uresp, buf, size)) {
+		error = -EFAULT;
+		goto out;
+	}
+
+	if (!notif_supported_version((struct apparmor_notif_common *)p_uresp)) {
+		AA_DEBUG(DEBUG_UPCALL, "Failed response listener using unsupported protocol version %d", p_uresp->base.base.version);
+		error = -EPROTONOSUPPORT;
+		goto out;
+	}
+	error = aa_listener_unotif_response(listener, p_uresp, size);
+out:
+	aa_put_buffer((char *) big_resp);
+	return error;
+}
+
+static long notify_is_id_valid(struct aa_listener *listener,
+			       unsigned long arg)
+{
+	void __user *buf = (void __user *)arg;
+	u64 id;
+	long ret = -ENOENT;
+
+	if (copy_from_user(&id, buf, sizeof(id)))
+		return -EFAULT;
+
+	spin_lock(&listener->lock);
+	if (__aa_find_notif(listener, id))
+		ret = 0;
+	spin_unlock(&listener->lock);
+
+	return ret;
+}
+
+static long notify_user_register(struct aa_listener *listener,
+				 unsigned long arg, struct file *file)
+{
+	struct apparmor_notif_register_v5 reg;
+	struct aa_listener *found = NULL;
+	void __user *buf = (void __user *)arg;
+	long res;
+
+	if (copy_from_user(&reg.base.len, buf, sizeof(reg.base.len)))
+		return -EFAULT;
+	if (reg.base.len < sizeof(reg))
+		return -EMSGSIZE;
+	if (copy_from_user(&reg, buf, sizeof(reg)))
+		return -EFAULT;
+	/* to balance potential put and retry, ideally would grab from
+	 * file here, but need to refactor for that
+	 */
+	aa_get_listener(listener);
+retry:
+	res = aa_register_listener_id(listener, &reg.listener_id, &found);
+	AA_DEBUG(DEBUG_UPCALL, "registered id %llu found %p res %ld", reg.listener_id, found, res);
+	if (res >= 0) {
+		if (found) {
+			struct aa_listener *l;
+
+			AA_DEBUG(DEBUG_UPCALL, "updating file");
+			struct aa_listener_proxy *proxy;
+
+			spin_lock(&file->f_lock);
+			proxy = file->private_data;
+			if (proxy->listener != listener) {
+				/* raced, try again */
+				l = aa_get_listener(proxy->listener);
+				spin_unlock(&file->f_lock);
+				aa_put_listener(found);
+				aa_put_listener(listener);
+				listener = l;
+				found = NULL;
+				goto retry;
+			}
+			spin_lock(&listener->lock);
+			l = proxy->listener;
+			proxy->listener = NULL;
+			list_del_init(&proxy->llist);
+			spin_unlock(&listener->lock);
+
+			spin_lock(&found->lock);
+			proxy->listener = found; /* transfer search ref */
+			list_add_tail_entry(proxy, &found->ns_proxies,
+					    llist);
+			spin_unlock(&found->lock);
+			spin_unlock(&file->f_lock);
+			aa_put_listener(l);
+			AA_DEBUG(DEBUG_UPCALL, "completed file update");
+		}
+		res = sizeof(reg);
+		if (copy_to_user(buf, &reg, sizeof(reg)))
+			res = -EFAULT;
+	}
+	aa_put_listener(listener);
+	/* size check handled by individual message handlers */
+
+	return res;
+}
+
+static long notify_user_resend(struct aa_listener *listener,
+			       unsigned long arg)
+{
+	struct apparmor_notif_resend_v5 resend;
+	void __user *buf = (void __user *)arg;
+	long res;
+
+	if (copy_from_user(&resend.base.len, buf, sizeof(resend.base.len)))
+		return -EFAULT;
+	if (resend.base.len < sizeof(resend))
+		return -EMSGSIZE;
+	if (copy_from_user(&resend, buf, sizeof(resend)))
+		return -EFAULT;
+
+	/* size check handled by individual message handlers */
+	res = aa_listener_unotif_resend(listener, &resend.ready,
+					&resend.pending);
+	if (!res) {
+		if (copy_to_user(buf, &resend, sizeof(resend)))
+			return -EFAULT;
+		res = sizeof(resend);
+	}
+	return res;
+}
+
+
+static long listener_ioctl_switch(struct file *file,
+				  struct aa_listener *listener,
+				  unsigned int cmd, unsigned long arg)
+{
+	/* todo permission to issue these commands */
+	switch (cmd) {
+	case APPARMOR_NOTIF_SET_FILTER:
+		return notify_set_filter(listener, arg);
+	case APPARMOR_NOTIF_RECV:
+		return notify_user_recv(listener, arg);
+	case APPARMOR_NOTIF_SEND:
+		return notify_user_response(listener, arg);
+	case APPARMOR_NOTIF_IS_ID_VALID:
+		return notify_is_id_valid(listener, arg);
+	case APPARMOR_NOTIF_REGISTER:
+		return notify_user_register(listener, arg, file);
+	case APPARMOR_NOTIF_RESEND:
+		return notify_user_resend(listener, arg);
+	}
+	return -EINVAL;
+}
+
+static long listener_ioctl(struct file *file, unsigned int cmd,
+			 unsigned long arg)
+{
+	struct aa_listener_proxy *proxy;
+	struct aa_listener *listener;
+	long error;
+
+	if (!aa_current_policy_admin_capable(NULL))
+		return -EPERM;
+
+	spin_lock(&file->f_lock);
+	proxy = file->private_data;
+	listener = aa_get_listener(proxy->listener);
+	spin_unlock(&file->f_lock);
+	if (!listener)
+		return -EINVAL;
+
+	error = listener_ioctl_switch(file, listener, cmd, arg);
+	aa_put_listener(listener);
+
+	return error;
+}
+
+static __poll_t listener_poll(struct file *file, poll_table *pt)
+{
+	struct aa_listener_proxy *proxy;
+	struct aa_listener *listener;
+	__poll_t mask = 0;
+
+	if (!aa_current_policy_admin_capable(NULL))
+		return EPOLLERR;
+
+	spin_lock(&file->f_lock);
+	proxy = file->private_data;
+	listener = aa_get_listener(proxy->listener);
+	spin_unlock(&file->f_lock);
+
+	if (listener) {
+		spin_lock(&listener->lock);
+		poll_wait(file, &listener->wait, pt);
+		if (!list_empty(&listener->notifications))
+			mask |= EPOLLIN | EPOLLRDNORM;
+		if (!list_empty(&listener->pending))
+			mask |= EPOLLOUT | EPOLLWRNORM;
+		spin_unlock(&listener->lock);
+	}
+	aa_put_listener(listener);
+
+	return mask;
+}
+
+static const struct file_operations aa_sfs_notify_fops = {
+	.owner          = THIS_MODULE,
+	.open           = listener_open,
+	.poll           = listener_poll,
+//	.read           = notification_read,
+	.llseek         = generic_file_llseek,
+	.release        = listener_release,
+	.unlocked_ioctl = listener_ioctl,
+};
+
 static void profile_query_cb(struct aa_profile *profile, struct aa_perms *perms,
 			     const char *match_str, size_t match_len)
 {
@@ -706,14 +1164,6 @@ static void profile_query_cb(struct aa_profile *profile, struct aa_perms *perms,
 	} else if (rules->policy->dfa) {
 		if (!RULE_MEDIATES(rules, *match_str))
 			return;	/* no change to current perms */
-		/* old user space does not correctly detect dbus mediation
-		 * support so we may get dbus policy and requests when
-		 * the abi doesn't support it. This can cause mediation
-		 * regressions, so explicitly test for this situation.
-		 */
-		if (*match_str == AA_CLASS_DBUS &&
-		    !RULE_MEDIATES_v9NET(rules))
-			return; /* no change to current perms */
 		state = aa_dfa_match_len(rules->policy->dfa,
 					 rules->policy->start[0],
 					 match_str, match_len);
@@ -1082,6 +1532,10 @@ static int aa_sfs_seq_show(struct seq_file *seq, void *v)
 	case AA_SFS_TYPE_BOOLEAN:
 		seq_printf(seq, "%s\n", str_yes_no(fs_file->v.boolean));
 		break;
+	case AA_SFS_TYPE_BOOLEAN_INTPRINT:
+		// Allow printing the boolean as 0/1 for backwards compatibility
+		seq_printf(seq, "%s\n", fs_file->v.boolean ? "1" : "0");
+		break;
 	case AA_SFS_TYPE_STRING:
 		seq_printf(seq, "%s\n", fs_file->v.string);
 		break;
@@ -1205,10 +1659,24 @@ static int seq_profile_hash_show(struct seq_file *seq, void *v)
 	return 0;
 }
 
+static int seq_profile_learning_count_show(struct seq_file *seq, void *v)
+{
+	struct aa_proxy *proxy = seq->private;
+	struct aa_label *label = aa_get_label_rcu(&proxy->label);
+	struct aa_profile *profile = labels_profile(label);
+	int count = READ_ONCE(profile->learning_cache.size);
+
+	seq_printf(seq, "%d\n", count);
+	aa_put_label(label);
+
+	return 0;
+}
+
 SEQ_PROFILE_FOPS(name);
 SEQ_PROFILE_FOPS(mode);
 SEQ_PROFILE_FOPS(attach);
 SEQ_PROFILE_FOPS(hash);
+SEQ_PROFILE_FOPS(learning_count);
 
 /*
  * namespace based files
@@ -1319,6 +1787,14 @@ static const struct file_operations seq_rawdata_ ##NAME ##_fops = {	      \
 	.llseek		= seq_lseek,					      \
 	.release	= seq_rawdata_release,				      \
 }									      \
+
+static struct aa_loaddata *get_loaddata_common_ref(struct aa_common_ref *ref)
+{
+	if (ref)
+		return aa_get_i_loaddata(container_of(ref, struct aa_loaddata,
+						      count));
+	return NULL;
+}
 
 static int seq_rawdata_open(struct inode *inode, struct file *file,
 			    int (*show)(struct seq_file *, void *))
@@ -1757,80 +2233,6 @@ static const struct inode_operations rawdata_link_abi_iops = {
 static const struct inode_operations rawdata_link_data_iops = {
 	.get_link	= rawdata_get_link_data,
 };
-
-/*
- * Requires: @profile->ns->lock held
- */
-void __aa_remove_rawdata_symlink_dents(struct aa_profile *profile)
-{
-	aafs_remove(profile->dents[AAFS_PROF_RAW_HASH]);
-	profile->dents[AAFS_PROF_RAW_HASH] = NULL;
-	aafs_remove(profile->dents[AAFS_PROF_RAW_ABI]);
-	profile->dents[AAFS_PROF_RAW_ABI] = NULL;
-	aafs_remove(profile->dents[AAFS_PROF_RAW_DATA]);
-	profile->dents[AAFS_PROF_RAW_DATA] = NULL;
-}
-
-static inline int create_symlink_dent(struct aa_profile *profile,
-				      const char *name,
-				      enum aafs_prof_type type,
-				      const struct inode_operations *iops)
-{
-	struct dentry *dent = NULL;
-	struct dentry *dir = prof_dir(profile);
-
-	if (profile->dents[type])
-		return 0;
-
-	dent = aafs_create(name, S_IFLNK | 0444, dir,
-			   &profile->label.proxy->count, NULL, NULL, iops);
-	if (IS_ERR(dent))
-		return PTR_ERR(dent);
-
-	profile->dents[type] = dent;
-	return 0;
-}
-
-/*
- * Requires: @profile->ns->lock held
- */
-int __aa_create_rawdata_symlink_dents(struct aa_profile *profile)
-{
-	int error;
-
-	if (!profile ||
-	    (profile->dents[AAFS_PROF_RAW_HASH] &&
-	     profile->dents[AAFS_PROF_RAW_ABI] &&
-	     profile->dents[AAFS_PROF_RAW_DATA]))
-		return 0;
-
-	if (!profile->rawdata)
-		return 0;
-
-	if (aa_g_hash_policy) {
-		error = create_symlink_dent(profile, "raw_sha256",
-					    AAFS_PROF_RAW_HASH,
-					    &rawdata_link_sha256_iops);
-		if (error)
-			return error;
-	}
-
-	error = create_symlink_dent(profile, "raw_abi",
-				    AAFS_PROF_RAW_ABI,
-				    &rawdata_link_abi_iops);
-	if (error)
-		return error;
-
-
-	error = create_symlink_dent(profile, "raw_data",
-				    AAFS_PROF_RAW_DATA,
-				    &rawdata_link_data_iops);
-	if (error)
-		return error;
-
-	return 0;
-}
-
 #endif /* CONFIG_SECURITY_APPARMOR_EXPORT_BINARY */
 
 /*
@@ -1898,6 +2300,12 @@ int __aafs_profile_mkdir(struct aa_profile *profile, struct dentry *parent)
 		goto fail;
 	profile->dents[AAFS_PROF_ATTACH] = dent;
 
+	dent = create_profile_file(dir, "learning_count", profile,
+				   &seq_profile_learning_count_fops);
+	if (IS_ERR(dent))
+		goto fail;
+	profile->dents[AAFS_PROF_LEARNING_COUNT] = dent;
+
 	if (profile->hash) {
 		dent = create_profile_file(dir, "sha256", profile,
 					   &seq_profile_hash_fops);
@@ -1906,9 +2314,31 @@ int __aafs_profile_mkdir(struct aa_profile *profile, struct dentry *parent)
 		profile->dents[AAFS_PROF_HASH] = dent;
 	}
 
-	error = __aa_create_rawdata_symlink_dents(profile);
-	if (error)
-		goto fail2;
+#ifdef CONFIG_SECURITY_APPARMOR_EXPORT_BINARY
+	if (profile->rawdata) {
+		if (aa_g_hash_policy) {
+			dent = aafs_create("raw_sha256", S_IFLNK | 0444, dir,
+					   &profile->label.proxy->count, NULL,
+					   NULL, &rawdata_link_sha256_iops);
+			if (IS_ERR(dent))
+				goto fail;
+			profile->dents[AAFS_PROF_RAW_HASH] = dent;
+		}
+		dent = aafs_create("raw_abi", S_IFLNK | 0444, dir,
+				   &profile->label.proxy->count, NULL, NULL,
+				   &rawdata_link_abi_iops);
+		if (IS_ERR(dent))
+			goto fail;
+		profile->dents[AAFS_PROF_RAW_ABI] = dent;
+
+		dent = aafs_create("raw_data", S_IFLNK | 0444, dir,
+				   &profile->label.proxy->count, NULL, NULL,
+				   &rawdata_link_data_iops);
+		if (IS_ERR(dent))
+			goto fail;
+		profile->dents[AAFS_PROF_RAW_DATA] = dent;
+	}
+#endif /*CONFIG_SECURITY_APPARMOR_EXPORT_BINARY */
 
 	list_for_each_entry(child, &profile->base.profiles, base.list) {
 		error = __aafs_profile_mkdir(child, prof_child_dir(profile));
@@ -1975,7 +2405,7 @@ out:
 	mutex_unlock(&parent->lock);
 	aa_put_ns(parent);
 
-	return error ? ERR_PTR(error) : NULL;
+	return ERR_PTR(error);
 }
 
 static int ns_rmdir_op(struct inode *dir, struct dentry *dentry)
@@ -2426,6 +2856,12 @@ static struct aa_sfs_entry aa_sfs_entry_file[] = {
 	{ }
 };
 
+static struct aa_sfs_entry aa_sfs_entry_ipc[] = {
+	AA_SFS_FILE_STRING("posix_mqueue",
+			   "create read write open delete setattr getattr label"),
+	{ }
+};
+
 static struct aa_sfs_entry aa_sfs_entry_ptrace[] = {
 	AA_SFS_FILE_STRING("mask", "read trace"),
 	{ }
@@ -2451,7 +2887,9 @@ static struct aa_sfs_entry aa_sfs_entry_domain[] = {
 	AA_SFS_FILE_BOOLEAN("post_nnp_subset",	1),
 	AA_SFS_FILE_BOOLEAN("computed_longest_left",	1),
 	AA_SFS_DIR("attach_conditions",		aa_sfs_entry_attach),
+	AA_SFS_FILE_BOOLEAN("interruptible",		1),
 	AA_SFS_FILE_BOOLEAN("disconnected.path",            1),
+	AA_SFS_FILE_BOOLEAN("disconnected.ipc",		1),
 	AA_SFS_FILE_BOOLEAN("kill.signal",		1),
 	AA_SFS_FILE_STRING("version", "1.2"),
 	{ }
@@ -2459,6 +2897,11 @@ static struct aa_sfs_entry aa_sfs_entry_domain[] = {
 
 static struct aa_sfs_entry aa_sfs_entry_unconfined[] = {
 	AA_SFS_FILE_BOOLEAN("change_profile", 1),
+	/* Retain backwards compatibility with Ubuntu userspace
+	 * code that is expecting integer values for these sysctls
+	 */
+	AA_SFS_FILE_BOOLEAN_INTPRINT("userns",		1),
+	AA_SFS_FILE_BOOLEAN_INTPRINT("io_uring",		1),
 	{ }
 };
 
@@ -2471,16 +2914,36 @@ static struct aa_sfs_entry aa_sfs_entry_versions[] = {
 	{ }
 };
 
+static struct aa_sfs_entry aa_sfs_entry_notify[] = {
+	AA_SFS_FILE_STRING("user", "file tags"),
+	{ }
+};
+
+static struct aa_sfs_entry aa_sfs_entry_notify_versions[] = {
+	AA_SFS_FILE_BOOLEAN("v3",	1),
+	AA_SFS_FILE_BOOLEAN("v5",	1),
+	{ }
+};
+
+/* permstable v1: skipped
+              v2: accept1 index, no accept2
+              v3: accept1 index, accept2 flags
+*/
 #define PERMS32STR "allow deny subtree cond kill complain prompt audit quiet hide xindex tag label"
 static struct aa_sfs_entry aa_sfs_entry_policy[] = {
 	AA_SFS_DIR("versions",			aa_sfs_entry_versions),
 	AA_SFS_FILE_BOOLEAN("set_load",		1),
+	AA_SFS_FILE_BOOLEAN("diff_encode",		1),
 	/* number of out of band transitions supported */
 	AA_SFS_FILE_U64("outofband",		MAX_OOB_SUPPORTED),
 	AA_SFS_FILE_U64("permstable32_version",	3),
 	AA_SFS_FILE_STRING("permstable32", PERMS32STR),
+	AA_SFS_FILE_U64("metadata_tagging_version", 1),
 	AA_SFS_FILE_U64("state32",	1),
 	AA_SFS_DIR("unconfined_restrictions",   aa_sfs_entry_unconfined),
+	AA_SFS_DIR("notify",   aa_sfs_entry_notify),
+	AA_SFS_DIR("notify_versions",   aa_sfs_entry_notify_versions),
+	AA_SFS_FILE_BOOLEAN("compressed_load",	1),
 	{ }
 };
 
@@ -2494,6 +2957,7 @@ static struct aa_sfs_entry aa_sfs_entry_ns[] = {
 	AA_SFS_FILE_BOOLEAN("profile",		1),
 	AA_SFS_FILE_BOOLEAN("pivot_root",	0),
 	AA_SFS_FILE_STRING("mask", "userns_create"),
+	AA_SFS_FILE_STRING("userns_create", "pciu&"),
 	{ }
 };
 
@@ -2523,8 +2987,11 @@ static struct aa_sfs_entry aa_sfs_entry_features[] = {
 	AA_SFS_DIR("policy",			aa_sfs_entry_policy),
 	AA_SFS_DIR("domain",			aa_sfs_entry_domain),
 	AA_SFS_DIR("file",			aa_sfs_entry_file),
+	AA_SFS_DIR("network",			aa_sfs_entry_network_compat),
+	AA_SFS_DIR("ipc",			aa_sfs_entry_ipc),
 	AA_SFS_DIR("network_v8",		aa_sfs_entry_network),
 	AA_SFS_DIR("network_v9",		aa_sfs_entry_networkv9),
+	AA_SFS_DIR("network_v9_skb",		aa_sfs_entry_networkv9_skb),
 	AA_SFS_DIR("mount",			aa_sfs_entry_mount),
 	AA_SFS_DIR("namespaces",		aa_sfs_entry_ns),
 	AA_SFS_FILE_U64("capability",		VFS_CAP_FLAGS_MASK),
@@ -2540,6 +3007,7 @@ static struct aa_sfs_entry aa_sfs_entry_features[] = {
 
 static struct aa_sfs_entry aa_sfs_entry_apparmor[] = {
 	AA_SFS_FILE_FOPS(".access", 0666, &aa_sfs_access),
+	AA_SFS_FILE_FOPS(".notify", 0666, &aa_sfs_notify_fops),
 	AA_SFS_FILE_FOPS(".stacked", 0444, &seq_ns_stacked_fops),
 	AA_SFS_FILE_FOPS(".ns_stacked", 0444, &seq_ns_nsstacked_fops),
 	AA_SFS_FILE_FOPS(".ns_level", 0444, &seq_ns_level_fops),
@@ -2670,7 +3138,8 @@ static int aa_mk_null_file(struct dentry *parent)
 	if (error)
 		return error;
 
-	dentry = simple_start_creating(parent, NULL_FILE_NAME);
+	inode_lock(d_inode(parent));
+	dentry = lookup_noperm(&QSTR(NULL_FILE_NAME), parent);
 	if (IS_ERR(dentry)) {
 		error = PTR_ERR(dentry);
 		goto out;
@@ -2678,7 +3147,7 @@ static int aa_mk_null_file(struct dentry *parent)
 	inode = new_inode(parent->d_inode->i_sb);
 	if (!inode) {
 		error = -ENOMEM;
-		goto out;
+		goto out1;
 	}
 
 	inode->i_ino = get_next_ino();
@@ -2690,11 +3159,17 @@ static int aa_mk_null_file(struct dentry *parent)
 	aa_null.dentry = dget(dentry);
 	aa_null.mnt = mntget(mount);
 
+	error = 0;
+
+out1:
+	dput(dentry);
 out:
-	simple_done_creating(dentry);
+	inode_unlock(d_inode(parent));
 	simple_release_fs(&mount, &count);
 	return error;
 }
+
+
 
 static const char *policy_get_link(struct dentry *dentry,
 				   struct inode *inode,
@@ -2723,7 +3198,7 @@ static int policy_readlink(struct dentry *dentry, char __user *buffer,
 	int res;
 
 	res = snprintf(name, sizeof(name), "%s:[%llu]", AAFS_NAME,
-		       d_inode(dentry)->i_ino);
+		       (unsigned long long)d_inode(dentry)->i_ino);
 	if (res > 0 && res < sizeof(name))
 		res = readlink_copy(buffer, buflen, name, strlen(name));
 	else

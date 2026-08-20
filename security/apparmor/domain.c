@@ -706,7 +706,7 @@ static struct aa_label *profile_transition(const struct cred *subj_cred,
 			/* Don't cause error if auditing fails */
 			(void) aa_audit_file(subj_cred, profile, &perms,
 				OP_EXEC, MAY_EXEC, name, target, new, cond->uid,
-				info, error);
+				info, error, false);
 		}
 		if (new) {
 			AA_DEBUG(DEBUG_DOMAIN, "unconfined attached to new label");
@@ -779,9 +779,8 @@ create_learning_profile:
 	}
 
 audit:
-	aa_audit_file(subj_cred, profile, &perms, OP_EXEC, MAY_EXEC, name,
-		      target, new,
-		      cond->uid, info, error);
+	aa_audit_file(subj_cred, profile, &perms, OP_EXEC, MAY_EXEC, name, target, new,
+		      cond->uid, info, error, true);
 	if (!new || nonewprivs) {
 		aa_put_label(new);
 		return ERR_PTR(error);
@@ -860,10 +859,19 @@ static int profile_onexec(const struct cred *subj_cred,
 audit:
 	return aa_audit_file(subj_cred, profile, &perms, OP_EXEC,
 			     AA_MAY_ONEXEC, xname,
-			     NULL, onexec, cond->uid, info, error);
+			     NULL, onexec, cond->uid, info, error, false);
 }
 
 /* ensure none ns domain transitions are correctly applied with onexec */
+static struct aa_label *label_merge_wrap(struct aa_label *a, struct aa_label *b,
+					 gfp_t gfp)
+{
+	struct aa_label *label = aa_label_merge(a, b, gfp);
+
+	if (!label)
+		return ERR_PTR(-ENOMEM);
+	return label;
+}
 
 static struct aa_label *handle_onexec(const struct cred *subj_cred,
 				      struct aa_label *label,
@@ -891,12 +899,13 @@ static struct aa_label *handle_onexec(const struct cred *subj_cred,
 		return ERR_PTR(error);
 
 	new = fn_label_build_in_scope(label, profile, GFP_KERNEL,
-			stack ? aa_label_merge(&profile->label, onexec,
-					       GFP_KERNEL)
+			stack ? label_merge_wrap(&profile->label, onexec,
+						 GFP_KERNEL)
 			      : aa_get_newest_label(onexec),
 			profile_transition(subj_cred, profile, bprm,
 					   buffer, cond, unsafe));
-	if (new)
+	AA_BUG(!new);
+	if (!IS_ERR(new))
 		return new;
 
 	/* TODO: get rid of GLOBAL_ROOT_UID */
@@ -905,7 +914,8 @@ static struct aa_label *handle_onexec(const struct cred *subj_cred,
 				      OP_CHANGE_ONEXEC,
 				      AA_MAY_ONEXEC, bprm->filename, NULL,
 				      onexec, GLOBAL_ROOT_UID,
-				      "failed to build target label", -ENOMEM));
+				      "failed to build target label",
+				      PTR_ERR(new), false));
 	return ERR_PTR(error);
 }
 
@@ -969,12 +979,8 @@ int apparmor_bprm_creds_for_exec(struct linux_binprm *bprm)
 						   buffer,
 						   &cond, &unsafe));
 
-	AA_BUG(!new);
 	if (IS_ERR(new)) {
 		error = PTR_ERR(new);
-		goto done;
-	} else if (!new) {
-		error = -ENOMEM;
 		goto done;
 	}
 
@@ -1041,7 +1047,8 @@ audit:
 			aa_audit_file(current_cred(), profile, &nullperms,
 				      OP_EXEC, MAY_EXEC,
 				      bprm->filename, NULL, new,
-				      vfsuid_into_kuid(vfsuid), info, error));
+				      vfsuid_into_kuid(vfsuid), info, error,
+				      false));
 	aa_put_label(new);
 	goto done;
 }
@@ -1092,7 +1099,7 @@ audit:
 		      AA_MAY_CHANGEHAT,
 		      name, hat ? hat->base.hname : NULL,
 		      hat ? &hat->label : NULL, GLOBAL_ROOT_UID, info,
-		      error);
+		      error, false);
 	if (!hat || (error && error != -ENOENT))
 		return ERR_PTR(error);
 	/* if hat && error - complain mode, already audited and we adjust for
@@ -1212,7 +1219,7 @@ fail:
 			aa_audit_file(subj_cred, profile, &nullperms,
 				      OP_CHANGE_HAT,
 				      AA_MAY_CHANGEHAT, name, NULL, NULL,
-				      GLOBAL_ROOT_UID, info, error);
+				      GLOBAL_ROOT_UID, info, error, false);
 		}
 	}
 	mutex_unlock(&ns->lock);
@@ -1223,12 +1230,10 @@ build:
 				   build_change_hat(subj_cred, profile, name,
 						    sibling),
 				   aa_get_label(&profile->label));
-	if (!new) {
-		info = "label build failed";
-		error = -ENOMEM;
-		goto fail;
-	} /* else if (IS_ERR) build_change_hat has logged error so return new */
 	mutex_unlock(&ns->lock);
+	AA_BUG(!new);
+	/* return new label or error ptr */
+
 	return new;
 }
 
@@ -1372,7 +1377,7 @@ fail:
 	fn_for_each_in_scope(label, profile,
 		aa_audit_file(subj_cred, profile, &perms, OP_CHANGE_HAT,
 			      AA_MAY_CHANGEHAT, NULL, NULL, target,
-			      GLOBAL_ROOT_UID, info, error));
+			      GLOBAL_ROOT_UID, info, error, false));
 
 	goto out;
 }
@@ -1396,7 +1401,7 @@ static int change_profile_perms_wrapper(const char *op, const char *name,
 		error = aa_audit_file(subj_cred, profile, perms, op, request,
 				      name,
 				      NULL, target, GLOBAL_ROOT_UID, info,
-				      error);
+				      error, false);
 
 	return error;
 }
@@ -1480,7 +1485,8 @@ int aa_change_profile(const char *fqname, int flags)
 		(void) fn_for_each_in_scope(label, profile,
 				aa_audit_file(subj_cred, profile, &perms, op,
 					      request, auditname, NULL, target,
-					      GLOBAL_ROOT_UID, stack_msg, 0));
+					      GLOBAL_ROOT_UID, stack_msg, 0,
+					      false));
 		perms.audit = 0;
 	}
 
@@ -1556,8 +1562,12 @@ check:
 		new = fn_label_build_in_scope(label, profile, GFP_KERNEL,
 					   aa_get_label(target),
 					   aa_get_label(&profile->label));
-		if (IS_ERR_OR_NULL(new))
-			goto build_fail;
+		AA_BUG(!new);
+		if (IS_ERR(new)) {
+			error = PTR_ERR(new);
+			new = NULL;
+			goto out;
+		}
 		/*
 		 * no new privs prevents domain transitions that would
 		 * reduce restrictions.
@@ -1576,36 +1586,32 @@ check:
 		/* only transition profiles in the current ns */
 		if (stack)
 			new = aa_label_merge(label, target, GFP_KERNEL);
-		if (IS_ERR_OR_NULL(new))
-			goto build_fail;
+		if (IS_ERR_OR_NULL(new)) {
+			info = "failed to build target label";
+			if (!new)
+				error = -ENOMEM;
+			else
+				error = PTR_ERR(new);
+			new = NULL;
+			perms.allow = 0;
+			goto audit;
+		}
 		error = aa_replace_current_label(new);
 	} else {
-		if (new) {
-			aa_put_label(new);
-			new = NULL;
-		}
+		/* new will be recomputed so at exec time. So discard */
+		aa_put_label(new);
+		new = NULL;
 
 		/* full transition will be built in exec path */
 		aa_set_current_onexec(target, stack);
 	}
-
-	goto audit;
-
-build_fail:
-	info = "failed to build target label";
-	if (!new)
-		error = -ENOMEM;
-	else
-		error = PTR_ERR(new);
-	new = NULL;
-	perms.allow = 0;
 
 audit:
 	error = fn_for_each_in_scope(label, profile,
 			aa_audit_file(subj_cred,
 				      profile, &perms, op, request, auditname,
 				      NULL, new ? new : target,
-				      GLOBAL_ROOT_UID, info, error));
+				      GLOBAL_ROOT_UID, info, error, false));
 
 out:
 	aa_put_label(new);

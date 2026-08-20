@@ -20,7 +20,7 @@
 #define AA_CLASS_UNKNOWN	1
 #define AA_CLASS_FILE		2
 #define AA_CLASS_CAP		3
-#define AA_CLASS_DEPRECATED	4
+#define AA_CLASS_NET_COMPAT	4
 #define AA_CLASS_RLIMITS	5
 #define AA_CLASS_DOMAIN		6
 #define AA_CLASS_MOUNT		7
@@ -36,6 +36,7 @@
 #define AA_CLASS_NS		21
 #define AA_CLASS_IO_URING	22
 
+#define AA_CLASS_NETV9_SKB	30
 #define AA_CLASS_X		31
 #define AA_CLASS_DBUS		32
 

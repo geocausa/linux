@@ -10,6 +10,11 @@
 #ifndef __AA_TASK_H
 #define __AA_TASK_H
 
+#include <linux/sched.h>
+
+#include "audit.h"
+#include "label.h"
+
 static inline struct aa_task_ctx *task_ctx(struct task_struct *task)
 {
 	return task->security + apparmor_blob_sizes.lbs_task;
@@ -99,7 +104,8 @@ int aa_may_ptrace(const struct cred *tracer_cred, struct aa_label *tracer,
 
 #define AA_USERNS_CREATE	8
 
-int aa_profile_ns_perm(struct aa_profile *profile,
-		       struct apparmor_audit_data *ad, u32 request);
+struct aa_label *aa_profile_ns_perm(struct aa_profile *profile,
+				    struct apparmor_audit_data *ad,
+				    u32 request);
 
 #endif /* __AA_TASK_H */

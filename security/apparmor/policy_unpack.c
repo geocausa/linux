@@ -25,6 +25,7 @@
 #include "include/crypto.h"
 #include "include/file.h"
 #include "include/match.h"
+#include "include/net.h"
 #include "include/path.h"
 #include "include/policy.h"
 #include "include/policy_unpack.h"
@@ -285,6 +286,19 @@ static bool unpack_u8(struct aa_ext *e, u8 *data, const char *name)
 fail:
 	e->pos = pos;
 	return false;
+}
+
+VISIBLE_IF_KUNIT bool unpack_u16(struct aa_ext *e, u16 *data, const char *name)
+{
+	if (aa_unpack_nameX(e, AA_U16, name)) {
+		if (!aa_inbounds(e, sizeof(u16)))
+			return 0;
+		if (data)
+			*data = le16_to_cpu(get_unaligned((__le16 *) e->pos));
+		e->pos += sizeof(u16);
+		return 1;
+	}
+	return 0;
 }
 
 VISIBLE_IF_KUNIT bool aa_unpack_u32(struct aa_ext *e, u32 *data, const char *name)
@@ -879,7 +893,6 @@ static int unpack_tags(struct aa_ext *e, struct aa_tags_struct *tags,
 			*info = "failed to unpack profile tag.sets";
 			goto fail;
 		}
-		error = -EPROTO;
 		if (!aa_unpack_nameX(e, AA_STRUCTEND, NULL))
 			goto fail;
 
@@ -1054,8 +1067,7 @@ static int unpack_pdb(struct aa_ext *e, struct aa_policydb **policy,
 		pdb->dfa->tables[YYTD_ID_ACCEPT2] = kvzalloc(tsize, GFP_KERNEL);
 		if (!pdb->dfa->tables[YYTD_ID_ACCEPT2]) {
 			*info = "failed to alloc dfa flags table";
-			error = -ENOMEM;
-			goto fail;
+			goto out;
 		}
 		pdb->dfa->tables[YYTD_ID_ACCEPT2]->td_lolen = noents;
 		pdb->dfa->tables[YYTD_ID_ACCEPT2]->td_flags = tdflags;
@@ -1080,6 +1092,7 @@ static int unpack_pdb(struct aa_ext *e, struct aa_policydb **policy,
 	 * - move free of unneeded trans table here, has to be done
 	 *   after perm mapping.
 	 */
+out:
 	*policy = pdb;
 	return 0;
 
@@ -1117,9 +1130,10 @@ static struct aa_profile *unpack_profile(struct aa_ext *e, char **ns_name)
 	struct aa_profile *profile = NULL;
 	const char *tmpname, *tmpns = NULL, *name = NULL;
 	const char *info = "failed to unpack profile";
+	u16 size = 0;
 	size_t ns_len;
 	struct rhashtable_params params = { 0 };
-	char *key = NULL, *disconnected = NULL;
+	char *key = NULL, *disconnected = NULL, *disconnected_ipc = NULL;
 	struct aa_data *data;
 	int error = -EPROTO;
 	kernel_cap_t tmpcap;
@@ -1192,6 +1206,12 @@ static struct aa_profile *unpack_profile(struct aa_ext *e, char **ns_name)
 	(void) aa_unpack_strdup(e, &disconnected, "disconnected");
 	profile->disconnected = disconnected;
 
+	/* disconnected attachment for ipc string is optional
+	 * but it fallbacks to the plain disconnected if not present
+	 */
+	(void) aa_unpack_strdup(e, &disconnected_ipc, "disconnected_ipc");
+	profile->disconnected_ipc = disconnected_ipc ? disconnected_ipc : disconnected;
+
 	/* optional */
 	(void) aa_unpack_u32(e, &profile->signal, "kill");
 	if (profile->signal < 1 || profile->signal > MAXMAPPED_SIG) {
@@ -1212,6 +1232,8 @@ static struct aa_profile *unpack_profile(struct aa_ext *e, char **ns_name)
 		profile->label.flags |= FLAG_DEBUG1;
 	if (tmp & PACKED_FLAG_DEBUG2)
 		profile->label.flags |= FLAG_DEBUG2;
+	if (tmp & PACKED_FLAG_INTERRUPTIBLE)
+		profile->label.flags |= FLAG_INTERRUPTIBLE;
 	if (!aa_unpack_u32(e, &tmp, NULL))
 		goto fail;
 	if (tmp == PACKED_MODE_COMPLAIN || (e->version & FORCE_COMPLAIN_FLAG)) {
@@ -1293,6 +1315,45 @@ static struct aa_profile *unpack_profile(struct aa_ext *e, char **ns_name)
 	if (!unpack_secmark(e, rules)) {
 		info = "failed to unpack profile secmark rules";
 		goto fail;
+	}
+
+	if (aa_unpack_array(e, "net_allowed_af", &size) ||
+	    VERSION_LT(e->version, v8)) {
+		u16 i;
+
+		profile->net_compat = kzalloc(sizeof(struct aa_net_compat),
+					      GFP_KERNEL);
+		if (!profile->net_compat) {
+			info = "out of memory";
+			goto fail;
+		}
+		for (i = 0; i < size; i++) {
+			/* discard extraneous rules that this kernel will
+			 * never request
+			 */
+			if (i >= AF_MAX) {
+				u16 tmp;
+
+				if (!unpack_u16(e, &tmp, NULL) ||
+				    !unpack_u16(e, &tmp, NULL) ||
+				    !unpack_u16(e, &tmp, NULL))
+					goto fail;
+				continue;
+			}
+			if (!unpack_u16(e, &profile->net_compat->allow[i], NULL))
+				goto fail;
+			if (!unpack_u16(e, &profile->net_compat->audit[i], NULL))
+				goto fail;
+			if (!unpack_u16(e, &profile->net_compat->quiet[i], NULL))
+				goto fail;
+		}
+		if (size && !aa_unpack_nameX(e, AA_ARRAYEND, NULL))
+			goto fail;
+		if (VERSION_LT(e->version, v7)) {
+			/* pre v7 policy always allowed these */
+			profile->net_compat->allow[AF_UNIX] = 0xffff;
+			profile->net_compat->allow[AF_NETLINK] = 0xffff;
+		}
 	}
 
 	if (aa_unpack_nameX(e, AA_STRUCT, "policydb")) {
@@ -1717,6 +1778,8 @@ static int compress_loaddata(struct aa_loaddata *data)
  * @udata: user data copied to kmem  (NOT NULL)
  * @lh: list to place unpacked profiles in a aa_repl_ws
  * @ns: Returns namespace profile is in if specified else NULL (NOT NULL)
+ * @compressed_data: The userspace-provided compressed data. May be NULL
+ * @compressed_size: If compressed_data is not NULL, the compressed data size
  *
  * Unpack user data and return refcounted allocated profile(s) stored in
  * @lh in order of discovery, with the list chain stored in base.list
@@ -1725,12 +1788,12 @@ static int compress_loaddata(struct aa_loaddata *data)
  * Returns: profile(s) on @lh else error pointer if fails to unpack
  */
 int aa_unpack(struct aa_loaddata *udata, struct list_head *lh,
-	      const char **ns)
+	      const char **ns, char *compressed_data, size_t compressed_size)
 {
 	struct aa_load_ent *tmp, *ent;
 	struct aa_profile *profile = NULL;
 	char *ns_name = NULL;
-	int error;
+	int error = 0;
 	struct aa_ext e = {
 		.start = udata->data,
 		.end = udata->data + udata->size,
@@ -1783,10 +1846,23 @@ int aa_unpack(struct aa_loaddata *udata, struct list_head *lh,
 	}
 
 	if (aa_g_export_binary) {
-		error = compress_loaddata(udata);
+		/* Do we have userspace-compressed data? */
+		if (compressed_data) {
+			kvfree(udata->data);
+			udata->data = compressed_data;
+			udata->compressed_size = compressed_size;
+			compressed_data = NULL; /* consumed */
+
+		} else
+			error = compress_loaddata(udata);
+
 		if (error)
 			goto fail;
+	} else if (compressed_data) {
+		kvfree(compressed_data);
+		compressed_data = NULL;
 	}
+
 	return 0;
 
 fail_profile:
@@ -1794,6 +1870,8 @@ fail_profile:
 	aa_put_profile(profile);
 
 fail:
+	if (compressed_data)
+		kvfree(compressed_data);
 	list_for_each_entry_safe(ent, tmp, lh, list) {
 		list_del_init(&ent->list);
 		aa_load_ent_free(ent);

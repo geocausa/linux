@@ -11,10 +11,15 @@
 #ifndef __AA_APPARMORFS_H
 #define __AA_APPARMORFS_H
 
+#include <linux/init.h>
+#include <linux/types.h>
+
 extern struct path aa_null;
 
 enum aa_sfs_type {
 	AA_SFS_TYPE_BOOLEAN,
+	// Boolean that gets printed as 0/1 for backwards compatibility
+	AA_SFS_TYPE_BOOLEAN_INTPRINT,
 	AA_SFS_TYPE_STRING,
 	AA_SFS_TYPE_U64,
 	AA_SFS_TYPE_FOPS,
@@ -42,6 +47,10 @@ extern const struct file_operations aa_sfs_seq_file_ops;
 #define AA_SFS_FILE_BOOLEAN(_name, _value) \
 	{ .name = (_name), .mode = 0444, \
 	  .v_type = AA_SFS_TYPE_BOOLEAN, .v.boolean = (_value), \
+	  .file_ops = &aa_sfs_seq_file_ops }
+#define AA_SFS_FILE_BOOLEAN_INTPRINT(_name, _value) \
+	{ .name = (_name), .mode = 0444, \
+	  .v_type = AA_SFS_TYPE_BOOLEAN_INTPRINT, .v.boolean = (_value), \
 	  .file_ops = &aa_sfs_seq_file_ops }
 #define AA_SFS_FILE_STRING(_name, _value) \
 	{ .name = (_name), .mode = 0444, \
@@ -89,6 +98,7 @@ enum aafs_prof_type {
 	AAFS_PROF_RAW_DATA,
 	AAFS_PROF_RAW_HASH,
 	AAFS_PROF_RAW_ABI,
+	AAFS_PROF_LEARNING_COUNT,
 	AAFS_PROF_SIZEOF,
 };
 
@@ -120,8 +130,6 @@ struct aa_loaddata;
 #ifdef CONFIG_SECURITY_APPARMOR_EXPORT_BINARY
 void __aa_fs_remove_rawdata(struct aa_loaddata *rawdata);
 int __aa_fs_create_rawdata(struct aa_ns *ns, struct aa_loaddata *rawdata);
-void __aa_remove_rawdata_symlink_dents(struct aa_profile *profile);
-int __aa_create_rawdata_symlink_dents(struct aa_profile *profile);
 #else
 static inline void __aa_fs_remove_rawdata(struct aa_loaddata *rawdata)
 {
@@ -130,16 +138,6 @@ static inline void __aa_fs_remove_rawdata(struct aa_loaddata *rawdata)
 
 static inline int __aa_fs_create_rawdata(struct aa_ns *ns,
 					 struct aa_loaddata *rawdata)
-{
-	return 0;
-}
-
-static inline void __aa_remove_rawdata_symlink_dents(struct aa_profile *profile)
-{
-	/* empty stub */
-}
-
-static inline int __aa_create_rawdata_symlink_dents(struct aa_profile *profile)
 {
 	return 0;
 }

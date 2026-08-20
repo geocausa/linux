@@ -46,6 +46,8 @@ static struct val_table_ent debug_values_table[] = {
 	{ "interface", DEBUG_INTERFACE },
 	{ "unpack", DEBUG_UNPACK },
 	{ "tags", DEBUG_TAGS },
+	{ "upcall", DEBUG_UPCALL },
+	{ "skb", DEBUG_SKB },
 	{ NULL, 0 }
 };
 
@@ -250,7 +252,7 @@ void aa_str_kref(struct kref *kref)
 
 
 const char aa_file_perm_chrs[] = "xwracd         km l     ";
-const char *aa_file_perm_names[] = {
+static const char * const aa_base_perm_names[] = {
 	"exec",
 	"write",
 	"read",
@@ -340,6 +342,10 @@ void aa_audit_perm_mask(struct audit_buffer *ab, u32 mask, const char *chrs,
 {
 	char str[33];
 
+	if (!chrs)
+		chrs = aa_file_perm_chrs;
+	if (!names)
+		names = aa_base_perm_names;
 	audit_log_format(ab, "\"");
 	if ((mask & chrsmask) && chrs) {
 		aa_perm_mask_to_str(str, sizeof(str), chrs, mask & chrsmask);
@@ -351,6 +357,22 @@ void aa_audit_perm_mask(struct audit_buffer *ab, u32 mask, const char *chrs,
 	if ((mask & namesmask) && names)
 		aa_audit_perm_names(ab, names, mask & namesmask);
 	audit_log_format(ab, "\"");
+}
+
+void aa_audit_perms(struct audit_buffer *ab, struct apparmor_audit_data *ad,
+		    const char *chrs, u32 chrsmask, const char * const *names,
+		    u32 namesmask)
+{
+	if (ad->request) {
+		audit_log_format(ab, " requested=");
+		aa_audit_perm_mask(ab, ad->request, chrs, chrsmask,
+				   names, namesmask);
+	}
+	if (ad->denied) {
+		audit_log_format(ab, " denied=");
+		aa_audit_perm_mask(ab, ad->denied, chrs, chrsmask,
+				   names, namesmask);
+	}
 }
 
 /**
@@ -422,7 +444,7 @@ int aa_check_perms(struct aa_profile *profile, struct aa_perms *perms,
 		   void (*cb)(struct audit_buffer *, void *))
 {
 	int type, error;
-	u32 denied = request & (~perms->allow | perms->deny);
+	u32 denied = denied_perms(perms, request);
 
 	if (likely(!denied)) {
 		/* mask off perms that are not being force audited */
@@ -451,6 +473,7 @@ int aa_check_perms(struct aa_profile *profile, struct aa_perms *perms,
 	}
 
 	if (ad) {
+		// do_notification()
 		ad->subj_label = &profile->label;
 		ad->request = request;
 		ad->denied = denied;

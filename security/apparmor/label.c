@@ -83,7 +83,7 @@ void __aa_proxy_redirect(struct aa_label *orig, struct aa_label *new)
 	tmp = rcu_dereference_protected(orig->proxy->label,
 					&labels_ns(orig)->lock);
 	rcu_assign_pointer(orig->proxy->label, aa_get_label(new));
-	orig->flags |= FLAG_STALE;
+	__label_make_stale(orig);
 	aa_put_label(tmp);
 }
 
@@ -458,14 +458,14 @@ struct aa_label *aa_label_alloc(int size, struct aa_proxy *proxy, gfp_t gfp)
 	return new;
 
 fail:
-	aa_label_free(new);
+	kfree(new);
 
 	return NULL;
 }
 
 
 /**
- * label_cmp - label comparison for set ordering
+ * aa_label_cmp - label comparison for set ordering
  * @a: label to compare (NOT NULL)
  * @b: label to compare (NOT NULL)
  *
@@ -473,7 +473,7 @@ fail:
  *          ==0 if a == b
  *          >0  if a > b
  */
-static int label_cmp(struct aa_label *a, struct aa_label *b)
+int aa_label_cmp(struct aa_label *a, struct aa_label *b)
 {
 	AA_BUG(!b);
 
@@ -688,7 +688,7 @@ static struct aa_label *__label_insert(struct aa_labelset *ls,
 	new = &ls->root.rb_node;
 	while (*new) {
 		struct aa_label *this = rb_entry(*new, struct aa_label, node);
-		int result = label_cmp(label, this);
+		int result = aa_label_cmp(label, this);
 
 		parent = *new;
 		if (result == 0) {
