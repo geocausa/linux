@@ -216,7 +216,7 @@ static void stream_hdr(struct avd_ctx *ctx, struct avd_h264_run *run)
 		| AVD_HDR_COMMON_BIT_DEPTH_C(sps->bit_depth_chroma_minus8)
 		| AVD_HDR_COMMON_MIN_LUMA_CBS(1)
 		| AVD_HDR_COMMON_LUMA_CBS(1)
-		| AVD_HDR_COMMON_LUMA_TBS(pps->flags & V4L2_H264_PPS_FLAG_TRANSFORM_8X8_MODE)
+		| AVD_HDR_COMMON_LUMA_TBS(!!(pps->flags & V4L2_H264_PPS_FLAG_TRANSFORM_8X8_MODE))
 		| AVD_HDR_COMMON_FLAG0(sps->flags & V4L2_H264_SPS_FLAG_DIRECT_8X8_INFERENCE),
 		"hdr_2c_sps_param");
 
