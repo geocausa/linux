@@ -158,9 +158,9 @@ pub(crate) mod raw {
         pub(crate) unk_98c: U64,                   // accelerator +0x1e58
         pub(crate) unk_994: U32,                   // accelerator +0x1e60
         pub(crate) pad_998: Pad<0x08>,
-        pub(crate) unk_9a0: U32,
-        pub(crate) unk_9a4: U32,
-        pub(crate) unk_9a8: U32,
+        pub(crate) gpu_idle_off_delay_ms_9a0: U32,
+        pub(crate) fender_idle_off_delay_ms_9a4: U32,
+        pub(crate) fw_early_wake_timeout_ms_9a8: U32,
         pub(crate) gvdm_timer_interval_9ac: U32,
         pub(crate) cl_context_switch_timeout_9b0: U32,
         pub(crate) cl_kill_timeout_9b4: U32,
@@ -209,6 +209,9 @@ pub(crate) mod raw {
     const _: [(); 0x7dc] = [(); core::mem::offset_of!(G15Q4Config, gpu_keepalive_off_mode_threshold_7dc)];
     const _: [(); 0x96c] = [(); core::mem::offset_of!(G15Q4Config, unk_96c)];
     const _: [(); 0x97c] = [(); core::mem::offset_of!(G15Q4Config, unk_97c)];
+    const _: [(); 0x9a0] = [(); core::mem::offset_of!(G15Q4Config, gpu_idle_off_delay_ms_9a0)];
+    const _: [(); 0x9a4] = [(); core::mem::offset_of!(G15Q4Config, fender_idle_off_delay_ms_9a4)];
+    const _: [(); 0x9a8] = [(); core::mem::offset_of!(G15Q4Config, fw_early_wake_timeout_ms_9a8)];
     const _: [(); 0x9ac] = [(); core::mem::offset_of!(G15Q4Config, gvdm_timer_interval_9ac)];
     const _: [(); 0x9b0] = [(); core::mem::offset_of!(G15Q4Config, cl_context_switch_timeout_9b0)];
     const _: [(); 0x9b4] = [(); core::mem::offset_of!(G15Q4Config, cl_kill_timeout_9b4)];

@@ -1219,6 +1219,16 @@ impl<'a> InitDataBuilder::ver<'a> {
                 unk_984: U64(0x0000_0001_0000_00fa),
                 unk_98c: U64(0x0000_0064_0000_0001),
                 unk_994: U32(1),
+                // AGXFirmware::init() invokes the active ChinookV9
+                // setupConfig() before firmware data initialization. That
+                // establishes 2/40/5 as the three delay defaults and clears
+                // their override state. Exact J615 omits the corresponding
+                // gpu-*-delay/early-wake properties, so
+                // initPowerAndPerformanceData() selects those defaults and
+                // writes them directly to q4 +0x9a0/+0x9a4/+0x9a8.
+                gpu_idle_off_delay_ms_9a0: U32(2),
+                fender_idle_off_delay_ms_9a4: U32(40),
+                fw_early_wake_timeout_ms_9a8: U32(5),
                 // Exact ChinookV9 defaults, applied by paired getter/setter
                 // calls in AGXArmFirmware::initFirmwareData.
                 cl_context_switch_timeout_9b0: U32(0x28),
