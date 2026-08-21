@@ -1215,9 +1215,16 @@ impl<'a> InitDataBuilder::ver<'a> {
                 // AGXArmFirmware::setupConfig copies the four values below
                 // from accelerator +0x1e48..+0x1e60. AGXAccelerator's static
                 // initialization proves their exact J615 values.
-                unk_97c: U64(0x0000_000a_0000_0028),
-                unk_984: U64(0x0000_0001_0000_00fa),
-                unk_98c: U64(0x0000_0064_0000_0001),
+                // configureDevice establishes the exact seven-word source
+                // record at accelerator +0x1e48..+0x1e60 and setupConfig
+                // copies it to q4 +0x97c..+0x994. Direct setters prove the
+                // first three words are the 3D/TA/CL progress-check intervals.
+                progress_check_interval_3d_97c: U32(40),
+                progress_check_interval_ta_980: U32(10),
+                progress_check_interval_cl_984: U32(250),
+                unk_988: U32(1),
+                unk_98c: U32(1),
+                unk_990: U32(100),
                 unk_994: U32(1),
                 // AGXFirmware::init() invokes the active ChinookV9
                 // setupConfig() before firmware data initialization. That
