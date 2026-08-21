@@ -1188,6 +1188,13 @@ impl<'a> InitDataBuilder::ver<'a> {
                 // firmware setup copies/defaults that value into q4 +0x05e.
                 // The same field is the target of setCSwitchTimerMultiplier().
                 cswitch_timer_multiplier_05e: U32(1),
+                // AGXAccelerator::start() builds the GPU PerfStateInfo from
+                // exact J615 `gpu-num-perf-states = 2`. G15 constructor byte
+                // +0x4e1 is zero, so Apple takes the direct 0x448-byte copy
+                // to accelerator +0xa1e0 rather than the MGPU combiner.
+                // getPerfStateCap(domain 0) returns count - 1, and the Arm
+                // initializer stores that cap multiplied by 100 at q4+0x8c.
+                perf_state_cap_x100_08c: U32(100),
                 // setupConfig explicitly clears the firmware-object backing
                 // words at +0x17a0/+0x17a4/+0x17a8/+0x17ac/+0x17b0 and
                 // the +0x17b4 validity byte. initPowerAndPerformanceData()

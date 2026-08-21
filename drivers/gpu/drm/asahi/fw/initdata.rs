@@ -126,7 +126,7 @@ pub(crate) mod raw {
         pub(crate) pad_07c: Pad<0x04>,
         pub(crate) unk_080: U32,
         pub(crate) pad_084: Pad<0x08>,
-        pub(crate) perf_state_cap_percent_08c: U32,
+        pub(crate) perf_state_cap_x100_08c: U32,
         pub(crate) performance_target_090: U32,
         pub(crate) performance_transfer_output_094: U32,
         pub(crate) performance_boost_min_util_098: U32,
@@ -196,7 +196,7 @@ pub(crate) mod raw {
     const _: [(); 0x05e] = [(); core::mem::offset_of!(G15Q4Config, cswitch_timer_multiplier_05e)];
     const _: [(); 0x062] = [(); core::mem::offset_of!(G15Q4Config, cdm_cswitch_mode_change_062)];
     const _: [(); 0x070] = [(); core::mem::offset_of!(G15Q4Config, command_submission_enabled_070)];
-    const _: [(); 0x08c] = [(); core::mem::offset_of!(G15Q4Config, perf_state_cap_percent_08c)];
+    const _: [(); 0x08c] = [(); core::mem::offset_of!(G15Q4Config, perf_state_cap_x100_08c)];
     const _: [(); 0x090] = [(); core::mem::offset_of!(G15Q4Config, performance_target_090)];
     const _: [(); 0x094] = [(); core::mem::offset_of!(G15Q4Config, performance_transfer_output_094)];
     const _: [(); 0x098] = [(); core::mem::offset_of!(G15Q4Config, performance_boost_min_util_098)];
