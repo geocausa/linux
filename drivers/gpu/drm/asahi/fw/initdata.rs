@@ -174,10 +174,10 @@ pub(crate) mod raw {
         pub(crate) table_9e5: Array<0x200, u8>,
         pub(crate) table_be5: Array<0x200, u8>,
         pub(crate) zero_de5: U32,
-        pub(crate) unk_de9: U32,
-        pub(crate) unk_ded: U32,
-        pub(crate) unk_df1: U32,
-        pub(crate) unk_df5: U32,
+        pub(crate) gpu_keepalive_override_de9: U32,
+        pub(crate) gfxc_keepalive_override_ded: U32,
+        pub(crate) gpu_keepalive_perf_mode_threshold_override_df1: U32,
+        pub(crate) gpu_keepalive_off_mode_threshold_override_df5: U32,
         pub(crate) unk_df9: U32,
         pub(crate) tail_dfd: Pad<0x03>,
     }
@@ -236,6 +236,10 @@ pub(crate) mod raw {
     const _: [(); 0x9e5] = [(); core::mem::offset_of!(G15Q4Config, table_9e5)];
     const _: [(); 0xbe5] = [(); core::mem::offset_of!(G15Q4Config, table_be5)];
     const _: [(); 0xde5] = [(); core::mem::offset_of!(G15Q4Config, zero_de5)];
+    const _: [(); 0xde9] = [(); core::mem::offset_of!(G15Q4Config, gpu_keepalive_override_de9)];
+    const _: [(); 0xded] = [(); core::mem::offset_of!(G15Q4Config, gfxc_keepalive_override_ded)];
+    const _: [(); 0xdf1] = [(); core::mem::offset_of!(G15Q4Config, gpu_keepalive_perf_mode_threshold_override_df1)];
+    const _: [(); 0xdf5] = [(); core::mem::offset_of!(G15Q4Config, gpu_keepalive_off_mode_threshold_override_df5)];
 
     /// G15 q22 firmware-control/cache-flush ring state, exact 0x20 bytes.
     /// This is the G15 successor to the legacy FwStatus `FwCtlChannelState`:
