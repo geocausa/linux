@@ -1134,7 +1134,21 @@ impl<'a> InitDataBuilder::ver<'a> {
         #[ver(G != G15)]
         let unk_buf = self.alloc.shared_ro.array_empty_tagged(0x4000, b"IDTA")?;
         #[ver(G == G15)]
-        let g15_init_sequence = self.alloc.shared_ro.array_empty_tagged(0x4000, b"ISEQ")?;
+        let g15_init_sequence = self.alloc.shared_ro.new_object(
+            Default::default(),
+            |_inner| raw::G15InitSequencePage {
+                // Exact G15/G15G empty AGFA sequence. The firmware parser
+                // starts with this record and exits immediately on kind == 0.
+                terminator: raw::G15InitSequenceEntry {
+                    value: U64(0),
+                    register_offset: U32(0),
+                    shift: U32(0),
+                    kind: U32(0),
+                    reserved: U32(0),
+                },
+                unused: Default::default(),
+            },
+        )?;
         #[ver(G == G15)]
         let g15_globals = self.alloc.private.new_object(
             Default::default(),

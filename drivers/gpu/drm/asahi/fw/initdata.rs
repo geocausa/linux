@@ -1140,6 +1140,36 @@ pub(crate) mod raw {
     }
     const _: [(); 0x20] = [(); core::mem::size_of::<G15UMAPagePoolDescriptor>()];
 
+    /// One AGFA firmware-init sequence record. The firmware parser advances
+    /// in exact 0x18-byte steps and terminates when `kind == 0`.
+    #[derive(Debug, Default, Clone, Copy)]
+    #[repr(C)]
+    pub(crate) struct G15InitSequenceEntry {
+        pub(crate) value: U64,           // +0x00
+        pub(crate) register_offset: U32, // +0x08
+        pub(crate) shift: U32,           // +0x0c
+        pub(crate) kind: U32,            // +0x10: 0=end, 1=u32, 2=u64, 3=u64>>shift
+        pub(crate) reserved: U32,        // +0x14
+    }
+    const _: [(); 0x18] = [(); core::mem::size_of::<G15InitSequenceEntry>()];
+    const _: [(); 0x08] = [(); core::mem::offset_of!(G15InitSequenceEntry, register_offset)];
+    const _: [(); 0x0c] = [(); core::mem::offset_of!(G15InitSequenceEntry, shift)];
+    const _: [(); 0x10] = [(); core::mem::offset_of!(G15InitSequenceEntry, kind)];
+
+    /// Exact one-page G15/G15G AGFA init-sequence backing. Apple's G15 and
+    /// G15G populateInitSequenceFirmware() overrides are BTI+RET stubs, so the
+    /// first record is the type-0 terminator and the rest of the page is zero.
+    #[derive(Debug)]
+    #[repr(C)]
+    pub(crate) struct G15InitSequencePage {
+        pub(crate) terminator: G15InitSequenceEntry, // +0x0000
+        pub(crate) unused: Pad<0x3fe8>,              // +0x0018..+0x3fff
+    }
+    default_zeroed!(G15InitSequencePage);
+    const _: [(); 0x4000] = [(); core::mem::size_of::<G15InitSequencePage>()];
+    const _: [(); 0x0000] = [(); core::mem::offset_of!(G15InitSequencePage, terminator)];
+    const _: [(); 0x0018] = [(); core::mem::offset_of!(G15InitSequencePage, unused)];
+
     /// G15 persistent firmware time/activity snapshot referenced by wrapper
     /// +0x010. The exact Apple allocation is 0x88 bytes. Firmware treats +0x00
     /// as a first-use marker and saves/restores sixteen deliberately unaligned
@@ -1994,6 +2024,7 @@ impl<U: Copy> ChannelRing<channels::ChannelState, U> {
 trivial_gpustruct!(FwStatus);
 trivial_gpustruct!(G15SharedStatus);
 trivial_gpustruct!(G15FirmwareTimeState);
+trivial_gpustruct!(G15InitSequencePage);
 trivial_gpustruct!(G15ControlState);
 trivial_gpustruct!(G15Q4Config);
 trivial_gpustruct!(G15CacheFlushState);
@@ -2078,12 +2109,11 @@ pub(crate) struct InitData {
     #[ver(G != G15)]
     pub(crate) fw_status: GpuObject<FwStatus>,
 
-    // G15 replaces the legacy top-level backing set. The init sequence is an
-    // exact one-page (0x4000) host/FW mapping; Apple never writes its CPU view
-    // after allocation and the G15 populateInitSequenceFirmware() override is
-    // a BTI+RET stub, so a zero record at +0x08 is the firmware terminator.
+    // G15 replaces the legacy top-level backing set. q1 is an exact one-page
+    // AGFA init-sequence mapping. G15/G15G's population hook is a BTI+RET stub,
+    // so the first 0x18-byte record is the explicit type-0 terminator.
     #[ver(G == G15)]
-    pub(crate) g15_init_sequence: GpuArray<u8>,
+    pub(crate) g15_init_sequence: GpuObject<G15InitSequencePage>,
     // Exact-size G15 top-level backing allocations. These remain opaque while
     // their individual fields are reconstructed from the Apple host driver.
     #[ver(G == G15)]
