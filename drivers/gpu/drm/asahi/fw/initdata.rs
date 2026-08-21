@@ -1120,6 +1120,26 @@ pub(crate) mod raw {
     #[versions(AGX)]
     default_zeroed!(HwDataB::ver);
 
+    /// G15 PB descriptor-table entry. Firmware indexes this table with an
+    /// 8-bit ID and uses 0x10-byte records; the Apple mapping is exactly
+    /// 0x1000 bytes, i.e. 256 records. Field semantics remain incremental.
+    #[derive(Debug, Default, Clone, Copy)]
+    #[repr(C)]
+    pub(crate) struct G15PBDescriptor {
+        pub(crate) words: Array<4, U32>,
+    }
+    const _: [(); 0x10] = [(); core::mem::size_of::<G15PBDescriptor>()];
+
+    /// G15 UMA page-pool descriptor-table entry. Firmware indexes this table
+    /// with an 8-bit ID and uses 0x20-byte records; the Apple mapping is exactly
+    /// 0x2000 bytes, i.e. 256 records.
+    #[derive(Debug, Default, Clone, Copy)]
+    #[repr(C)]
+    pub(crate) struct G15UMAPagePoolDescriptor {
+        pub(crate) words: Array<4, U64>,
+    }
+    const _: [(); 0x20] = [(); core::mem::size_of::<G15UMAPagePoolDescriptor>()];
+
     /// Exact G15 global statistics backing allocations referenced by wrapper
     /// +0x234/+0x23c/+0x244. They remain separate from the legacy Stats owner
     /// until the G15 render/compute command statistics ABI is reconstructed.
@@ -1891,6 +1911,10 @@ pub(crate) struct RuntimePointers {
     pub(crate) g15_stats_frag: GpuObject<G15StatsFrag>,
     #[ver(G == G15)]
     pub(crate) g15_stats_comp: GpuObject<G15StatsComp>,
+    #[ver(G == G15)]
+    pub(crate) g15_pb_desc_table: GpuArray<raw::G15PBDescriptor>,
+    #[ver(G == G15)]
+    pub(crate) g15_uma_page_pool_desc_table: GpuArray<raw::G15UMAPagePoolDescriptor>,
 
     pub(crate) hwdata_a: GpuObject<HwDataA::ver>,
     pub(crate) unkptr_190: GpuArray<u8>,

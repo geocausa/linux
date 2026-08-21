@@ -900,6 +900,18 @@ impl<'a> InitDataBuilder::ver<'a> {
                     )?,
                     #[ver(G == G15)]
                     g15_stats_comp: alloc.private.new_default::<G15StatsComp>()?,
+                    #[ver(G == G15)]
+                    // Apple exposes these as named GPU/FW hardware mappings.
+                    // Firmware proves 256 x 0x10 PB records and 256 x 0x20 UMA
+                    // records. The GPU-shared allocator gives both GPU and FW
+                    // read/write access, matching the observed ownership.
+                    g15_pb_desc_table: alloc
+                        .gpu
+                        .array_empty::<raw::G15PBDescriptor>(0x100)?,
+                    #[ver(G == G15)]
+                    g15_uma_page_pool_desc_table: alloc
+                        .gpu
+                        .array_empty::<raw::G15UMAPagePoolDescriptor>(0x100)?,
 
                     hwdata_a: hwa,
                     unkptr_190: alloc.private.array_empty_tagged(0x80, b"I190")?,
@@ -1027,13 +1039,19 @@ impl<'a> InitDataBuilder::ver<'a> {
                     #[ver(G == G15)]
                     g15_ptr_2a8: U64(0),
                     #[ver(G == G15)]
-                    g15_pb_desc_addr: U64(0),
+                    g15_pb_desc_addr: U64(inner.g15_pb_desc_table.gpu_va().get()),
                     #[ver(G == G15)]
-                    g15_pb_desc_fw_addr: U64(0),
+                    // AGXArmFirmware::convertGPUVAToFWVA() is an identity
+                    // function on this exact G15 host driver.
+                    g15_pb_desc_fw_addr: U64(inner.g15_pb_desc_table.gpu_va().get()),
                     #[ver(G == G15)]
-                    g15_uma_page_pool_desc_addr: U64(0),
+                    g15_uma_page_pool_desc_addr: U64(
+                        inner.g15_uma_page_pool_desc_table.gpu_va().get(),
+                    ),
                     #[ver(G == G15)]
-                    g15_uma_page_pool_desc_fw_addr: U64(0),
+                    g15_uma_page_pool_desc_fw_addr: U64(
+                        inner.g15_uma_page_pool_desc_table.gpu_va().get(),
+                    ),
                     #[ver(G == G15)]
                     g15_unk_2d0: 0,
                     #[ver(G == G15)]
