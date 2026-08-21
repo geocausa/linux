@@ -102,7 +102,7 @@ pub(crate) mod raw {
         pub(crate) unk_01c: U32,                   // exact G15 source +0x2970; zero
         pub(crate) relaxed_cl_kill_timeout_020: U32,
         pub(crate) frg_task_timeout_024: U32,       // setFRGTaskTimeout(); exact G15 zero
-        pub(crate) unk_028: U32,
+        pub(crate) accelerator_config_660_028: U32, // Apple copies accelerator +0x660; exact J615 zero
         pub(crate) accelerator_config_bit0_02c: U32,
         pub(crate) smart_idle_off_enabled_030: U32,
         pub(crate) zero_034: U32,
@@ -186,6 +186,7 @@ pub(crate) mod raw {
     const _: [(); 0x01c] = [(); core::mem::offset_of!(G15Q4Config, unk_01c)];
     const _: [(); 0x020] = [(); core::mem::offset_of!(G15Q4Config, relaxed_cl_kill_timeout_020)];
     const _: [(); 0x024] = [(); core::mem::offset_of!(G15Q4Config, frg_task_timeout_024)];
+    const _: [(); 0x028] = [(); core::mem::offset_of!(G15Q4Config, accelerator_config_660_028)];
     const _: [(); 0x02c] = [(); core::mem::offset_of!(G15Q4Config, accelerator_config_bit0_02c)];
     const _: [(); 0x030] = [(); core::mem::offset_of!(G15Q4Config, smart_idle_off_enabled_030)];
     const _: [(); 0x038] = [(); core::mem::offset_of!(G15Q4Config, constant_038)];

@@ -1175,6 +1175,11 @@ impl<'a> InitDataBuilder::ver<'a> {
                 // setRelaxedCLKillTimeout(); ChinookV9's default is 3000.
                 relaxed_cl_kill_timeout_020: U32(0x0bb8),
                 frg_task_timeout_024: U32(0),
+                // Base configure zeroes the complete accelerator
+                // +0x65c..+0x663 qword. Apple later copies +0x660 directly
+                // into q4 +0x028; G15/G15G configure only rewrites the packed
+                // +0x650..+0x656 feature word, so exact J615 remains zero.
+                accelerator_config_660_028: U32(0),
                 // Base AGXAccelerator::configureDevice() forces config bit 0
                 // on before firmware data construction. AGXFirmware copies
                 // that bit directly to q4 +0x02c.
