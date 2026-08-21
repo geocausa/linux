@@ -268,16 +268,118 @@ pub(crate) mod raw {
     const _: [(); 0xc3c8] = [(); core::mem::offset_of!(G15Q22Shared, host_zero_c3c8)];
     const _: [(); 0xc3cc] = [(); core::mem::offset_of!(G15Q22Shared, feature_c3cc)];
 
-    /// G15 root q23: exact 0x238-byte host/FW shared state object. Apple maps
-    /// CPU/GPU pair +0x628/+0x638 into q23. Host initialization is zero for the
-    /// observed fields (including +0x1e8); firmware owns most runtime updates.
+    /// G15 root q23: exact 0x238-byte host/FW shared runtime/tuning object.
+    /// Apple maps CPU/GPU pair +0x628/+0x638 into q23. Fields stay
+    /// offset-oriented unless their behavior is mechanically established.
     #[derive(Debug)]
     #[repr(C)]
     pub(crate) struct G15Q23Shared {
-        pub(crate) opaque: Array<0x238, u8>,
+        pub(crate) runtime_value_000: U32,       // +0x000, firmware output
+        pub(crate) pad_004: Pad<0x04>,
+        pub(crate) update_008: U32,              // +0x008, consumed/cleared
+        pub(crate) table_count_00c: U32,         // +0x00c
+        pub(crate) base_params_010: Array<5, U32>, // +0x010..+0x023
+        // FUN_...29a48 walks entries from +0x24 with 0x0c stride. The next
+        // independently used field is +0x60, bounding this table to 5 slots.
+        pub(crate) table_024: Array<5, Array<3, U32>>, // +0x024..+0x05f
+
+        pub(crate) update_060: U32,              // +0x060, consumed/cleared
+        pub(crate) value_064: U32,
+        pub(crate) value_068: U32,
+        pub(crate) mask_06c: U32,
+        pub(crate) pad_070: Pad<0x04>,
+        pub(crate) mask_074: U32,
+        pub(crate) values_078: Array<10, U32>,   // +0x078..+0x09f
+        pub(crate) value_0a0: U32,
+
+        pub(crate) update_0a4: U32,              // +0x0a4, consumed/cleared
+        pub(crate) limit_0a8: U32,
+        pub(crate) tuning_0ac: Array<7, U32>,    // +0x0ac..+0x0c7
+        pub(crate) gate_0c8: U32,
+        pub(crate) update_0cc: U32,              // +0x0cc, consumed/cleared
+        pub(crate) tuning_0d0: Array<6, U32>,    // +0x0d0..+0x0e7
+
+        pub(crate) update_0e8: U32,              // +0x0e8, consumed/cleared
+        pub(crate) hold_0ec: U32,
+        pub(crate) pad_0f0: Pad<0x04>,
+        pub(crate) override_0f4: U32,
+        pub(crate) value_0f8: U32,
+        pub(crate) enable_0fc: U32,
+        pub(crate) value_100: U32,
+        pub(crate) value_104: U32,
+        pub(crate) enable_108: U32,
+        pub(crate) enable_10c: U32,
+        pub(crate) value_110: U32,
+        pub(crate) value_114: U32,
+        pub(crate) enable_118: U32,
+        pub(crate) enable_11c: U32,
+        pub(crate) value_120: U32,
+        pub(crate) value_124: U32,
+        pub(crate) enable_128: U32,
+        pub(crate) enable_12c: U32,
+        pub(crate) value_130: U32,
+        pub(crate) value_134: U32,
+        pub(crate) value_138: U32,
+        pub(crate) value_13c: U32,
+        pub(crate) value_140: U32,
+        pub(crate) value_144: U32,
+        pub(crate) value_148: U32,
+        pub(crate) pad_14c: Pad<0x0c>,
+
+        // Firmware clears +0x158 after importing the following snapshot into
+        // HwDataA +0x4190..+0x41d8.
+        pub(crate) snapshot_update_158: U32,
+        pub(crate) pad_15c: Pad<0x04>,
+        pub(crate) snapshot_160: U32,
+        pub(crate) snapshot_164: U32,
+        pub(crate) snapshot_168: U64,
+        pub(crate) snapshot_170: U64,
+        pub(crate) snapshot_178: U64,
+        pub(crate) snapshot_180: U64,
+        pub(crate) snapshot_188: U64,
+        pub(crate) snapshot_190: U64,
+        pub(crate) snapshot_198: U64,
+        pub(crate) snapshot_1a0: U64,
+        pub(crate) snapshot_1a8: U32,
+        pub(crate) pad_1ac: Pad<0x08>,
+
+        // These counters are deliberately unaligned 64-bit firmware writes.
+        pub(crate) idle_entry_count_1b4: U64,
+        pub(crate) idle_ticks_1bc: U64,
+        pub(crate) pad_1c4: Pad<0x08>,
+        pub(crate) epoch_1cc: U32,
+        pub(crate) tuning_update_1d0: u8,          // host initializes zero
+        pub(crate) min_state_1d1: U32,            // deliberately unaligned
+        pub(crate) pad_1d5: Pad<0x13>,
+        pub(crate) host_zero_1e8: U32,             // explicit Apple host write
+        pub(crate) pad_1ec: Pad<0x44>,
+        pub(crate) idle_gate_230: U32,
+        pub(crate) pad_234: Pad<0x04>,
     }
     default_zeroed!(G15Q23Shared);
     const _: [(); 0x238] = [(); core::mem::size_of::<G15Q23Shared>()];
+    const _: [(); 0x008] = [(); core::mem::offset_of!(G15Q23Shared, update_008)];
+    const _: [(); 0x00c] = [(); core::mem::offset_of!(G15Q23Shared, table_count_00c)];
+    const _: [(); 0x024] = [(); core::mem::offset_of!(G15Q23Shared, table_024)];
+    const _: [(); 0x060] = [(); core::mem::offset_of!(G15Q23Shared, update_060)];
+    const _: [(); 0x06c] = [(); core::mem::offset_of!(G15Q23Shared, mask_06c)];
+    const _: [(); 0x078] = [(); core::mem::offset_of!(G15Q23Shared, values_078)];
+    const _: [(); 0x0a4] = [(); core::mem::offset_of!(G15Q23Shared, update_0a4)];
+    const _: [(); 0x0c8] = [(); core::mem::offset_of!(G15Q23Shared, gate_0c8)];
+    const _: [(); 0x0cc] = [(); core::mem::offset_of!(G15Q23Shared, update_0cc)];
+    const _: [(); 0x0e8] = [(); core::mem::offset_of!(G15Q23Shared, update_0e8)];
+    const _: [(); 0x0f4] = [(); core::mem::offset_of!(G15Q23Shared, override_0f4)];
+    const _: [(); 0x130] = [(); core::mem::offset_of!(G15Q23Shared, value_130)];
+    const _: [(); 0x158] = [(); core::mem::offset_of!(G15Q23Shared, snapshot_update_158)];
+    const _: [(); 0x160] = [(); core::mem::offset_of!(G15Q23Shared, snapshot_160)];
+    const _: [(); 0x1a8] = [(); core::mem::offset_of!(G15Q23Shared, snapshot_1a8)];
+    const _: [(); 0x1b4] = [(); core::mem::offset_of!(G15Q23Shared, idle_entry_count_1b4)];
+    const _: [(); 0x1bc] = [(); core::mem::offset_of!(G15Q23Shared, idle_ticks_1bc)];
+    const _: [(); 0x1cc] = [(); core::mem::offset_of!(G15Q23Shared, epoch_1cc)];
+    const _: [(); 0x1d0] = [(); core::mem::offset_of!(G15Q23Shared, tuning_update_1d0)];
+    const _: [(); 0x1d1] = [(); core::mem::offset_of!(G15Q23Shared, min_state_1d1)];
+    const _: [(); 0x1e8] = [(); core::mem::offset_of!(G15Q23Shared, host_zero_1e8)];
+    const _: [(); 0x230] = [(); core::mem::offset_of!(G15Q23Shared, idle_gate_230)];
 
     #[derive(Debug)]
     #[repr(C)]

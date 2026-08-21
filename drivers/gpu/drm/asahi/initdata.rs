@@ -1208,7 +1208,16 @@ impl<'a> InitDataBuilder::ver<'a> {
             },
         )?;
         #[ver(G == G15)]
-        let g15_q23 = self.alloc.shared.new_default::<G15Q23Shared>()?;
+        let g15_q23 = self.alloc.shared.new_object(
+            Default::default(),
+            |_inner| raw::G15Q23Shared {
+                // Apple explicitly clears these host-visible update fields;
+                // all unresolved/runtime-owned fields retain their zeroed base.
+                tuning_update_1d0: 0,
+                host_zero_1e8: U32(0),
+                ..Default::default()
+            },
+        )?;
 
         #[ver(G == G15)]
         {
