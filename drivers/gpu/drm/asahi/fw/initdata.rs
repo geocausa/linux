@@ -1156,6 +1156,34 @@ pub(crate) mod raw {
     const _: [(); 0x04] = [(); core::mem::offset_of!(G15FirmwareTimeState, values)];
     const _: [(); 0x84] = [(); core::mem::offset_of!(G15FirmwareTimeState, tail_84)];
 
+    /// Exact 0x60-byte G15 firmware control/state block referenced by wrapper
+    /// +0x24c. Firmware directly mutates every named field below. The three
+    /// counters at +0x0c are walked as a contiguous array; the qwords at
+    /// +0x1c/+0x2c/+0x4c are deliberately unaligned in Apple's ABI.
+    #[derive(Debug)]
+    #[repr(C)]
+    pub(crate) struct G15ControlState {
+        pub(crate) state: u32,                    // +0x00: compared against state 2
+        pub(crate) request_pending: u32,          // +0x04: set by FW control message
+        pub(crate) request_latched: u32,          // +0x08: mirrors request_pending != 0
+        pub(crate) counters: Array<3, u32>,       // +0x0c..+0x17
+        pub(crate) aggregate_count: u32,          // +0x18
+        pub(crate) active_timestamp: U64,         // +0x1c, unaligned
+        pub(crate) active: u32,                   // +0x24
+        pub(crate) active_id: u32,                // +0x28
+        pub(crate) secondary_timestamp: U64,      // +0x2c, unaligned
+        pub(crate) event_count: u32,              // +0x34
+        pub(crate) pad_038: Pad<0x14>,
+        pub(crate) timestamp_ns: U64,             // +0x4c, 24-MHz ticks * 125 / 3
+        pub(crate) pad_054: Pad<0x0c>,
+    }
+    default_zeroed!(G15ControlState);
+    const _: [(); 0x60] = [(); core::mem::size_of::<G15ControlState>()];
+    const _: [(); 0x0c] = [(); core::mem::offset_of!(G15ControlState, counters)];
+    const _: [(); 0x1c] = [(); core::mem::offset_of!(G15ControlState, active_timestamp)];
+    const _: [(); 0x2c] = [(); core::mem::offset_of!(G15ControlState, secondary_timestamp)];
+    const _: [(); 0x4c] = [(); core::mem::offset_of!(G15ControlState, timestamp_ns)];
+
     /// G15 HWDS-ID firmware counter entry. The Apple host allocates exactly
     /// 0x800 bytes and firmware indexes it with an 8-bit ID using 8-byte
     /// records, proving 256 entries. Both words are firmware-mutated counters.
@@ -1497,7 +1525,7 @@ pub(crate) mod raw {
         #[ver(G == G15)]
         pub(crate) g15_ptr_244: U64,
         #[ver(G == G15)]
-        pub(crate) g15_ptr_24c: U64,
+        pub(crate) g15_control_state: U64, // +0x24c: exact 0x60-byte FW control state
         #[ver(G == G15)]
         pub(crate) g15_pad_254: Array<0x54, u8>,
         #[ver(G == G15)]
@@ -1549,6 +1577,7 @@ pub(crate) mod raw {
     const _: [(); 0x1f8] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, fwlog_buf)];
     const _: [(); 0x230] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_enable_230)];
     const _: [(); 0x234] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_ptr_234)];
+    const _: [(); 0x24c] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_control_state)];
     const _: [(); 0x2a8] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_hwds_counters)];
     const _: [(); 0x2d0] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_usc_max_tgmem)];
     const _: [(); 0x2d4] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_zero_2d4)];
@@ -1965,6 +1994,7 @@ impl<U: Copy> ChannelRing<channels::ChannelState, U> {
 trivial_gpustruct!(FwStatus);
 trivial_gpustruct!(G15SharedStatus);
 trivial_gpustruct!(G15FirmwareTimeState);
+trivial_gpustruct!(G15ControlState);
 trivial_gpustruct!(G15Q4Config);
 trivial_gpustruct!(G15CacheFlushState);
 trivial_gpustruct!(G15Q22Shared);
@@ -2001,7 +2031,7 @@ pub(crate) struct RuntimePointers {
     #[ver(G == G15)]
     pub(crate) g15_persistent_time: GpuObject<G15FirmwareTimeState>, // exact Apple backing size 0x88
     #[ver(G == G15)]
-    pub(crate) g15_aux_24c: GpuArray<u8>, // exact Apple backing size 0x60
+    pub(crate) g15_control_state: GpuObject<G15ControlState>,
     #[ver(G == G15)]
     pub(crate) g15_stats_vtx: GpuObject<G15StatsVtx>,
     #[ver(G == G15)]

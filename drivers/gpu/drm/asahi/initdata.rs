@@ -887,7 +887,8 @@ impl<'a> InitDataBuilder::ver<'a> {
                     // owns the save/restore contents.
                     g15_persistent_time: alloc.private.new_default::<G15FirmwareTimeState>()?,
                     #[ver(G == G15)]
-                    g15_aux_24c: alloc.private.array_empty_tagged(0x60, b"G24C")?,
+                    // Exact Apple 0x60-byte firmware control/state block.
+                    g15_control_state: alloc.private.new_default::<G15ControlState>()?,
                     #[ver(G == G15)]
                     g15_stats_vtx: alloc.private.new_default::<G15StatsVtx>()?,
                     #[ver(G == G15)]
@@ -1043,7 +1044,7 @@ impl<'a> InitDataBuilder::ver<'a> {
                     #[ver(G == G15)]
                     g15_ptr_244: U64(inner.g15_stats_comp.gpu_va().get()),
                     #[ver(G == G15)]
-                    g15_ptr_24c: U64(inner.g15_aux_24c.gpu_va().get()),
+                    g15_control_state: U64(inner.g15_control_state.gpu_va().get()),
                     #[ver(G == G15)]
                     g15_pad_254: Default::default(),
                     #[ver(G == G15)]
