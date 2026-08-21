@@ -1026,7 +1026,10 @@ impl<'a> InitDataBuilder::ver<'a> {
                     #[ver(G == G15)]
                     g15_zero_3b1: Default::default(),
                     #[ver(G == G15)]
-                    g15_ptr_441: U64(0),
+                    // Exact unaligned firmware pointer to the 0x4360 HwDataA
+                    // allocation. Firmware dereferences this wrapper field
+                    // extensively, including G15-only tail offsets.
+                    g15_ptr_441: U64(inner.hwdata_a.gpu_va().get()),
                     #[ver(G == G15)]
                     g15_unk_449: U64(0),
                     #[ver(G == G15)]

@@ -355,6 +355,37 @@ pub(crate) mod raw {
         pub(crate) cs_2: Array<2, F32>,
     }
 
+    /// G15-only extension appended to the inherited HwDataA prefix.
+    ///
+    /// The generated pre-G15-style object ends exactly at +0x421c, while
+    /// Apple's G15 allocation is 0x4360 bytes. Firmware directly accesses
+    /// several fields in this 0x144-byte extension. Unresolved fields remain
+    /// offset-named and zero-initialized until host semantics are proven.
+    #[derive(Debug)]
+    #[repr(C)]
+    pub(crate) struct G15HwDataATail {
+        pub(crate) pad_421c: Pad<0x7c>,
+        pub(crate) unk_4298: u32,
+        pub(crate) pad_429c: Pad<0x88>,
+        pub(crate) unk_4324: u32,
+        pub(crate) unk_4328: F32,
+        pub(crate) unk_432c: u32,
+        pub(crate) unk_4330: U64,
+        pub(crate) unk_4338: u32,
+        pub(crate) unk_433c: u32,
+        pub(crate) unk_4340: U64,
+        pub(crate) unk_4348: U64,
+        pub(crate) pad_4350: Pad<0x08>,
+        pub(crate) unk_4358: u32,
+        pub(crate) pad_435c: Pad<0x04>,
+    }
+    default_zeroed!(G15HwDataATail);
+    const _: [(); 0x144] = [(); core::mem::size_of::<G15HwDataATail>()];
+    const _: [(); 0x07c] = [(); core::mem::offset_of!(G15HwDataATail, unk_4298)];
+    const _: [(); 0x108] = [(); core::mem::offset_of!(G15HwDataATail, unk_4324)];
+    const _: [(); 0x120] = [(); core::mem::offset_of!(G15HwDataATail, unk_433c)];
+    const _: [(); 0x13c] = [(); core::mem::offset_of!(G15HwDataATail, unk_4358)];
+
     #[versions(AGX)]
     #[repr(C)]
     pub(crate) struct HwDataA {
@@ -718,11 +749,17 @@ pub(crate) mod raw {
         pub(crate) unk_3d34_0: Array<0x18, u8>,
 
         pub(crate) unk_3d34: Array<0x38, u8>,
+
+        #[ver(G == G15)]
+        pub(crate) g15_tail_421c: G15HwDataATail,
     }
     #[versions(AGX)]
     default_zeroed!(HwDataA::ver);
     #[versions(AGX)]
     no_debug!(HwDataA::ver);
+
+    const _: [(); 0x4360] = [(); core::mem::size_of::<HwDataAG15V14_7>()];
+    const _: [(); 0x421c] = [(); core::mem::offset_of!(HwDataAG15V14_7, g15_tail_421c)];
 
     #[derive(Debug, Default, Clone, Copy)]
     #[repr(C)]
