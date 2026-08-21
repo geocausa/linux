@@ -1167,6 +1167,11 @@ impl<'a> InitDataBuilder::ver<'a> {
                 // Exact G15G/J615 host values proven from the paired Apple
                 // AGXG15G driver. These are established before firmware sees
                 // q4; unresolved accelerator-derived fields remain zero.
+                // Accelerator::start zeroes +0x2970/+0x2974 and its only
+                // population path is gated by config bit 34. Base configure
+                // clears bit 34 and G15 never restores it, so both are exact 0.
+                unk_01c: U32(0),
+                frg_task_timeout_024: U32(0),
                 constant_038: U32(0x78),
                 unk_050: 0xffff,
                 unk_052: 0x0028,

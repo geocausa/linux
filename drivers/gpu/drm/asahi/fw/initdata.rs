@@ -99,9 +99,9 @@ pub(crate) mod raw {
         pub(crate) zero_010: U32,
         pub(crate) zero_014: U32,
         pub(crate) zero_018: U32,
-        pub(crate) unk_01c: U32,                   // accelerator +0x2970
+        pub(crate) unk_01c: U32,                   // exact G15 source +0x2970; zero
         pub(crate) unk_020: U32,
-        pub(crate) unk_024: U32,
+        pub(crate) frg_task_timeout_024: U32,       // setFRGTaskTimeout(); exact G15 zero
         pub(crate) unk_028: U32,
         pub(crate) unk_02c: U32,
         pub(crate) unk_030: U32,
@@ -179,6 +179,8 @@ pub(crate) mod raw {
     }
     default_zeroed!(G15Q4Config);
     const _: [(); 0xe00] = [(); core::mem::size_of::<G15Q4Config>()];
+    const _: [(); 0x01c] = [(); core::mem::offset_of!(G15Q4Config, unk_01c)];
+    const _: [(); 0x024] = [(); core::mem::offset_of!(G15Q4Config, frg_task_timeout_024)];
     const _: [(); 0x038] = [(); core::mem::offset_of!(G15Q4Config, constant_038)];
     const _: [(); 0x056] = [(); core::mem::offset_of!(G15Q4Config, zero_056)];
     const _: [(); 0x05a] = [(); core::mem::offset_of!(G15Q4Config, unk_05a)];
