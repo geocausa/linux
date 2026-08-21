@@ -912,6 +912,13 @@ impl<'a> InitDataBuilder::ver<'a> {
                     g15_uma_page_pool_desc_table: alloc
                         .gpu
                         .array_empty::<raw::G15UMAPagePoolDescriptor>(0x100)?,
+                    #[ver(G == G15)]
+                    // G15 HWDS-ID firmware state is exactly 256 x 8 bytes.
+                    // Apple zeroes the full 0x800-byte mapping before boot;
+                    // firmware reads/writes both u32 words in each entry.
+                    g15_hwds_counters: alloc
+                        .shared
+                        .array_empty::<raw::G15HWDSCounterEntry>(0x100)?,
 
                     hwdata_a: hwa,
                     unkptr_190: alloc.private.array_empty_tagged(0x80, b"I190")?,
@@ -1037,7 +1044,7 @@ impl<'a> InitDataBuilder::ver<'a> {
                     #[ver(G == G15)]
                     g15_pad_254: Default::default(),
                     #[ver(G == G15)]
-                    g15_ptr_2a8: U64(0),
+                    g15_hwds_counters: U64(inner.g15_hwds_counters.gpu_va().get()),
                     #[ver(G == G15)]
                     g15_pb_desc_addr: U64(inner.g15_pb_desc_table.gpu_va().get()),
                     #[ver(G == G15)]
@@ -1053,9 +1060,11 @@ impl<'a> InitDataBuilder::ver<'a> {
                         inner.g15_uma_page_pool_desc_table.gpu_va().get(),
                     ),
                     #[ver(G == G15)]
-                    g15_unk_2d0: 0,
+                    // All G15/G15G vtables resolve this source to
+                    // AGXAcceleratorG15::halGetDefaultUscMaxTgmem() => 4.
+                    g15_usc_max_tgmem: 4,
                     #[ver(G == G15)]
-                    g15_unk_2d4: 0,
+                    g15_zero_2d4: 0,
                     #[ver(G == G15)]
                     g15_opaque_2d8: Default::default(),
                     #[ver(G == G15)]
@@ -1068,9 +1077,9 @@ impl<'a> InitDataBuilder::ver<'a> {
                     // extensively, including G15-only tail offsets.
                     g15_ptr_441: U64(inner.hwdata_a.gpu_va().get()),
                     #[ver(G == G15)]
-                    g15_unk_449: U64(0),
+                    g15_zero_449: U64(0),
                     #[ver(G == G15)]
-                    g15_unk_451: U64(0),
+                    g15_zero_451: U64(0),
                     #[ver(G == G15)]
                     g15_tail_459: Default::default(),
                 })

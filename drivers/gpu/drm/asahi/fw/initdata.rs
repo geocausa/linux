@@ -1140,6 +1140,17 @@ pub(crate) mod raw {
     }
     const _: [(); 0x20] = [(); core::mem::size_of::<G15UMAPagePoolDescriptor>()];
 
+    /// G15 HWDS-ID firmware counter entry. The Apple host allocates exactly
+    /// 0x800 bytes and firmware indexes it with an 8-bit ID using 8-byte
+    /// records, proving 256 entries. Both words are firmware-mutated counters.
+    #[derive(Debug, Default)]
+    #[repr(C)]
+    pub(crate) struct G15HWDSCounterEntry {
+        pub(crate) word_0: AtomicU32,
+        pub(crate) word_4: AtomicU32,
+    }
+    const _: [(); 0x08] = [(); core::mem::size_of::<G15HWDSCounterEntry>()];
+
     /// Exact G15 global statistics backing allocations referenced by wrapper
     /// +0x234/+0x23c/+0x244. They remain separate from the legacy Stats owner
     /// until the G15 render/compute command statistics ABI is reconstructed.
@@ -1412,7 +1423,7 @@ pub(crate) mod raw {
         #[ver(G == G15)]
         pub(crate) g15_pad_254: Array<0x54, u8>,
         #[ver(G == G15)]
-        pub(crate) g15_ptr_2a8: U64,
+        pub(crate) g15_hwds_counters: U64, // +0x2a8: 256 x 8-byte HWDS-ID counters
         #[ver(G == G15)]
         pub(crate) g15_pb_desc_addr: U64, // +0x2b0
         #[ver(G == G15)]
@@ -1422,9 +1433,9 @@ pub(crate) mod raw {
         #[ver(G == G15)]
         pub(crate) g15_uma_page_pool_desc_fw_addr: U64, // +0x2c8
         #[ver(G == G15)]
-        pub(crate) g15_unk_2d0: u32,
+        pub(crate) g15_usc_max_tgmem: u32, // +0x2d0: halGetDefaultUscMaxTgmem() == 4
         #[ver(G == G15)]
-        pub(crate) g15_unk_2d4: u32,
+        pub(crate) g15_zero_2d4: u32, // +0x2d4: accelerator +0x1e0c, explicitly zeroed
         #[ver(G == G15)]
         pub(crate) g15_opaque_2d8: Array<0xd8, u8>,
         #[ver(G == G15)]
@@ -1434,9 +1445,9 @@ pub(crate) mod raw {
         #[ver(G == G15)]
         pub(crate) g15_ptr_441: U64,
         #[ver(G == G15)]
-        pub(crate) g15_unk_449: U64,
+        pub(crate) g15_zero_449: U64, // +0x449: accelerator +0x1d80, zeroed by base configureDevice
         #[ver(G == G15)]
-        pub(crate) g15_unk_451: U64,
+        pub(crate) g15_zero_451: U64, // +0x451: accelerator +0x1d88, same zeroed 16-byte block
         #[ver(G == G15)]
         pub(crate) g15_tail_459: Array<0x37, u8>,
     }
@@ -1459,10 +1470,15 @@ pub(crate) mod raw {
     const _: [(); 0x1f8] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, fwlog_buf)];
     const _: [(); 0x230] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_enable_230)];
     const _: [(); 0x234] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_ptr_234)];
+    const _: [(); 0x2a8] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_hwds_counters)];
+    const _: [(); 0x2d0] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_usc_max_tgmem)];
+    const _: [(); 0x2d4] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_zero_2d4)];
     const _: [(); 0x2b0] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_pb_desc_addr)];
     const _: [(); 0x2c8] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_uma_page_pool_desc_fw_addr)];
     const _: [(); 0x3b0] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_marker_3b0)];
     const _: [(); 0x441] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_ptr_441)];
+    const _: [(); 0x449] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_zero_449)];
+    const _: [(); 0x451] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_zero_451)];
     const _: [(); 0x459] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_tail_459)];
 
     // Six extra 0x20-byte I/O descriptors move the inherited SRAM pointer
@@ -1915,6 +1931,8 @@ pub(crate) struct RuntimePointers {
     pub(crate) g15_pb_desc_table: GpuArray<raw::G15PBDescriptor>,
     #[ver(G == G15)]
     pub(crate) g15_uma_page_pool_desc_table: GpuArray<raw::G15UMAPagePoolDescriptor>,
+    #[ver(G == G15)]
+    pub(crate) g15_hwds_counters: GpuArray<raw::G15HWDSCounterEntry>,
 
     pub(crate) hwdata_a: GpuObject<HwDataA::ver>,
     pub(crate) unkptr_190: GpuArray<u8>,
