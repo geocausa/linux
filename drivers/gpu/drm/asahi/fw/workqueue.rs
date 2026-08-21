@@ -153,10 +153,23 @@ pub(crate) mod raw {
         pub(crate) pending: AtomicU32,
         pub(crate) unk_9c: u32,
         pub(crate) gpu_context: GpuPointer<'a, super::GpuContextData>,
+        #[ver(G != G15)]
         pub(crate) unk_a8: U64,
-        #[ver(V >= V13_2 && G < G14X)]
+        // Exact G15 QueueInfo tail. Apple zeroes the whole 0x24c0 channel-state
+        // block, writes the GpuContext pointer at +0xa4, then stores the byte
+        // returned by AGXArmFirmware::getCDMBackoffTimeout() at +0xac. The
+        // getter reads q4 +0x9bc, whose exact J615 bootstrap value is 4.
+        #[ver(G == G15)]
+        pub(crate) cdm_backoff_timeout_ac: u8,
+        #[ver(G == G15)]
+        pub(crate) pad_ad: Pad<0x03>,
+        #[ver(V >= V13_2 && G < G14X && G != G15)]
         pub(crate) unk_b0: u32,
     }
+
+    const _: [(); 0xb0] = [(); core::mem::size_of::<QueueInfoG15V14_7<'static>>()];
+    const _: [(); 0xa4] = [(); core::mem::offset_of!(QueueInfoG15V14_7<'static>, gpu_context)];
+    const _: [(); 0xac] = [(); core::mem::offset_of!(QueueInfoG15V14_7<'static>, cdm_backoff_timeout_ac)];
 }
 
 trivial_gpustruct!(Barrier);

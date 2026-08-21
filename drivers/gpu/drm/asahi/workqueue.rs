@@ -703,8 +703,13 @@ impl WorkQueue::ver {
                         pending: Default::default(),
                         unk_9c: 0,
                         gpu_context: inner.gpu_context.gpu_pointer(),
+                        #[ver(G != G15)]
                         unk_a8: Default::default(),
-                        #[ver(V >= V13_2 && G < G14X)]
+                        #[ver(G == G15)]
+                        cdm_backoff_timeout_ac: 4,
+                        #[ver(G == G15)]
+                        pad_ad: Default::default(),
+                        #[ver(V >= V13_2 && G < G14X && G != G15)]
                         unk_b0: 0,
                     })
                 },
