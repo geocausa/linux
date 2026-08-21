@@ -59,6 +59,138 @@ pub(crate) mod raw {
         pub(crate) flags: FwStatusFlags,
     }
 
+    /// G15 root q21: exact 0x20-byte host/FW shared status block.
+    ///
+    /// This is deliberately *not* the legacy FwStatus layout. Direct firmware
+    /// users prove +0x04 as a one-time banner guard, +0x0c as a transient busy
+    /// flag, +0x14 as the firmware boot-ready marker, and +0x18 as a power/state
+    /// index. The host supplies +0x00 as a flags word.
+    #[derive(Debug)]
+    #[repr(C)]
+    pub(crate) struct G15SharedStatus {
+        pub(crate) host_flags: u32,                // +0x00
+        pub(crate) banner_guard: AtomicU32,        // +0x04
+        pub(crate) unk_08: u32,                    // +0x08
+        pub(crate) busy: AtomicU32,                // +0x0c
+        pub(crate) unk_10: u32,                    // +0x10
+        pub(crate) firmware_ready: AtomicU32,      // +0x14
+        pub(crate) power_state: AtomicU32,         // +0x18
+        pub(crate) unk_1c: u32,                    // +0x1c
+    }
+    default_zeroed!(G15SharedStatus);
+    const _: [(); 0x20] = [(); core::mem::size_of::<G15SharedStatus>()];
+    const _: [(); 0x04] = [(); core::mem::offset_of!(G15SharedStatus, banner_guard)];
+    const _: [(); 0x0c] = [(); core::mem::offset_of!(G15SharedStatus, busy)];
+    const _: [(); 0x14] = [(); core::mem::offset_of!(G15SharedStatus, firmware_ready)];
+    const _: [(); 0x18] = [(); core::mem::offset_of!(G15SharedStatus, power_state)];
+
+    /// G15 root q4: exact 0xe00-byte compact configuration block.
+    ///
+    /// The Apple host uses several deliberately unaligned fields, so U32/U64
+    /// wrappers preserve byte-exact offsets without packing the whole struct.
+    /// Names stay offset-oriented where semantics are not yet proven.
+    #[derive(Debug)]
+    #[repr(C)]
+    pub(crate) struct G15Q4Config {
+        pub(crate) flags_000: U32,                 // +0x000: host writes 0 or 7
+        pub(crate) zero_004: U32,
+        pub(crate) zero_008: U32,
+        pub(crate) zero_00c: U32,
+        pub(crate) zero_010: U32,
+        pub(crate) zero_014: U32,
+        pub(crate) zero_018: U32,
+        pub(crate) unk_01c: U32,                   // accelerator +0x2970
+        pub(crate) unk_020: U32,
+        pub(crate) unk_024: U32,
+        pub(crate) unk_028: U32,
+        pub(crate) unk_02c: U32,
+        pub(crate) unk_030: U32,
+        pub(crate) zero_034: U32,
+        pub(crate) constant_038: U32,              // exact host constant 0x78
+        pub(crate) zero_03c: U32,
+        pub(crate) zero_040: U32,
+        pub(crate) zero_044: U32,
+        pub(crate) zero_048: U32,
+        pub(crate) zero_04c: U32,
+        pub(crate) unk_050: u16,                   // accelerator +0x6c4
+        pub(crate) unk_052: u16,                   // accelerator +0x6c6
+        pub(crate) unk_054: u16,                   // accelerator +0x6c8
+        pub(crate) zero_056: U32,                  // deliberately unaligned
+        pub(crate) unk_05a: U32,                   // deliberately unaligned
+        pub(crate) unk_05e: U32,                   // deliberately unaligned
+        pub(crate) unk_062: U32,                   // deliberately unaligned
+        pub(crate) pad_066: Pad<0x0a>,
+        pub(crate) unk_070: U32,
+        pub(crate) unk_074: U32,
+        pub(crate) unk_078: U32,
+        pub(crate) pad_07c: Pad<0x04>,
+        pub(crate) unk_080: U32,
+        pub(crate) pad_084: Pad<0x08>,
+        pub(crate) unk_08c: U32,
+        pub(crate) unk_090: U32,
+        pub(crate) unk_094: U32,
+        pub(crate) unk_098: U32,
+        pub(crate) unk_09c: U32,
+        pub(crate) pad_0a0: Pad<0x04>,
+        pub(crate) unk_0a4: u8,
+        pub(crate) pad_0a5: Pad<0x1ca>,
+        pub(crate) unk_26f: u8,
+        pub(crate) pad_270: Pad<0x538>,
+        pub(crate) unk_7a8: U32,
+        pub(crate) unk_7ac: U32,
+        pub(crate) unk_7b0: U32,
+        pub(crate) unk_7b4: U32,
+        pub(crate) unk_7b8: U32,
+        pub(crate) unk_7bc: U32,
+        pub(crate) unk_7c0: U32,
+        pub(crate) unk_7c4: U32,
+        pub(crate) unk_7c8: U32,
+        pub(crate) unk_7cc: U32,
+        pub(crate) pad_7d0: Pad<0x04>,
+        pub(crate) unk_7d4: U32,
+        pub(crate) unk_7d8: U32,
+        pub(crate) unk_7dc: U32,
+        pub(crate) pad_7e0: Pad<0x18c>,
+        pub(crate) unk_96c: U64,
+        pub(crate) unk_974: U64,
+        pub(crate) unk_97c: U64,                   // accelerator +0x1e48
+        pub(crate) unk_984: U64,                   // accelerator +0x1e50
+        pub(crate) unk_98c: U64,                   // accelerator +0x1e58
+        pub(crate) unk_994: U32,                   // accelerator +0x1e60
+        pub(crate) pad_998: Pad<0x08>,
+        pub(crate) unk_9a0: U32,
+        pub(crate) unk_9a4: U32,
+        pub(crate) unk_9a8: U32,
+        pub(crate) zero_9ac: U32,
+        pub(crate) unk_9b0: U32,
+        pub(crate) unk_9b4: U32,
+        pub(crate) zero_9b8: U32,
+        pub(crate) pad_9bc: Pad<0x21>,
+        pub(crate) table_selector_9dd: U64,
+        pub(crate) table_9e5: Array<0x200, u8>,
+        pub(crate) table_be5: Array<0x200, u8>,
+        pub(crate) zero_de5: U32,
+        pub(crate) unk_de9: U32,
+        pub(crate) unk_ded: U32,
+        pub(crate) unk_df1: U32,
+        pub(crate) unk_df5: U32,
+        pub(crate) unk_df9: U32,
+        pub(crate) tail_dfd: Pad<0x03>,
+    }
+    default_zeroed!(G15Q4Config);
+    const _: [(); 0xe00] = [(); core::mem::size_of::<G15Q4Config>()];
+    const _: [(); 0x038] = [(); core::mem::offset_of!(G15Q4Config, constant_038)];
+    const _: [(); 0x056] = [(); core::mem::offset_of!(G15Q4Config, zero_056)];
+    const _: [(); 0x05a] = [(); core::mem::offset_of!(G15Q4Config, unk_05a)];
+    const _: [(); 0x7a8] = [(); core::mem::offset_of!(G15Q4Config, unk_7a8)];
+    const _: [(); 0x96c] = [(); core::mem::offset_of!(G15Q4Config, unk_96c)];
+    const _: [(); 0x97c] = [(); core::mem::offset_of!(G15Q4Config, unk_97c)];
+    const _: [(); 0x9ac] = [(); core::mem::offset_of!(G15Q4Config, zero_9ac)];
+    const _: [(); 0x9dd] = [(); core::mem::offset_of!(G15Q4Config, table_selector_9dd)];
+    const _: [(); 0x9e5] = [(); core::mem::offset_of!(G15Q4Config, table_9e5)];
+    const _: [(); 0xbe5] = [(); core::mem::offset_of!(G15Q4Config, table_be5)];
+    const _: [(); 0xde5] = [(); core::mem::offset_of!(G15Q4Config, zero_de5)];
+
     #[derive(Debug)]
     #[repr(C)]
     pub(crate) struct HwDataShared1 {
@@ -1515,6 +1647,8 @@ impl<U: Copy> ChannelRing<channels::ChannelState, U> {
 }
 
 trivial_gpustruct!(FwStatus);
+trivial_gpustruct!(G15SharedStatus);
+trivial_gpustruct!(G15Q4Config);
 trivial_gpustruct!(GpuGlobalStatsVtx);
 #[versions(AGX)]
 trivial_gpustruct!(GpuGlobalStatsFrag::ver);
@@ -1581,9 +1715,9 @@ pub(crate) struct InitData {
     // Exact-size G15 top-level backing allocations. These remain opaque while
     // their individual fields are reconstructed from the Apple host driver.
     #[ver(G == G15)]
-    pub(crate) g15_globals: GpuArray<u8>,
+    pub(crate) g15_globals: GpuObject<G15Q4Config>,
     #[ver(G == G15)]
-    pub(crate) g15_q21: GpuArray<u8>,
+    pub(crate) g15_q21: GpuObject<G15SharedStatus>,
     #[ver(G == G15)]
     pub(crate) g15_q22: GpuArray<u8>,
     #[ver(G == G15)]

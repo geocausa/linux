@@ -1078,9 +1078,40 @@ impl<'a> InitDataBuilder::ver<'a> {
         #[ver(G == G15)]
         let g15_init_sequence = self.alloc.shared_ro.array_empty_tagged(0x4000, b"ISEQ")?;
         #[ver(G == G15)]
-        let mut g15_globals = self.alloc.private.array_empty(0xe00)?;
+        let g15_globals = self.alloc.private.new_object(
+            Default::default(),
+            |_inner| raw::G15Q4Config {
+                // Exact G15G/J615 host values proven from the paired Apple
+                // AGXG15G driver. These are established before firmware sees
+                // q4; unresolved accelerator-derived fields remain zero.
+                constant_038: U32(0x78),
+                unk_050: 0xffff,
+                unk_052: 0x0028,
+                unk_054: 0xffff,
+                // AGXArmFirmware::setupConfig copies the four values below
+                // from accelerator +0x1e48..+0x1e60. AGXAccelerator's static
+                // initialization proves their exact J615 values.
+                unk_97c: U64(0x0000_000a_0000_0028),
+                unk_984: U64(0x0000_0001_0000_00fa),
+                unk_98c: U64(0x0000_0064_0000_0001),
+                unk_994: U32(1),
+                ..Default::default()
+            },
+        )?;
         #[ver(G == G15)]
-        let mut g15_q21 = self.alloc.shared.array_empty(0x20)?;
+        let g15_q21 = self.alloc.shared.new_object(
+            Default::default(),
+            |_inner| raw::G15SharedStatus {
+                host_flags: 0,
+                banner_guard: AtomicU32::new(1),
+                unk_08: 0,
+                busy: AtomicU32::new(0),
+                unk_10: 0,
+                firmware_ready: AtomicU32::new(0),
+                power_state: AtomicU32::new(0),
+                unk_1c: 0,
+            },
+        )?;
         #[ver(G == G15)]
         let mut g15_q22 = self.alloc.shared.array_empty(0xc3d0)?;
         #[ver(G == G15)]
@@ -1088,16 +1119,13 @@ impl<'a> InitDataBuilder::ver<'a> {
 
         #[ver(G == G15)]
         {
-            // Apple host-proven initial values for the three shared root
-            // objects. All other bytes remain zero until their semantics are
-            // reconstructed. These constants are observed directly in
-            // AGXFirmware::{initFirmwareData,initFirmwareSharedData}.
-            g15_q21.as_mut_slice()[0x04..0x08].copy_from_slice(&1u32.to_le_bytes());
+            // Apple host-proven initial values for the remaining opaque shared
+            // root objects. q21 is now a typed 0x20-byte G15SharedStatus above.
             g15_q22.as_mut_slice()[0x45c4..0x45c8].copy_from_slice(&1u32.to_le_bytes());
 
-            // G15 Globals is a dedicated 0xe00 packed object. The host writes
-            // 0x78 at +0x38 unconditionally before handing it to firmware.
-            g15_globals.as_mut_slice()[0x38..0x3c].copy_from_slice(&0x78u32.to_le_bytes());
+            // q4 is now a typed exact-size G15Q4Config above. Proven J615
+            // constants are initialized in the raw constructor; fields whose
+            // accelerator/ADT source is not yet reconstructed stay zero.
         }
         let cfg = self.cfg;
 
