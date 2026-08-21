@@ -882,7 +882,10 @@ impl<'a> InitDataBuilder::ver<'a> {
                         })
                     },
                     #[ver(G == G15)]
-                    g15_aux_010: alloc.private.array_empty_tagged(0x88, b"G010")?,
+                    // Exact 0x88-byte persistent firmware time/activity
+                    // snapshot. Zero marker means first use; firmware then
+                    // owns the save/restore contents.
+                    g15_persistent_time: alloc.private.new_default::<G15FirmwareTimeState>()?,
                     #[ver(G == G15)]
                     g15_aux_24c: alloc.private.array_empty_tagged(0x60, b"G24C")?,
                     #[ver(G == G15)]
@@ -1012,7 +1015,7 @@ impl<'a> InitDataBuilder::ver<'a> {
                     #[ver(G == G15)]
                     g15_fwbrn_table: U64(0),
                     #[ver(G == G15)]
-                    g15_unk_010: U64(inner.g15_aux_010.gpu_va().get()),
+                    g15_persistent_time: inner.g15_persistent_time.gpu_pointer(),
                     #[ver(G == G15)]
                     pipes: Default::default(),
                     #[ver(G == G15)]

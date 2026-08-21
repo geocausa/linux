@@ -1140,6 +1140,22 @@ pub(crate) mod raw {
     }
     const _: [(); 0x20] = [(); core::mem::size_of::<G15UMAPagePoolDescriptor>()];
 
+    /// G15 persistent firmware time/activity snapshot referenced by wrapper
+    /// +0x010. The exact Apple allocation is 0x88 bytes. Firmware treats +0x00
+    /// as a first-use marker and saves/restores sixteen deliberately unaligned
+    /// qwords at +0x04 + 8*n across sleep/restart transitions.
+    #[derive(Debug)]
+    #[repr(C)]
+    pub(crate) struct G15FirmwareTimeState {
+        pub(crate) initialized: AtomicU32, // +0x00, FW changes 0 -> 1
+        pub(crate) values: Array<16, U64>, // +0x04..+0x83, intentionally unaligned
+        pub(crate) tail_84: U32,           // +0x84, semantic unresolved
+    }
+    default_zeroed!(G15FirmwareTimeState);
+    const _: [(); 0x88] = [(); core::mem::size_of::<G15FirmwareTimeState>()];
+    const _: [(); 0x04] = [(); core::mem::offset_of!(G15FirmwareTimeState, values)];
+    const _: [(); 0x84] = [(); core::mem::offset_of!(G15FirmwareTimeState, tail_84)];
+
     /// G15 HWDS-ID firmware counter entry. The Apple host allocates exactly
     /// 0x800 bytes and firmware indexes it with an 8-bit ID using 8-byte
     /// records, proving 256 entries. Both words are firmware-mutated counters.
@@ -1453,7 +1469,7 @@ pub(crate) mod raw {
         #[ver(G == G15)]
         pub(crate) g15_fwbrn_table: U64, // +0x008: null on G15 (FWBRN size getter returns 0)
         #[ver(G == G15)]
-        pub(crate) g15_unk_010: U64,
+        pub(crate) g15_persistent_time: GpuPointer<'a, super::G15FirmwareTimeState>, // +0x010
         #[ver(G == G15)]
         pub(crate) pipes: Array<4, G15PipeChannels>, // +0x018..+0x197
         #[ver(G == G15)]
@@ -1523,6 +1539,7 @@ pub(crate) mod raw {
 
     const _: [(); 0x000] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, hwdata_b)];
     const _: [(); 0x008] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_fwbrn_table)];
+    const _: [(); 0x010] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_persistent_time)];
     const _: [(); 0x018] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, pipes)];
     const _: [(); 0x198] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, device_control)];
     const _: [(); 0x1b8] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, event)];
@@ -1947,6 +1964,7 @@ impl<U: Copy> ChannelRing<channels::ChannelState, U> {
 
 trivial_gpustruct!(FwStatus);
 trivial_gpustruct!(G15SharedStatus);
+trivial_gpustruct!(G15FirmwareTimeState);
 trivial_gpustruct!(G15Q4Config);
 trivial_gpustruct!(G15CacheFlushState);
 trivial_gpustruct!(G15Q22Shared);
@@ -1981,7 +1999,7 @@ pub(crate) struct RuntimePointers {
     // until the G15 queue statistics pointer ABI is reconstructed.
     pub(crate) stats: Stats::ver,
     #[ver(G == G15)]
-    pub(crate) g15_aux_010: GpuArray<u8>, // exact Apple backing size 0x88
+    pub(crate) g15_persistent_time: GpuObject<G15FirmwareTimeState>, // exact Apple backing size 0x88
     #[ver(G == G15)]
     pub(crate) g15_aux_24c: GpuArray<u8>, // exact Apple backing size 0x60
     #[ver(G == G15)]
