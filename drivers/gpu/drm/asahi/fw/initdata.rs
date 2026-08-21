@@ -1032,6 +1032,38 @@ pub(crate) mod raw {
     #[versions(AGX)]
     default_zeroed!(HwDataB::ver);
 
+    /// Exact G15 global statistics backing allocations referenced by wrapper
+    /// +0x234/+0x23c/+0x244. They remain separate from the legacy Stats owner
+    /// until the G15 render/compute command statistics ABI is reconstructed.
+    #[derive(Debug)]
+    #[repr(C)]
+    pub(crate) struct G15StatsVtx {
+        pub(crate) opaque: Array<0xc10, u8>,
+    }
+    default_zeroed!(G15StatsVtx);
+    const _: [(); 0xc10] = [(); core::mem::size_of::<G15StatsVtx>()];
+
+    #[derive(Debug)]
+    #[repr(C)]
+    pub(crate) struct G15StatsFrag {
+        pub(crate) pad_000: Pad<0xc18>,
+        pub(crate) cur_stamp_id: i32, // +0xc18, Apple initializes to -1
+        pub(crate) pad_c1c: Pad<0x14>,
+        pub(crate) unk_id: i32,       // +0xc30, Apple initializes to -1
+        pub(crate) pad_c34: Pad<0x614>,
+    }
+    const _: [(); 0x1248] = [(); core::mem::size_of::<G15StatsFrag>()];
+    const _: [(); 0xc18] = [(); core::mem::offset_of!(G15StatsFrag, cur_stamp_id)];
+    const _: [(); 0xc30] = [(); core::mem::offset_of!(G15StatsFrag, unk_id)];
+
+    #[derive(Debug)]
+    #[repr(C)]
+    pub(crate) struct G15StatsComp {
+        pub(crate) opaque: Array<0xe10, u8>,
+    }
+    default_zeroed!(G15StatsComp);
+    const _: [(); 0xe10] = [(); core::mem::size_of::<G15StatsComp>()];
+
     #[derive(Debug)]
     #[repr(C, packed)]
     pub(crate) struct GpuStatsVtx {
@@ -1728,6 +1760,9 @@ impl<U: Copy> ChannelRing<channels::ChannelState, U> {
 trivial_gpustruct!(FwStatus);
 trivial_gpustruct!(G15SharedStatus);
 trivial_gpustruct!(G15Q4Config);
+trivial_gpustruct!(G15StatsVtx);
+trivial_gpustruct!(G15StatsFrag);
+trivial_gpustruct!(G15StatsComp);
 trivial_gpustruct!(GpuGlobalStatsVtx);
 #[versions(AGX)]
 trivial_gpustruct!(GpuGlobalStatsFrag::ver);
@@ -1750,7 +1785,16 @@ pub(crate) struct Stats {
 #[versions(AGX)]
 #[derive(Debug)]
 pub(crate) struct RuntimePointers {
+    // Keep the legacy Stats owner for generated command-layout scaffolding.
+    // G15's wrapper-visible global stats are separate exact-size allocations
+    // until the G15 queue statistics pointer ABI is reconstructed.
     pub(crate) stats: Stats::ver,
+    #[ver(G == G15)]
+    pub(crate) g15_stats_vtx: GpuObject<G15StatsVtx>,
+    #[ver(G == G15)]
+    pub(crate) g15_stats_frag: GpuObject<G15StatsFrag>,
+    #[ver(G == G15)]
+    pub(crate) g15_stats_comp: GpuObject<G15StatsComp>,
 
     pub(crate) hwdata_a: GpuObject<HwDataA::ver>,
     pub(crate) unkptr_190: GpuArray<u8>,

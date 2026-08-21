@@ -881,6 +881,21 @@ impl<'a> InitDataBuilder::ver<'a> {
                             comp: alloc.private.new_default::<GpuStatsComp>()?,
                         })
                     },
+                    #[ver(G == G15)]
+                    g15_stats_vtx: alloc.private.new_default::<G15StatsVtx>()?,
+                    #[ver(G == G15)]
+                    g15_stats_frag: alloc.private.new_object(
+                        Default::default(),
+                        |_inner| raw::G15StatsFrag {
+                            pad_000: Default::default(),
+                            cur_stamp_id: -1,
+                            pad_c1c: Default::default(),
+                            unk_id: -1,
+                            pad_c34: Default::default(),
+                        },
+                    )?,
+                    #[ver(G == G15)]
+                    g15_stats_comp: alloc.private.new_default::<G15StatsComp>()?,
 
                     hwdata_a: hwa,
                     unkptr_190: alloc.private.array_empty_tagged(0x80, b"I190")?,
@@ -996,11 +1011,11 @@ impl<'a> InitDataBuilder::ver<'a> {
                     #[ver(G == G15)]
                     g15_enable_230: 0,
                     #[ver(G == G15)]
-                    g15_ptr_234: U64(0),
+                    g15_ptr_234: U64(inner.g15_stats_vtx.gpu_va().get()),
                     #[ver(G == G15)]
-                    g15_ptr_23c: U64(0),
+                    g15_ptr_23c: U64(inner.g15_stats_frag.gpu_va().get()),
                     #[ver(G == G15)]
-                    g15_ptr_244: U64(0),
+                    g15_ptr_244: U64(inner.g15_stats_comp.gpu_va().get()),
                     #[ver(G == G15)]
                     g15_ptr_24c: U64(0),
                     #[ver(G == G15)]
