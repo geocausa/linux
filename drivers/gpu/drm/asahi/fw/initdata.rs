@@ -1437,18 +1437,20 @@ pub(crate) mod raw {
     const _: [(); 0xa0] = [(); core::mem::offset_of!(G15RuntimeState, zero_378)];
     const _: [(); 0xd4] = [(); core::mem::offset_of!(G15RuntimeState, opaque_3ac)];
 
-    /// G15 wrapper tail at +0x459. AGXArmFirmware::init() explicitly clears
-    /// four deliberately unaligned qwords at +0x46d/+0x475/+0x47d/+0x485.
-    /// The remaining bytes are still semantically unresolved.
+    /// G15 wrapper tail at +0x459. The whole wrapper allocation is explicitly
+    /// zero-filled by AGXFirmware::allocateSharedData(); AGXArmFirmware::init()
+    /// additionally re-clears the four deliberately unaligned qwords at
+    /// +0x46d/+0x475/+0x47d/+0x485. Semantics remain unresolved, but every
+    /// byte in this tail is exactly zero at bootstrap.
     #[derive(Debug)]
     #[repr(C)]
     pub(crate) struct G15WrapperTail {
-        pub(crate) opaque_459: Pad<0x14>,
+        pub(crate) zero_459: Pad<0x14>,
         pub(crate) zero_46d: U64,
         pub(crate) zero_475: U64,
         pub(crate) zero_47d: U64,
         pub(crate) zero_485: U64,
-        pub(crate) opaque_48d: Pad<0x03>,
+        pub(crate) zero_48d: Pad<0x03>,
     }
     default_zeroed!(G15WrapperTail);
     const _: [(); 0x37] = [(); core::mem::size_of::<G15WrapperTail>()];
@@ -1456,7 +1458,8 @@ pub(crate) mod raw {
     const _: [(); 0x1c] = [(); core::mem::offset_of!(G15WrapperTail, zero_475)];
     const _: [(); 0x24] = [(); core::mem::offset_of!(G15WrapperTail, zero_47d)];
     const _: [(); 0x2c] = [(); core::mem::offset_of!(G15WrapperTail, zero_485)];
-    const _: [(); 0x34] = [(); core::mem::offset_of!(G15WrapperTail, opaque_48d)];
+    const _: [(); 0x00] = [(); core::mem::offset_of!(G15WrapperTail, zero_459)];
+    const _: [(); 0x34] = [(); core::mem::offset_of!(G15WrapperTail, zero_48d)];
 
     /// Exact G15 global statistics backing allocations referenced by wrapper
     /// +0x234/+0x23c/+0x244. They remain separate from the legacy Stats owner
@@ -1714,11 +1717,16 @@ pub(crate) mod raw {
         #[ver(G == G15)]
         pub(crate) fwlog_buf: Option<GpuWeakPointer<[channels::RawFwLogPayloadMsg]>>, // +0x1f8
         #[ver(G == G15)]
-        pub(crate) g15_counters_200: Array<6, u32>, // +0x200..+0x217
+        // Six firmware-log channels. The first counter's low byte selects the
+        // 0..255 payload slot for successfully queued records. The second is
+        // the monotonic message sequence and advances even when the ring is
+        // full, allowing the receiver to observe dropped records as gaps.
         #[ver(G == G15)]
-        pub(crate) g15_counters_218: Array<6, u32>, // +0x218..+0x22f
+        pub(crate) fwlog_payload_slot_seq_200: Array<6, u32>, // +0x200..+0x217
         #[ver(G == G15)]
-        pub(crate) g15_enable_230: u32,
+        pub(crate) fwlog_message_seq_218: Array<6, u32>, // +0x218..+0x22f
+        #[ver(G == G15)]
+        pub(crate) fwlog_enabled_230: u32,
         #[ver(G == G15)]
         pub(crate) g15_ptr_234: U64,
         #[ver(G == G15)]
@@ -1776,7 +1784,9 @@ pub(crate) mod raw {
     const _: [(); 0x1d8] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, ktrace)];
     const _: [(); 0x1e8] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, stats)];
     const _: [(); 0x1f8] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, fwlog_buf)];
-    const _: [(); 0x230] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_enable_230)];
+    const _: [(); 0x200] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, fwlog_payload_slot_seq_200)];
+    const _: [(); 0x218] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, fwlog_message_seq_218)];
+    const _: [(); 0x230] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, fwlog_enabled_230)];
     const _: [(); 0x234] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_ptr_234)];
     const _: [(); 0x24c] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_control_state)];
     const _: [(); 0x2a8] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_hwds_counters)];

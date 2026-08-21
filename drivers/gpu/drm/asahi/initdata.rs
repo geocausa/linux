@@ -1043,11 +1043,15 @@ impl<'a> InitDataBuilder::ver<'a> {
                     #[ver(G == G15)]
                     fwlog_buf: None,
                     #[ver(G == G15)]
-                    g15_counters_200: Default::default(),
+                    // allocateSharedData zero-fills the wrapper. Firmware owns
+                    // these six-per-FWLog-channel sequences; both start at 0.
                     #[ver(G == G15)]
-                    g15_counters_218: Default::default(),
+                    fwlog_payload_slot_seq_200: Default::default(),
                     #[ver(G == G15)]
-                    g15_enable_230: 0,
+                    fwlog_message_seq_218: Default::default(),
+                    #[ver(G == G15)]
+                    // Explicitly cleared again by initFirmwareSharedData().
+                    fwlog_enabled_230: 0,
                     #[ver(G == G15)]
                     g15_ptr_234: U64(inner.g15_stats_vtx.gpu_va().get()),
                     #[ver(G == G15)]
