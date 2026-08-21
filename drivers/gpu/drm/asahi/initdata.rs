@@ -1199,6 +1199,9 @@ impl<'a> InitDataBuilder::ver<'a> {
                 // Apple seeds power interface 0 from accelerator +0x2288.
                 // Base configure uses 0xfe6 (4070), and exact J615 has no
                 // `gpu-max-power` override, so q4 +0x078 receives 4070.
+                // q4 +0x074 is never populated by the G15 host and has only
+                // firmware readers before bootstrap; preserve the zeroed allocation.
+                zero_074: U32(0),
                 gpu_max_power_078: U32(4070),
                 // setupConfig enables interfaces 1/2 with a full-scale 0x10000
                 // target. With J615's two perf states, max pstate index 1 and

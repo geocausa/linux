@@ -121,7 +121,7 @@ pub(crate) mod raw {
         pub(crate) cdm_cswitch_mode_change_062: U32, // deliberately unaligned
         pub(crate) pad_066: Pad<0x0a>,
         pub(crate) command_submission_enabled_070: U32,
-        pub(crate) unk_074: U32,
+        pub(crate) zero_074: U32,                    // exact G15 bootstrap zero; firmware reads only
         pub(crate) gpu_max_power_078: U32,
         pub(crate) power_interface_1_target_07c: U32,
         pub(crate) power_interface_2_target_080: U32,
@@ -199,6 +199,7 @@ pub(crate) mod raw {
     const _: [(); 0x05e] = [(); core::mem::offset_of!(G15Q4Config, cswitch_timer_multiplier_05e)];
     const _: [(); 0x062] = [(); core::mem::offset_of!(G15Q4Config, cdm_cswitch_mode_change_062)];
     const _: [(); 0x070] = [(); core::mem::offset_of!(G15Q4Config, command_submission_enabled_070)];
+    const _: [(); 0x074] = [(); core::mem::offset_of!(G15Q4Config, zero_074)];
     const _: [(); 0x078] = [(); core::mem::offset_of!(G15Q4Config, gpu_max_power_078)];
     const _: [(); 0x07c] = [(); core::mem::offset_of!(G15Q4Config, power_interface_1_target_07c)];
     const _: [(); 0x080] = [(); core::mem::offset_of!(G15Q4Config, power_interface_2_target_080)];
