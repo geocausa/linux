@@ -1740,6 +1740,7 @@ pub(crate) mod raw {
 
     // Six extra 0x20-byte I/O descriptors move the inherited SRAM pointer
     // from V13.5 +0x960 to the exact G15 host/firmware offset +0xa20.
+    const _: [(); 0x28] = [(); core::mem::offset_of!(HwDataBG15V14_7, timestamp_area_base)];
     const _: [(); 0xa20] = [(); core::mem::offset_of!(HwDataBG15V14_7, sgx_sram_ptr)];
     const _: [(); 0x1860] = [(); core::mem::size_of::<HwDataBG15V14_7>()];
     const _: [(); 0x183c] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_b68)];

@@ -538,7 +538,13 @@ impl<'a> InitDataBuilder::ver<'a> {
                     // Unknown page
                     //unk_30: U64(0x6f_ffff8000),
                     unk_30: U64(mmu::IOVA_UNK_PAGE),
+                    #[ver(G != G15)]
                     timestamp_area_base: U64(gpu::IOVA_KERN_TIMESTAMP_RANGE.start),
+                    #[ver(G == G15)]
+                    // On G15 this inherited field lands at exact HwDataB +0x28.
+                    // Apple writes convertGPUVAToFWVA(0xfffffc2011800000) here;
+                    // ChinookV9's conversion is identity (eGartRange 11 base).
+                    timestamp_area_base: U64(0xffff_fc20_1180_0000),
                     // TODO: yuv matrices
                     chip_id: cfg.chip_id,
                     unk_454: cfg.db.unk_454,
