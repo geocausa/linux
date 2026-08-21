@@ -92,7 +92,7 @@ pub(crate) mod raw {
     #[derive(Debug)]
     #[repr(C)]
     pub(crate) struct G15Q4Config {
-        pub(crate) flags_000: U32,                 // +0x000: host writes 0 or 7
+        pub(crate) flags_000: U32,                 // +0x000: exact J615 zero; host writes 7 only if cfg bit28
         pub(crate) zero_004: U32,
         pub(crate) zero_008: U32,
         pub(crate) zero_00c: U32,
@@ -322,7 +322,7 @@ pub(crate) mod raw {
         pub(crate) counter_45c0: U32,
         pub(crate) host_flag_45c4: U32,
         pub(crate) pad_45c8: Pad<0x7e00>,
-        pub(crate) host_zero_c3c8: U32,
+        pub(crate) kick_channel_qos_valid_c3c8: U32,
         pub(crate) feature_c3cc: U32,
     }
     default_zeroed!(G15Q22Shared);
@@ -333,7 +333,7 @@ pub(crate) mod raw {
     const _: [(); 0x4568] = [(); core::mem::offset_of!(G15Q22Shared, shared_ptr_4568)];
     const _: [(); 0x4580] = [(); core::mem::offset_of!(G15Q22Shared, epoch_4580)];
     const _: [(); 0x45c4] = [(); core::mem::offset_of!(G15Q22Shared, host_flag_45c4)];
-    const _: [(); 0xc3c8] = [(); core::mem::offset_of!(G15Q22Shared, host_zero_c3c8)];
+    const _: [(); 0xc3c8] = [(); core::mem::offset_of!(G15Q22Shared, kick_channel_qos_valid_c3c8)];
     const _: [(); 0xc3cc] = [(); core::mem::offset_of!(G15Q22Shared, feature_c3cc)];
 
     /// G15 root q23: exact 0x238-byte host/FW shared runtime/tuning object.

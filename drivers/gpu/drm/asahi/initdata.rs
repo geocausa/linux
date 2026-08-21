@@ -1170,6 +1170,9 @@ impl<'a> InitDataBuilder::ver<'a> {
                 // Accelerator::start zeroes +0x2970/+0x2974 and its only
                 // population path is gated by config bit 34. Base configure
                 // clears bit 34 and G15 never restores it, so both are exact 0.
+                // q4 +0x000 is 7 only when accelerator config bit 28 is set.
+                // Exact J615 keeps bit 28 clear throughout setup.
+                flags_000: U32(0),
                 unk_01c: U32(0),
                 // Apple pairs getDefaultRelaxedCLContextSwitchTimeout() with
                 // setRelaxedCLKillTimeout(); ChinookV9's default is 3000.
@@ -1353,6 +1356,9 @@ impl<'a> InitDataBuilder::ver<'a> {
                 // accelerator configure path clears feature bit 28 before the
                 // const smart-idle query, so +0xc3cc is exactly zero on J615.
                 host_flag_45c4: U32(1),
+                // initFirmwareData starts this at zero; setKickChannelQos()
+                // flips it to one before updating q4 +0x04c/+0x048.
+                kick_channel_qos_valid_c3c8: U32(0),
                 feature_c3cc: U32(0),
                 ..Default::default()
             },
