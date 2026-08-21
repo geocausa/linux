@@ -616,7 +616,7 @@ pub(crate) mod raw {
         {
             0x18
         }
-        #[ver(V >= V13_5 && G < G15)]
+        #[ver(V >= V13_5 && G != G15)]
         {
             0x19
         }
@@ -949,47 +949,194 @@ pub(crate) mod raw {
     #[versions(AGX)]
     default_zeroed!(RuntimeScratch::ver);
 
+    /// G15 transmit channels split the producer/consumer state across three
+    /// firmware pointers and keep the ring buffer as the fourth pointer.
+    /// Firmware consumes these as four consecutive qwords.
+    #[derive(Debug, Clone, Copy)]
+    #[repr(C)]
+    pub(crate) struct G15TxChannelRing {
+        pub(crate) read_ptr: U64,
+        pub(crate) write_ptr_shadow: U64,
+        pub(crate) write_ptr: U64,
+        pub(crate) ring: U64,
+    }
+    default_zeroed!(G15TxChannelRing);
+
+    /// One G15 pipe has vertex/fragment/compute TX channels, 0x20 bytes each.
+    #[derive(Debug, Clone, Copy)]
+    #[repr(C)]
+    pub(crate) struct G15PipeChannels {
+        pub(crate) vtx: G15TxChannelRing,
+        pub(crate) frag: G15TxChannelRing,
+        pub(crate) comp: G15TxChannelRing,
+    }
+    default_zeroed!(G15PipeChannels);
+
+    const _: [(); 0x20] = [(); core::mem::size_of::<G15TxChannelRing>()];
+    const _: [(); 0x60] = [(); core::mem::size_of::<G15PipeChannels>()];
+
     #[versions(AGX)]
     #[repr(C)]
     pub(crate) struct RuntimePointers<'a> {
+        // Legacy RegionB / RuntimePointers layout through G14X.
+        #[ver(G != G15)]
         pub(crate) pipes: Array<4, PipeChannels::ver>,
 
+        #[ver(G != G15)]
         pub(crate) device_control:
             ChannelRing<channels::ChannelState, channels::DeviceControlMsg::ver>,
+        #[ver(G != G15)]
         pub(crate) event: ChannelRing<channels::ChannelState, channels::RawEventMsg>,
+        #[ver(G != G15)]
         pub(crate) fw_log: ChannelRing<channels::FwLogChannelState, channels::RawFwLogMsg>,
+        #[ver(G != G15)]
         pub(crate) ktrace: ChannelRing<channels::ChannelState, channels::RawKTraceMsg>,
+        #[ver(G != G15)]
         pub(crate) stats: ChannelRing<channels::ChannelState, channels::RawStatsMsg::ver>,
 
+        #[ver(G != G15)]
         pub(crate) __pad0: Pad<0x50>,
+        #[ver(G != G15)]
         pub(crate) unk_160: U64,
+        #[ver(G != G15)]
         pub(crate) unk_168: U64,
+        #[ver(G != G15)]
         pub(crate) stats_vtx: GpuPointer<'a, super::GpuGlobalStatsVtx>,
+        #[ver(G != G15)]
         pub(crate) stats_frag: GpuPointer<'a, super::GpuGlobalStatsFrag::ver>,
+        #[ver(G != G15)]
         pub(crate) stats_comp: GpuPointer<'a, super::GpuStatsComp>,
+        #[ver(G != G15)]
         pub(crate) hwdata_a: GpuPointer<'a, super::HwDataA::ver>,
+        #[ver(G != G15)]
         pub(crate) unkptr_190: GpuPointer<'a, &'a [u8]>,
+        #[ver(G != G15)]
         pub(crate) unkptr_198: GpuPointer<'a, &'a [u8]>,
+        #[ver(G != G15)]
         pub(crate) hwdata_b: GpuPointer<'a, super::HwDataB::ver>,
+        #[ver(G != G15)]
         pub(crate) hwdata_b_2: GpuPointer<'a, super::HwDataB::ver>,
+        #[ver(G != G15)]
         pub(crate) fwlog_buf: Option<GpuWeakPointer<[channels::RawFwLogPayloadMsg]>>,
+        #[ver(G != G15)]
         pub(crate) unkptr_1b8: GpuPointer<'a, &'a [u8]>,
 
-        #[ver(G < G14X)]
+        #[ver(G < G14X && G != G15)]
         pub(crate) unkptr_1c0: GpuPointer<'a, &'a [u8]>,
-        #[ver(G < G14X)]
+        #[ver(G < G14X && G != G15)]
         pub(crate) unkptr_1c8: GpuPointer<'a, &'a [u8]>,
 
+        #[ver(G != G15)]
         pub(crate) unk_1d0: u32,
+        #[ver(G != G15)]
         pub(crate) unk_1d4: u32,
+        #[ver(G != G15)]
         pub(crate) unk_1d8: Array<0x3c, u8>,
+        #[ver(G != G15)]
         pub(crate) buffer_mgr_ctl_gpu_addr: U64,
+        #[ver(G != G15)]
         pub(crate) buffer_mgr_ctl_fw_addr: U64,
+        #[ver(G != G15)]
         pub(crate) __pad1: Pad<0x5c>,
+        #[ver(G != G15)]
         pub(crate) gpu_scratch: RuntimeScratch::ver,
+
+        // G15 replaces the large inline RegionB object with a compact 0x490-byte
+        // wrapper. Offsets below are reconstructed from the exact AGXG15G host
+        // driver and RTKit-2419.140.12 firmware. Unknown backing objects remain
+        // opaque until their host allocation semantics are fully reconstructed.
+        #[ver(G == G15)]
+        pub(crate) hwdata_b: GpuPointer<'a, super::HwDataB::ver>, // +0x000
+        #[ver(G == G15)]
+        pub(crate) g15_unk_008: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_unk_010: U64,
+        #[ver(G == G15)]
+        pub(crate) pipes: Array<4, G15PipeChannels>, // +0x018..+0x197
+        #[ver(G == G15)]
+        pub(crate) device_control: G15TxChannelRing, // +0x198..+0x1b7
+        #[ver(G == G15)]
+        pub(crate) event: ChannelRing<channels::ChannelState, channels::RawEventMsg>, // +0x1b8
+        #[ver(G == G15)]
+        pub(crate) fw_log: ChannelRing<channels::FwLogChannelState, channels::RawFwLogMsg>, // +0x1c8
+        #[ver(G == G15)]
+        pub(crate) ktrace: ChannelRing<channels::ChannelState, channels::RawKTraceMsg>, // +0x1d8
+        #[ver(G == G15)]
+        pub(crate) stats: ChannelRing<channels::ChannelState, channels::RawStatsMsg::ver>, // +0x1e8
+        #[ver(G == G15)]
+        pub(crate) fwlog_buf: Option<GpuWeakPointer<[channels::RawFwLogPayloadMsg]>>, // +0x1f8
+        #[ver(G == G15)]
+        pub(crate) g15_counters_200: Array<6, u32>, // +0x200..+0x217
+        #[ver(G == G15)]
+        pub(crate) g15_counters_218: Array<6, u32>, // +0x218..+0x22f
+        #[ver(G == G15)]
+        pub(crate) g15_enable_230: u32,
+        #[ver(G == G15)]
+        pub(crate) g15_ptr_234: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_ptr_23c: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_ptr_244: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_ptr_24c: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_pad_254: Array<0x54, u8>,
+        #[ver(G == G15)]
+        pub(crate) g15_ptr_2a8: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_pb_desc_addr: U64, // +0x2b0
+        #[ver(G == G15)]
+        pub(crate) g15_pb_desc_fw_addr: U64, // +0x2b8
+        #[ver(G == G15)]
+        pub(crate) g15_uma_page_pool_desc_addr: U64, // +0x2c0
+        #[ver(G == G15)]
+        pub(crate) g15_uma_page_pool_desc_fw_addr: U64, // +0x2c8
+        #[ver(G == G15)]
+        pub(crate) g15_unk_2d0: u32,
+        #[ver(G == G15)]
+        pub(crate) g15_unk_2d4: u32,
+        #[ver(G == G15)]
+        pub(crate) g15_opaque_2d8: Array<0xd8, u8>,
+        #[ver(G == G15)]
+        pub(crate) g15_marker_3b0: u8,
+        #[ver(G == G15)]
+        pub(crate) g15_zero_3b1: Array<0x90, u8>,
+        #[ver(G == G15)]
+        pub(crate) g15_ptr_441: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_unk_449: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_unk_451: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_tail_459: Array<0x37, u8>,
     }
     #[versions(AGX)]
     no_debug!(RuntimePointers::ver<'_>);
+
+    // The exact G15 wrapper allocation in Apple's host driver is 0x490 bytes.
+    // Keep this as a hard compile-time ABI invariant while the remaining fields
+    // are named and populated incrementally.
+    const _: [(); 0x490] = [(); core::mem::size_of::<RuntimePointersG15V14_7<'static>>()];
+
+    const _: [(); 0x000] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, hwdata_b)];
+    const _: [(); 0x018] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, pipes)];
+    const _: [(); 0x198] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, device_control)];
+    const _: [(); 0x1b8] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, event)];
+    const _: [(); 0x1c8] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, fw_log)];
+    const _: [(); 0x1d8] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, ktrace)];
+    const _: [(); 0x1e8] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, stats)];
+    const _: [(); 0x1f8] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, fwlog_buf)];
+    const _: [(); 0x230] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_enable_230)];
+    const _: [(); 0x234] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_ptr_234)];
+    const _: [(); 0x2b0] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_pb_desc_addr)];
+    const _: [(); 0x2c8] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_uma_page_pool_desc_fw_addr)];
+    const _: [(); 0x3b0] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_marker_3b0)];
+    const _: [(); 0x441] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_ptr_441)];
+    const _: [(); 0x459] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_tail_459)];
+
+    // Six extra 0x20-byte I/O descriptors move the inherited SRAM pointer
+    // from V13.5 +0x960 to the exact G15 host/firmware offset +0xa20.
+    const _: [(); 0xa20] = [(); core::mem::offset_of!(HwDataBG15V14_7, sgx_sram_ptr)];
 
     #[derive(Debug)]
     #[repr(C)]
@@ -1251,26 +1398,87 @@ pub(crate) mod raw {
     #[derive(Debug)]
     #[repr(C)]
     pub(crate) struct InitData<'a> {
-        #[ver(V >= V13_0B4)]
+        // Legacy top-level interface. G15 replaces this field layout wholesale
+        // with the 24-qword RTKit-2419.140.12 host interface below.
+        #[ver(V >= V13_0B4 && G != G15)]
         pub(crate) ver_info: Array<0x4, u16>,
-
+        #[ver(G != G15)]
         pub(crate) unk_buf: GpuPointer<'a, &'a [u8]>,
+        #[ver(G != G15)]
         pub(crate) unk_8: u32,
+        #[ver(G != G15)]
         pub(crate) unk_c: u32,
+        #[ver(G != G15)]
         pub(crate) runtime_pointers: GpuPointer<'a, super::RuntimePointers::ver>,
+        #[ver(G != G15)]
         pub(crate) globals: GpuPointer<'a, super::Globals::ver>,
+        #[ver(G != G15)]
         pub(crate) fw_status: GpuPointer<'a, super::FwStatus>,
+        #[ver(G != G15)]
         pub(crate) uat_page_size: u16,
+        #[ver(G != G15)]
         pub(crate) uat_page_bits: u8,
+        #[ver(G != G15)]
         pub(crate) uat_num_levels: u8,
+        #[ver(G != G15)]
         pub(crate) uat_level_info: Array<0x3, UatLevelInfo>,
+        #[ver(G != G15)]
         pub(crate) __pad0: Pad<0x14>,
+        #[ver(G != G15)]
         pub(crate) host_mapped_fw_allocations: u32,
+        #[ver(G != G15)]
         pub(crate) unk_ac: u32,
+        #[ver(G != G15)]
         pub(crate) unk_b0: u32,
+        #[ver(G != G15)]
         pub(crate) unk_b4: u32,
+        #[ver(G != G15)]
         pub(crate) unk_b8: u32,
+
+        // Exact G15 / V14.7 top-level ABI: 24 consecutive qwords (0xc0).
+        // q0 is the interface signature. q3/q4 are the compact runtime wrapper
+        // and 0xe00 Globals allocation. q5's upper dword enables host-mapped
+        // firmware allocations. q21..q23 point at exact 0x20/0xc3d0/0x238
+        // backing objects. q1 and q6..q18 are kept raw until their builders are
+        // reconstructed byte-for-byte from the Apple host implementation.
+        #[ver(G == G15)]
+        pub(crate) g15_q0_signature: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_q1_init_sequence: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_q2: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_q3_runtime_pointers: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_q4_globals: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_q5_host_mapped: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_q6_q18_uat: Array<13, U64>,
+        #[ver(G == G15)]
+        pub(crate) g15_q19: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_q20: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_q21: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_q22: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_q23: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_phantom: PhantomData<&'a ()>,
     }
+
+    const _: [(); 0xc0] = [(); core::mem::size_of::<InitDataG15V14_7<'static>>()];
+    const _: [(); 0x00] = [(); core::mem::offset_of!(InitDataG15V14_7<'static>, g15_q0_signature)];
+    const _: [(); 0x08] = [(); core::mem::offset_of!(InitDataG15V14_7<'static>, g15_q1_init_sequence)];
+    const _: [(); 0x18] = [(); core::mem::offset_of!(InitDataG15V14_7<'static>, g15_q3_runtime_pointers)];
+    const _: [(); 0x20] = [(); core::mem::offset_of!(InitDataG15V14_7<'static>, g15_q4_globals)];
+    const _: [(); 0x28] = [(); core::mem::offset_of!(InitDataG15V14_7<'static>, g15_q5_host_mapped)];
+    const _: [(); 0x30] = [(); core::mem::offset_of!(InitDataG15V14_7<'static>, g15_q6_q18_uat)];
+    const _: [(); 0xa8] = [(); core::mem::offset_of!(InitDataG15V14_7<'static>, g15_q21)];
+    const _: [(); 0xb0] = [(); core::mem::offset_of!(InitDataG15V14_7<'static>, g15_q22)];
+    const _: [(); 0xb8] = [(); core::mem::offset_of!(InitDataG15V14_7<'static>, g15_q23)];
 }
 
 #[derive(Debug)]
@@ -1290,6 +1498,18 @@ where
         raw::ChannelRing {
             state: Some(self.state.weak_pointer()),
             ring: Some(self.ring.weak_pointer()),
+        }
+    }
+}
+
+impl<U: Copy> ChannelRing<channels::ChannelState, U> {
+    pub(crate) fn to_raw_g15_tx(&self) -> raw::G15TxChannelRing {
+        let state = u64::from(self.state.weak_pointer());
+        raw::G15TxChannelRing {
+            read_ptr: U64(state),
+            write_ptr_shadow: U64(state + 0x10),
+            write_ptr: U64(state + 0x20),
+            ring: U64(u64::from(self.ring.weak_pointer())),
         }
     }
 }
@@ -1344,10 +1564,30 @@ trivial_gpustruct!(Globals::ver);
 #[versions(AGX)]
 #[derive(Debug)]
 pub(crate) struct InitData {
+    #[ver(G != G15)]
     pub(crate) unk_buf: GpuArray<u8>,
     pub(crate) runtime_pointers: GpuObject<RuntimePointers::ver>,
+    #[ver(G != G15)]
     pub(crate) globals: GpuObject<Globals::ver>,
+    #[ver(G != G15)]
     pub(crate) fw_status: GpuObject<FwStatus>,
+
+    // G15 replaces the legacy top-level backing set. The init sequence is an
+    // exact one-page (0x4000) host/FW mapping; Apple never writes its CPU view
+    // after allocation and the G15 populateInitSequenceFirmware() override is
+    // a BTI+RET stub, so a zero record at +0x08 is the firmware terminator.
+    #[ver(G == G15)]
+    pub(crate) g15_init_sequence: GpuArray<u8>,
+    // Exact-size G15 top-level backing allocations. These remain opaque while
+    // their individual fields are reconstructed from the Apple host driver.
+    #[ver(G == G15)]
+    pub(crate) g15_globals: GpuArray<u8>,
+    #[ver(G == G15)]
+    pub(crate) g15_q21: GpuArray<u8>,
+    #[ver(G == G15)]
+    pub(crate) g15_q22: GpuArray<u8>,
+    #[ver(G == G15)]
+    pub(crate) g15_q23: GpuArray<u8>,
 }
 
 #[versions(AGX)]

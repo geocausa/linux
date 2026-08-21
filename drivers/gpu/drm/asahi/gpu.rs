@@ -506,6 +506,7 @@ impl GpuManager::ver {
 
         let mut mgr = Self::make_mgr(dev, cfg, dyncfg, uat, alloc, event_manager, initdata)?;
 
+        #[ver(G != G15)]
         {
             let fwctl = mgr.fwctl_channel.lock();
             let p_fwctl = fwctl.to_raw();
@@ -518,10 +519,19 @@ impl GpuManager::ver {
                     raw.fwctl_channel = p_fwctl;
                 });
         }
+        #[ver(G == G15)]
+        {
+            // G15 no longer exposes the legacy FwStatus object in InitData.
+            // Keep firmware-control wiring disabled until the exact G15 shared
+            // channel location is reconstructed from the Apple host ABI.
+        }
 
         {
             let txc = mgr.tx_channels.lock();
+            #[ver(G != G15)]
             let p_device_control = txc.device_control.to_raw();
+            #[ver(G == G15)]
+            let p_device_control = txc.device_control.to_raw_g15();
             core::mem::drop(txc);
 
             let rxc = mgr.rx_channels.lock();
@@ -545,7 +555,10 @@ impl GpuManager::ver {
                 });
         }
 
+        #[ver(G != G15)]
         let mut p_pipes: KVec<fw::initdata::raw::PipeChannels::ver> = KVec::new();
+        #[ver(G == G15)]
+        let mut p_pipes: KVec<fw::initdata::raw::G15PipeChannels> = KVec::new();
 
         for ((v, f), c) in mgr
             .pipes
@@ -554,11 +567,21 @@ impl GpuManager::ver {
             .zip(&mgr.pipes.frag)
             .zip(&mgr.pipes.comp)
         {
+            #[ver(G != G15)]
             p_pipes.push(
                 fw::initdata::raw::PipeChannels::ver {
                     vtx: v.lock().to_raw(),
                     frag: f.lock().to_raw(),
                     comp: c.lock().to_raw(),
+                },
+                GFP_KERNEL,
+            )?;
+            #[ver(G == G15)]
+            p_pipes.push(
+                fw::initdata::raw::G15PipeChannels {
+                    vtx: v.lock().to_raw_g15(),
+                    frag: f.lock().to_raw_g15(),
+                    comp: c.lock().to_raw_g15(),
                 },
                 GFP_KERNEL,
             )?;
@@ -1005,6 +1028,7 @@ impl GpuManager::ver {
     fn mark_pending_events(&self, culprit_slot: Option<u32>, error: workqueue::WorkError) {
         dev_err!(self.dev.as_ref(), "  Pending events:\n");
 
+        #[ver(G != G15)]
         self.initdata.globals.with(|raw, _inner| {
             for (index, i) in raw.pending_stamps.iter().enumerate() {
                 let info = i.info.load(Ordering::Relaxed);
@@ -1038,6 +1062,11 @@ impl GpuManager::ver {
                 }
             }
         });
+        #[ver(G == G15)]
+        dev_err!(
+            self.dev.as_ref(),
+            "G15 pending-stamp recovery is not wired yet; runtime enablement is blocked\n"
+        );
     }
 
     /// Fetch the GPU MMU fault information from the hardware registers.
@@ -1057,6 +1086,17 @@ impl GpuManager::ver {
 
     /// Resume the GPU firmware after it halts (due to a timeout, fault, or request).
     fn recover(&self) {
+        #[ver(G == G15)]
+        {
+            // G15 replaces the legacy FwStatus halt/resume block. Do not guess
+            // at q21/q22 offsets: an accidental runtime path must fail closed.
+            dev_err!(
+                self.dev.as_ref(),
+                "G15 firmware recovery ABI is not mapped yet; refusing recovery\n"
+            );
+            return;
+        }
+        #[ver(G != G15)]
         self.initdata.fw_status.with(|raw, _inner| {
             let halt_count = raw.flags.halt_count.load(Ordering::Relaxed);
             let mut halted = raw.flags.halted.load(Ordering::Relaxed);
@@ -1133,14 +1173,24 @@ impl GpuManager::ver {
             return Err(ENODEV);
         }
 
-        let val = self
-            .initdata
-            .globals
-            .with(|raw, _inner| raw.pending_submissions.fetch_add(1, Ordering::Acquire));
+        #[ver(G == G15)]
+        {
+            // Submission accounting moved out of the legacy Globals object on
+            // G15. Keep the compile-only variant incapable of queue execution
+            // until the replacement shared field is proven.
+            return Err(ENODEV);
+        }
+        #[ver(G != G15)]
+        {
+            let val = self
+                .initdata
+                .globals
+                .with(|raw, _inner| raw.pending_submissions.fetch_add(1, Ordering::Acquire));
 
-        mod_dev_dbg!(self.dev, "OP start (pending: {})\n", val + 1);
-        self.kick_firmware()?;
-        Ok(OpGuard(self.clone()))
+            mod_dev_dbg!(self.dev, "OP start (pending: {})\n", val + 1);
+            self.kick_firmware()?;
+            Ok(OpGuard(self.clone()))
+        }
     }
 
     fn invalidate_context(
@@ -1275,9 +1325,12 @@ impl GpuManager for GpuManager::ver {
             timeout = 5000;
         }
 
+        #[ver(G != G15)]
         self.initdata.globals.with(|raw, _inner| {
             raw.idle_off_delay_ms.store(timeout, Ordering::Relaxed);
         });
+        #[ver(G == G15)]
+        let _ = timeout;
     }
 
     fn alloc(&self) -> Guard<'_, KernelAllocators, MutexBackend> {
@@ -1542,34 +1595,47 @@ impl GpuManager for GpuManager::ver {
     }
 
     fn ack_grow(&self, buffer_slot: u32, vm_slot: u32, counter: u32) {
-        let halt_count = self
-            .initdata
-            .fw_status
-            .with(|raw, _inner| raw.flags.halt_count.load(Ordering::Relaxed));
-
-        let dc = fw::channels::DeviceControlMsg::ver::GrowTVBAck {
-            unk_4: 1,
-            buffer_slot,
-            vm_slot,
-            counter,
-            subpipe: 0, // TODO
-            halt_count: U64(halt_count),
-            __pad: Default::default(),
-        };
-
-        mod_dev_dbg!(self.dev, "TVB Grow Ack command: {:?}\n", &dc);
-
-        let mut txch = self.tx_channels.lock();
-
-        txch.device_control.send(&dc);
+        #[ver(G == G15)]
         {
-            let mut guard = self.rtkit.lock();
-            let rtk = guard.as_mut().as_pin_mut().unwrap();
-            if rtk
-                .send_message(EP_DOORBELL, MSG_TX_DOORBELL | DOORBELL_DEVCTRL)
-                .is_err()
+            // The G15 halt-count source is not the legacy FwStatus block.
+            // Refuse to emit a malformed grow acknowledgement.
+            dev_err!(
+                self.dev.as_ref(),
+                "G15 TVB grow acknowledgement ABI is not mapped yet\n"
+            );
+            return;
+        }
+        #[ver(G != G15)]
+        {
+            let halt_count = self
+                .initdata
+                .fw_status
+                .with(|raw, _inner| raw.flags.halt_count.load(Ordering::Relaxed));
+
+            let dc = fw::channels::DeviceControlMsg::ver::GrowTVBAck {
+                unk_4: 1,
+                buffer_slot,
+                vm_slot,
+                counter,
+                subpipe: 0, // TODO
+                halt_count: U64(halt_count),
+                __pad: Default::default(),
+            };
+
+            mod_dev_dbg!(self.dev, "TVB Grow Ack command: {:?}\n", &dc);
+
+            let mut txch = self.tx_channels.lock();
+
+            txch.device_control.send(&dc);
             {
-                dev_err!(self.dev.as_ref(), "Failed to send TVB Grow Ack command\n");
+                let mut guard = self.rtkit.lock();
+                let rtk = guard.as_mut().as_pin_mut().unwrap();
+                if rtk
+                    .send_message(EP_DOORBELL, MSG_TX_DOORBELL | DOORBELL_DEVCTRL)
+                    .is_err()
+                {
+                    dev_err!(self.dev.as_ref(), "Failed to send TVB Grow Ack command\n");
+                }
             }
         }
     }
@@ -1632,11 +1698,18 @@ impl GpuManager for GpuManager::ver {
 #[versions(AGX)]
 impl GpuManagerPriv for GpuManager::ver {
     fn end_op(&self) {
-        let val = self
-            .initdata
-            .globals
-            .with(|raw, _inner| raw.pending_submissions.fetch_sub(1, Ordering::Release));
+        #[ver(G != G15)]
+        {
+            let val = self
+                .initdata
+                .globals
+                .with(|raw, _inner| raw.pending_submissions.fetch_sub(1, Ordering::Release));
 
-        mod_dev_dbg!(self.dev, "OP end (pending: {})\n", val - 1);
+            mod_dev_dbg!(self.dev, "OP end (pending: {})\n", val - 1);
+        }
+        #[ver(G == G15)]
+        {
+            // start_op() is hard-blocked for the compile-only G15 variant.
+        }
     }
 }

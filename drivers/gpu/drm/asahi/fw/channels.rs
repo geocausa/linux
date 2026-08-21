@@ -14,12 +14,17 @@ pub(crate) mod raw {
     #[repr(C)]
     pub(crate) struct ChannelState<'a> {
         pub(crate) read_ptr: AtomicU32,
-        __pad0: Pad<0x1c>,
-        pub(crate) write_ptr: AtomicU32,
+        __pad0: Pad<0xc>,
+        // G15 TX channels pass a separate pointer to this firmware-owned
+        // shadow slot. Older firmware treats it as padding.
+        pub(crate) write_ptr_shadow: AtomicU32,
         __pad1: Pad<0xc>,
+        pub(crate) write_ptr: AtomicU32,
+        __pad2: Pad<0xc>,
         _p: PhantomData<&'a ()>,
     }
     default_zeroed!(<'a>, ChannelState<'a>);
+    const _: [(); 0x30] = [(); core::mem::size_of::<ChannelState<'static>>()];
 
     #[derive(Debug)]
     #[repr(C)]
@@ -133,7 +138,9 @@ pub(crate) struct RunWorkQueueMsg {
     pub(crate) is_new: bool,
     #[ver(V >= V13_2 && G == G14)]
     pub(crate) __pad: Pad<0x2b>,
-    #[ver(V < V13_2 || G != G14)]
+    #[ver(G == G15)]
+    pub(crate) __pad: Pad<0x3>,
+    #[ver(V < V13_2 || (G != G14 && G != G15))]
     pub(crate) __pad: Pad<0x1b>,
 }
 
@@ -142,13 +149,17 @@ pub(crate) type PipeMsg = RunWorkQueueMsg::ver;
 
 #[versions(AGX)]
 pub(crate) const DEVICECONTROL_SZ: usize = {
-    #[ver(V < V13_2 || G != G14)]
+    #[ver(V < V13_2 || (G != G14 && G != G15))]
     {
         0x2c
     }
     #[ver(V >= V13_2 && G == G14)]
     {
         0x3c
+    }
+    #[ver(G == G15)]
+    {
+        0x34
     }
 };
 
@@ -230,6 +241,10 @@ static_assert!(core::mem::size_of::<DeviceControlMsg::ver>() == 4 + DEVICECONTRO
 
 #[versions(AGX)]
 default_zeroed!(DeviceControlMsg::ver);
+
+// Exact RTKit-2419.140.12 G15 ring-walker element sizes.
+const _: [(); 0x18] = [(); core::mem::size_of::<RunWorkQueueMsgG15V14_7>()];
+const _: [(); 0x38] = [(); core::mem::size_of::<DeviceControlMsgG15V14_7>()];
 
 #[derive(Copy, Clone, Default, Debug)]
 #[repr(C)]

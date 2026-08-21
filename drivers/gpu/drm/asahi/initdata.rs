@@ -898,47 +898,141 @@ impl<'a> InitDataBuilder::ver<'a> {
             },
             |inner, _ptr| {
                 try_init!(raw::RuntimePointers::ver {
+                    #[ver(G != G15)]
                     pipes: Default::default(),
+                    #[ver(G != G15)]
                     device_control: Default::default(),
+                    #[ver(G != G15)]
                     event: Default::default(),
+                    #[ver(G != G15)]
                     fw_log: Default::default(),
+                    #[ver(G != G15)]
                     ktrace: Default::default(),
+                    #[ver(G != G15)]
                     stats: Default::default(),
 
+                    #[ver(G != G15)]
                     stats_vtx: inner.stats.vtx.gpu_pointer(),
+                    #[ver(G != G15)]
                     stats_frag: inner.stats.frag.gpu_pointer(),
+                    #[ver(G != G15)]
                     stats_comp: inner.stats.comp.gpu_pointer(),
 
+                    #[ver(G != G15)]
                     hwdata_a: inner.hwdata_a.gpu_pointer(),
+                    #[ver(G != G15)]
                     unkptr_190: inner.unkptr_190.gpu_pointer(),
+                    #[ver(G != G15)]
                     unkptr_198: inner.unkptr_198.gpu_pointer(),
+                    #[ver(G != G15)]
                     hwdata_b: inner.hwdata_b.gpu_pointer(),
+                    #[ver(G != G15)]
                     hwdata_b_2: inner.hwdata_b.gpu_pointer(),
 
+                    #[ver(G != G15)]
                     fwlog_buf: None,
 
+                    #[ver(G != G15)]
                     unkptr_1b8: inner.unkptr_1b8.gpu_pointer(),
 
-                    #[ver(G < G14X)]
+                    #[ver(G < G14X && G != G15)]
                     unkptr_1c0: inner.unkptr_1c0.gpu_pointer(),
-                    #[ver(G < G14X)]
+                    #[ver(G < G14X && G != G15)]
                     unkptr_1c8: inner.unkptr_1c8.gpu_pointer(),
 
+                    #[ver(G != G15)]
                     buffer_mgr_ctl_gpu_addr: U64(gpu::IOVA_KERN_GPU_BUFMGR_LOW),
+                    #[ver(G != G15)]
                     buffer_mgr_ctl_fw_addr: U64(gpu::IOVA_KERN_GPU_BUFMGR_HIGH),
 
+                    #[ver(G != G15)]
                     __pad0: Default::default(),
+                    #[ver(G != G15)]
                     unk_160: U64(0),
+                    #[ver(G != G15)]
                     unk_168: U64(0),
+                    #[ver(G != G15)]
                     unk_1d0: 0,
+                    #[ver(G != G15)]
                     unk_1d4: 0,
+                    #[ver(G != G15)]
                     unk_1d8: Default::default(),
 
+                    #[ver(G != G15)]
                     __pad1: Default::default(),
+                    #[ver(G != G15)]
                     gpu_scratch: raw::RuntimeScratch::ver {
                         unk_6b38: 0xff,
                         ..Default::default()
                     },
+
+                    // G15 compact wrapper. Only fields with exact semantics are
+                    // populated here; opaque backing pointers stay zero until the
+                    // matching Apple allocations are reconstructed.
+                    #[ver(G == G15)]
+                    hwdata_b: inner.hwdata_b.gpu_pointer(),
+                    #[ver(G == G15)]
+                    g15_unk_008: U64(0),
+                    #[ver(G == G15)]
+                    g15_unk_010: U64(0),
+                    #[ver(G == G15)]
+                    pipes: Default::default(),
+                    #[ver(G == G15)]
+                    device_control: Default::default(),
+                    #[ver(G == G15)]
+                    event: Default::default(),
+                    #[ver(G == G15)]
+                    fw_log: Default::default(),
+                    #[ver(G == G15)]
+                    ktrace: Default::default(),
+                    #[ver(G == G15)]
+                    stats: Default::default(),
+                    #[ver(G == G15)]
+                    fwlog_buf: None,
+                    #[ver(G == G15)]
+                    g15_counters_200: Default::default(),
+                    #[ver(G == G15)]
+                    g15_counters_218: Default::default(),
+                    #[ver(G == G15)]
+                    g15_enable_230: 0,
+                    #[ver(G == G15)]
+                    g15_ptr_234: U64(0),
+                    #[ver(G == G15)]
+                    g15_ptr_23c: U64(0),
+                    #[ver(G == G15)]
+                    g15_ptr_244: U64(0),
+                    #[ver(G == G15)]
+                    g15_ptr_24c: U64(0),
+                    #[ver(G == G15)]
+                    g15_pad_254: Default::default(),
+                    #[ver(G == G15)]
+                    g15_ptr_2a8: U64(0),
+                    #[ver(G == G15)]
+                    g15_pb_desc_addr: U64(0),
+                    #[ver(G == G15)]
+                    g15_pb_desc_fw_addr: U64(0),
+                    #[ver(G == G15)]
+                    g15_uma_page_pool_desc_addr: U64(0),
+                    #[ver(G == G15)]
+                    g15_uma_page_pool_desc_fw_addr: U64(0),
+                    #[ver(G == G15)]
+                    g15_unk_2d0: 0,
+                    #[ver(G == G15)]
+                    g15_unk_2d4: 0,
+                    #[ver(G == G15)]
+                    g15_opaque_2d8: Default::default(),
+                    #[ver(G == G15)]
+                    g15_marker_3b0: 0xff,
+                    #[ver(G == G15)]
+                    g15_zero_3b1: Default::default(),
+                    #[ver(G == G15)]
+                    g15_ptr_441: U64(0),
+                    #[ver(G == G15)]
+                    g15_unk_449: U64(0),
+                    #[ver(G == G15)]
+                    g15_unk_451: U64(0),
+                    #[ver(G == G15)]
+                    g15_tail_459: Default::default(),
                 })
             },
         )
@@ -975,9 +1069,37 @@ impl<'a> InitDataBuilder::ver<'a> {
     #[inline(never)]
     pub(crate) fn build(&mut self) -> Result<KBox<GpuObject<InitData::ver>>> {
         let runtime_pointers = self.runtime_pointers()?;
+        #[ver(G != G15)]
         let globals = self.globals()?;
+        #[ver(G != G15)]
         let fw_status = self.fw_status()?;
-        let shared_ro = &mut self.alloc.shared_ro;
+        #[ver(G != G15)]
+        let unk_buf = self.alloc.shared_ro.array_empty_tagged(0x4000, b"IDTA")?;
+        #[ver(G == G15)]
+        let g15_init_sequence = self.alloc.shared_ro.array_empty_tagged(0x4000, b"ISEQ")?;
+        #[ver(G == G15)]
+        let mut g15_globals = self.alloc.private.array_empty(0xe00)?;
+        #[ver(G == G15)]
+        let mut g15_q21 = self.alloc.shared.array_empty(0x20)?;
+        #[ver(G == G15)]
+        let mut g15_q22 = self.alloc.shared.array_empty(0xc3d0)?;
+        #[ver(G == G15)]
+        let g15_q23 = self.alloc.shared.array_empty(0x238)?;
+
+        #[ver(G == G15)]
+        {
+            // Apple host-proven initial values for the three shared root
+            // objects. All other bytes remain zero until their semantics are
+            // reconstructed. These constants are observed directly in
+            // AGXFirmware::{initFirmwareData,initFirmwareSharedData}.
+            g15_q21.as_mut_slice()[0x04..0x08].copy_from_slice(&1u32.to_le_bytes());
+            g15_q22.as_mut_slice()[0x45c4..0x45c8].copy_from_slice(&1u32.to_le_bytes());
+
+            // G15 Globals is a dedicated 0xe00 packed object. The host writes
+            // 0x78 at +0x38 unconditionally before handing it to firmware.
+            g15_globals.as_mut_slice()[0x38..0x3c].copy_from_slice(&0x78u32.to_le_bytes());
+        }
+        let cfg = self.cfg;
 
         // 16 KiB UAT pages use 11 index bits at the lower levels. G15 keeps
         // the same three-level layout but widens the root (shift 36) from
@@ -990,43 +1112,99 @@ impl<'a> InitDataBuilder::ver<'a> {
 
         let obj = self.alloc.private.new_init(
             try_init!(InitData::ver {
-                unk_buf: shared_ro.array_empty_tagged(0x4000, b"IDTA")?,
+                #[ver(G != G15)]
+                unk_buf,
                 runtime_pointers,
+                #[ver(G != G15)]
                 globals,
+                #[ver(G != G15)]
                 fw_status,
+                #[ver(G == G15)]
+                g15_init_sequence,
+                #[ver(G == G15)]
+                g15_globals,
+                #[ver(G == G15)]
+                g15_q21,
+                #[ver(G == G15)]
+                g15_q22,
+                #[ver(G == G15)]
+                g15_q23,
             }),
             |inner, _ptr| {
-                let cfg = &self.cfg;
                 try_init!(raw::InitData::ver {
-                    #[ver(V == V13_5 && G != G14X)]
+                    #[ver(V == V13_5 && G != G14X && G != G15)]
                     ver_info: Array::new([0x6ba0, 0x1f28, 0x601, 0xb0]),
                     #[ver(V == V13_5 && G == G14X)]
                     ver_info: Array::new([0xb390, 0x70f8, 0x601, 0xb0]),
-                    // Exact AGXG15G / RTKit-2419.140.12 InitData interface signature.
-                    // This defines the compile-time ABI variant only; T8122 runtime
-                    // dispatch and OF matching remain intentionally absent.
-                    #[ver(V == V14_7 && G == G15)]
-                    ver_info: Array::new([0x0490, 0x8380, 0xe21e, 0x0c08]),
+                    #[ver(G != G15)]
                     unk_buf: inner.unk_buf.gpu_pointer(),
+                    #[ver(G != G15)]
                     unk_8: 0,
+                    #[ver(G != G15)]
                     unk_c: 0,
+                    #[ver(G != G15)]
                     runtime_pointers: inner.runtime_pointers.gpu_pointer(),
+                    #[ver(G != G15)]
                     globals: inner.globals.gpu_pointer(),
+                    #[ver(G != G15)]
                     fw_status: inner.fw_status.gpu_pointer(),
+                    #[ver(G != G15)]
                     uat_page_size: 0x4000,
+                    #[ver(G != G15)]
                     uat_page_bits: 14,
+                    #[ver(G != G15)]
                     uat_num_levels: 3,
+                    #[ver(G != G15)]
                     uat_level_info: Array::new([
-                        Self::uat_level_info(cfg, 36, root_entries),
-                        Self::uat_level_info(cfg, 25, 2048),
-                        Self::uat_level_info(cfg, 14, 2048),
+                        Self::uat_level_info(&cfg, 36, root_entries),
+                        Self::uat_level_info(&cfg, 25, 2048),
+                        Self::uat_level_info(&cfg, 14, 2048),
                     ]),
+                    #[ver(G != G15)]
                     __pad0: Default::default(),
+                    #[ver(G != G15)]
                     host_mapped_fw_allocations: 1,
+                    #[ver(G != G15)]
                     unk_ac: 0,
+                    #[ver(G != G15)]
                     unk_b0: 0,
+                    #[ver(G != G15)]
                     unk_b4: 0,
+                    #[ver(G != G15)]
                     unk_b8: 0,
+
+                    // G15 top-level root reconstructed from
+                    // AGXArmFirmware::initFirmwareData and RTKit-2419.140.12.
+                    #[ver(G == G15)]
+                    g15_q0_signature: U64(0x0c08_e21e_8380_0490),
+                    #[ver(G == G15)]
+                    g15_q1_init_sequence: U64(inner.g15_init_sequence.gpu_va().get()),
+                    #[ver(G == G15)]
+                    g15_q2: U64(0),
+                    #[ver(G == G15)]
+                    g15_q3_runtime_pointers: U64(inner.runtime_pointers.gpu_va().get()),
+                    #[ver(G == G15)]
+                    g15_q4_globals: U64(inner.g15_globals.gpu_va().get()),
+                    #[ver(G == G15)]
+                    g15_q5_host_mapped: U64(0x0000_0001_0000_0000),
+                    // q6..q18 are copied verbatim by Apple's host from its
+                    // AGFI configuration record. Their exact byte semantics are
+                    // still under reconstruction, so keep them visibly inert;
+                    // runtime G15 dispatch remains disabled until populated.
+                    #[ver(G == G15)]
+                    g15_q6_q18_uat: Array::new([U64(0); 13]),
+                    #[ver(G == G15)]
+                    g15_q19: U64(0),
+                    #[ver(G == G15)]
+                    g15_q20: U64(0),
+                    #[ver(G == G15)]
+                    g15_q21: U64(inner.g15_q21.gpu_va().get()),
+                    #[ver(G == G15)]
+                    g15_q22: U64(inner.g15_q22.gpu_va().get()),
+                    #[ver(G == G15)]
+                    g15_q23: U64(inner.g15_q23.gpu_va().get()),
+                    #[ver(G == G15)]
+                    g15_phantom: PhantomData,
                 })
             },
         )?;
