@@ -146,10 +146,10 @@ pub(crate) mod raw {
         pub(crate) smart_idle_min_confidence_7c4: F32,
         pub(crate) smart_idle_high_confidence_7c8: F32,
         pub(crate) smart_idle_reset_iterations_7cc: U32,
-        pub(crate) pad_7d0: Pad<0x04>,
-        pub(crate) unk_7d4: U32,
-        pub(crate) unk_7d8: U32,
-        pub(crate) unk_7dc: U32,
+        pub(crate) ut_engagement_enabled_7d0: U32,
+        pub(crate) clvr_engagement_enabled_7d4: U32,
+        pub(crate) gpu_keepalive_perf_mode_threshold_7d8: U32,
+        pub(crate) gpu_keepalive_off_mode_threshold_7dc: U32,
         pub(crate) pad_7e0: Pad<0x18c>,
         pub(crate) unk_96c: U64,
         pub(crate) unk_974: U64,
@@ -203,6 +203,10 @@ pub(crate) mod raw {
     const _: [(); 0x7a8] = [(); core::mem::offset_of!(G15Q4Config, smart_idle_standby_timer_us_7a8)];
     const _: [(); 0x7ac] = [(); core::mem::offset_of!(G15Q4Config, smart_idle_prob_init_val_7ac)];
     const _: [(); 0x7cc] = [(); core::mem::offset_of!(G15Q4Config, smart_idle_reset_iterations_7cc)];
+    const _: [(); 0x7d0] = [(); core::mem::offset_of!(G15Q4Config, ut_engagement_enabled_7d0)];
+    const _: [(); 0x7d4] = [(); core::mem::offset_of!(G15Q4Config, clvr_engagement_enabled_7d4)];
+    const _: [(); 0x7d8] = [(); core::mem::offset_of!(G15Q4Config, gpu_keepalive_perf_mode_threshold_7d8)];
+    const _: [(); 0x7dc] = [(); core::mem::offset_of!(G15Q4Config, gpu_keepalive_off_mode_threshold_7dc)];
     const _: [(); 0x96c] = [(); core::mem::offset_of!(G15Q4Config, unk_96c)];
     const _: [(); 0x97c] = [(); core::mem::offset_of!(G15Q4Config, unk_97c)];
     const _: [(); 0x9ac] = [(); core::mem::offset_of!(G15Q4Config, zero_9ac)];

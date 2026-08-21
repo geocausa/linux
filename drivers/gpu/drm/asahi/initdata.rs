@@ -1203,6 +1203,15 @@ impl<'a> InitDataBuilder::ver<'a> {
                 smart_idle_min_confidence_7c4: f32!(0.7),
                 smart_idle_high_confidence_7c8: f32!(0.9),
                 smart_idle_reset_iterations_7cc: U32(6),
+                // initPowerAndPerformanceData() enables UT and CLVR by
+                // default. It also copies the two keepalive thresholds from
+                // accelerator +0x1e90/+0x1e8c. configureDevice establishes
+                // both as 100 before optional property overrides; exact J615
+                // omits both gpu-keepalive-* threshold properties.
+                ut_engagement_enabled_7d0: U32(1),
+                clvr_engagement_enabled_7d4: U32(1),
+                gpu_keepalive_perf_mode_threshold_7d8: U32(100),
+                gpu_keepalive_off_mode_threshold_7dc: U32(100),
                 // AGXArmFirmware::setupConfig copies the four values below
                 // from accelerator +0x1e48..+0x1e60. AGXAccelerator's static
                 // initialization proves their exact J615 values.
