@@ -256,6 +256,10 @@ pub(crate) struct FwCtlMsg {
     pub(crate) page_count: u16,
     pub(crate) unk_12: u16,
 }
+const _: [(); 0x14] = [(); core::mem::size_of::<FwCtlMsg>()];
+const _: [(); 0x0c] = [(); core::mem::offset_of!(FwCtlMsg, slot)];
+const _: [(); 0x10] = [(); core::mem::offset_of!(FwCtlMsg, page_count)];
+const _: [(); 0x12] = [(); core::mem::offset_of!(FwCtlMsg, unk_12)];
 
 pub(crate) const EVENT_SZ: usize = 0x34;
 

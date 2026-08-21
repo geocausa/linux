@@ -251,6 +251,10 @@ pub(crate) struct GpuManager {
     rx_channels: Mutex<RxChannels::ver>,
     #[pin]
     tx_channels: Mutex<TxChannels::ver>,
+    // G15 replaces the legacy FwStatus-owned firmware-control channel with
+    // q22 +0x4568/+0x4570 (0x20 state + 0x1800 ring). Keep the old channel
+    // allocation entirely out of the G15 object until that successor is wired.
+    #[ver(G != G15)]
     #[pin]
     fwctl_channel: Mutex<channel::FwCtlChannel>,
     pipes: PipeChannels::ver,
@@ -746,6 +750,7 @@ impl GpuManager::ver {
             )?;
         }
 
+        #[ver(G != G15)]
         let fwctl_channel = channel::FwCtlChannel::new(dev, &mut alloc)?;
 
         let buffer_mgr = buffer::BufferManager::ver::new()?;
@@ -788,6 +793,7 @@ impl GpuManager::ver {
                 crashed: AtomicBool::new(false),
                 event_manager,
                 alloc <- new_mutex!(alloc, "alloc"),
+                #[ver(G != G15)]
                 fwctl_channel <- new_mutex!(fwctl_channel, "fwctl_channel"),
                 rx_channels <- new_mutex!(KBox::<RxChannels::ver>::into_inner(rx_channels), "rx_channels"),
                 tx_channels <- new_mutex!(KBox::<TxChannels::ver>::into_inner(tx_channels), "tx_channels"),
@@ -1645,15 +1651,27 @@ impl GpuManager for GpuManager::ver {
             return Err(ENODEV);
         }
 
-        let mut fwctl = self.fwctl_channel.lock();
-        let token = fwctl.send(&msg);
+        #[ver(G == G15)]
         {
-            let mut guard = self.rtkit.lock();
-            let rtk = guard.as_mut().as_pin_mut().unwrap();
-            rtk.send_message(EP_DOORBELL, MSG_FWCTL)?;
+            // q22 +0x4568/+0x4570 is the exact G15 successor: its 0x20 state
+            // has the same read/write-index positions, while each request grows
+            // from the legacy 0x14 bytes to 0x18 bytes. Do not feed the legacy
+            // message/channel into it until the extra +0x14 word is proven.
+            let _ = msg;
+            return Err(ENODEV);
         }
-        fwctl.wait_for(token)?;
-        Ok(())
+        #[ver(G != G15)]
+        {
+            let mut fwctl = self.fwctl_channel.lock();
+            let token = fwctl.send(&msg);
+            {
+                let mut guard = self.rtkit.lock();
+                let rtk = guard.as_mut().as_pin_mut().unwrap();
+                rtk.send_message(EP_DOORBELL, MSG_FWCTL)?;
+            }
+            fwctl.wait_for(token)?;
+            Ok(())
+        }
     }
 
     fn get_cfg(&self) -> &'static hw::HwConfig {

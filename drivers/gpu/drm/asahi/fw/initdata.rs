@@ -191,9 +191,10 @@ pub(crate) mod raw {
     const _: [(); 0xbe5] = [(); core::mem::offset_of!(G15Q4Config, table_be5)];
     const _: [(); 0xde5] = [(); core::mem::offset_of!(G15Q4Config, zero_de5)];
 
-    /// G15 q22 cache-flush ring control block, exact 0x20 bytes.
-    /// Firmware consumes entries from read_idx and compares against write_idx
-    /// at +0x10 modulo 256.
+    /// G15 q22 firmware-control/cache-flush ring state, exact 0x20 bytes.
+    /// This is the G15 successor to the legacy FwStatus `FwCtlChannelState`:
+    /// both place read_idx at +0x00 and write_idx at +0x10. Firmware consumes
+    /// entries from read_idx and compares against write_idx modulo 256.
     #[derive(Debug)]
     #[repr(C)]
     pub(crate) struct G15CacheFlushState {
@@ -206,8 +207,10 @@ pub(crate) mod raw {
     const _: [(); 0x20] = [(); core::mem::size_of::<G15CacheFlushState>()];
     const _: [(); 0x10] = [(); core::mem::offset_of!(G15CacheFlushState, write_idx)];
 
-    /// One G15 cache-flush ring entry, exact 0x18 bytes. Firmware walks 256
-    /// entries, so the Apple ring allocation is exactly 0x1800 bytes.
+    /// One G15 firmware-control/cache-flush entry, exact 0x18 bytes. Its
+    /// first 0x14 bytes are field-for-field the legacy FwCtlMsg ABI
+    /// (address/+8/+c context/+10 count/+12 flags), with a new G15 u32 at
+    /// +0x14. Firmware walks 256 entries, so Apple allocates exactly 0x1800.
     #[derive(Debug, Default, Clone, Copy)]
     #[repr(C)]
     pub(crate) struct G15CacheFlushEntry {
