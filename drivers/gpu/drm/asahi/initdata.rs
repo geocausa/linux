@@ -1300,6 +1300,8 @@ impl<'a> InitDataBuilder::ver<'a> {
                     g15_q0_signature: U64(0x0c08_e21e_8380_0490),
                     #[ver(G == G15)]
                     g15_q1_init_sequence: U64(inner.g15_init_sequence.gpu_va().get()),
+                    // Exact: Apple's root allocation is zeroed and the G15
+                    // host constructor never writes q2.
                     #[ver(G == G15)]
                     g15_q2: U64(0),
                     #[ver(G == G15)]
@@ -1308,8 +1310,10 @@ impl<'a> InitDataBuilder::ver<'a> {
                     g15_q4_globals: U64(inner.g15_globals.gpu_va().get()),
                     #[ver(G == G15)]
                     g15_q5_host_mapped: U64(0x0000_0001_0000_0000),
-                    // q6..q20 are the compact UAT description. G15's Apple
-                    // ADT advertises a 43-bit virtual address size including the
+                    // q6..q20 are the compact UAT description. Apple writes
+                    // q6..q18 only; q19/q20 are the final 0x10 bytes of this
+                    // block's zero pad and stay zero from the zeroed root allocation.
+                    // G15's Apple ADT advertises a 43-bit virtual address size including the
                     // TTBR selector, i.e. a 42-bit per-TTBR input width. That
                     // widens the shift-36 root from 8 to 64 entries; lower levels
                     // remain the established 25/14 shifts with 2048 entries.

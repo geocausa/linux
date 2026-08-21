@@ -1956,6 +1956,8 @@ pub(crate) mod raw {
         pub(crate) g15_q0_signature: U64,
         #[ver(G == G15)]
         pub(crate) g15_q1_init_sequence: U64,
+        // Apple never writes q2 after allocating the root with the same
+        // zeroing allocation flags as IOMallocZero(), so q2 is exactly zero.
         #[ver(G == G15)]
         pub(crate) g15_q2: U64,
         #[ver(G == G15)]
@@ -1979,6 +1981,7 @@ pub(crate) mod raw {
     const _: [(); 0xc0] = [(); core::mem::size_of::<InitDataG15V14_7<'static>>()];
     const _: [(); 0x00] = [(); core::mem::offset_of!(InitDataG15V14_7<'static>, g15_q0_signature)];
     const _: [(); 0x08] = [(); core::mem::offset_of!(InitDataG15V14_7<'static>, g15_q1_init_sequence)];
+    const _: [(); 0x10] = [(); core::mem::offset_of!(InitDataG15V14_7<'static>, g15_q2)];
     const _: [(); 0x18] = [(); core::mem::offset_of!(InitDataG15V14_7<'static>, g15_q3_runtime_pointers)];
     const _: [(); 0x20] = [(); core::mem::offset_of!(InitDataG15V14_7<'static>, g15_q4_globals)];
     const _: [(); 0x28] = [(); core::mem::offset_of!(InitDataG15V14_7<'static>, g15_q5_host_mapped)];
