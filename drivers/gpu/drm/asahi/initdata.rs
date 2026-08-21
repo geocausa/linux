@@ -1215,16 +1215,23 @@ impl<'a> InitDataBuilder::ver<'a> {
                     g15_q4_globals: U64(inner.g15_globals.gpu_va().get()),
                     #[ver(G == G15)]
                     g15_q5_host_mapped: U64(0x0000_0001_0000_0000),
-                    // q6..q18 are copied verbatim by Apple's host from its
-                    // AGFI configuration record. Their exact byte semantics are
-                    // still under reconstruction, so keep them visibly inert;
-                    // runtime G15 dispatch remains disabled until populated.
+                    // q6..q20 are the compact UAT description. G15's Apple
+                    // ADT advertises a 43-bit virtual address size including the
+                    // TTBR selector, i.e. a 42-bit per-TTBR input width. That
+                    // widens the shift-36 root from 8 to 64 entries; lower levels
+                    // remain the established 25/14 shifts with 2048 entries.
                     #[ver(G == G15)]
-                    g15_q6_q18_uat: Array::new([U64(0); 13]),
-                    #[ver(G == G15)]
-                    g15_q19: U64(0),
-                    #[ver(G == G15)]
-                    g15_q20: U64(0),
+                    g15_q6_q20_uat: raw::G15UatConfig {
+                        page_size: 0x4000,
+                        page_bits: 14,
+                        num_levels: 3,
+                        level_info: Array::new([
+                            Self::uat_level_info(&cfg, 36, root_entries),
+                            Self::uat_level_info(&cfg, 25, 2048),
+                            Self::uat_level_info(&cfg, 14, 2048),
+                        ]),
+                        __pad0: Default::default(),
+                    },
                     #[ver(G == G15)]
                     g15_q21: U64(inner.g15_q21.gpu_va().get()),
                     #[ver(G == G15)]

@@ -1526,6 +1526,28 @@ pub(crate) mod raw {
         pub(crate) index_mask: U64,
     }
 
+    /// G15 q6..q20: exact 0x78-byte UAT description block.
+    ///
+    /// Apple's G15 host copies q6..q18 from accelerator firmware-mapper data
+    /// and leaves q19/q20 untouched. The byte span is exactly the legacy UAT
+    /// header + three 0x20-byte level descriptors + 0x14 bytes of zero pad.
+    /// For G15 the per-TTBR input width is 42 bits (the Apple ADT's 43-bit
+    /// `uat-vaddr-size` includes the TTBR0/TTBR1 selector bit), hence the
+    /// shift-36 root has 64 entries.
+    #[derive(Debug)]
+    #[repr(C)]
+    pub(crate) struct G15UatConfig {
+        pub(crate) page_size: u16,
+        pub(crate) page_bits: u8,
+        pub(crate) num_levels: u8,
+        pub(crate) level_info: Array<3, UatLevelInfo>,
+        pub(crate) __pad0: Pad<0x14>,
+    }
+    default_zeroed!(G15UatConfig);
+    const _: [(); 0x78] = [(); core::mem::size_of::<G15UatConfig>()];
+    const _: [(); 0x04] = [(); core::mem::offset_of!(G15UatConfig, level_info)];
+    const _: [(); 0x64] = [(); core::mem::offset_of!(G15UatConfig, __pad0)];
+
     #[versions(AGX)]
     #[derive(Debug)]
     #[repr(C)]
@@ -1586,11 +1608,7 @@ pub(crate) mod raw {
         #[ver(G == G15)]
         pub(crate) g15_q5_host_mapped: U64,
         #[ver(G == G15)]
-        pub(crate) g15_q6_q18_uat: Array<13, U64>,
-        #[ver(G == G15)]
-        pub(crate) g15_q19: U64,
-        #[ver(G == G15)]
-        pub(crate) g15_q20: U64,
+        pub(crate) g15_q6_q20_uat: G15UatConfig,
         #[ver(G == G15)]
         pub(crate) g15_q21: U64,
         #[ver(G == G15)]
@@ -1607,7 +1625,7 @@ pub(crate) mod raw {
     const _: [(); 0x18] = [(); core::mem::offset_of!(InitDataG15V14_7<'static>, g15_q3_runtime_pointers)];
     const _: [(); 0x20] = [(); core::mem::offset_of!(InitDataG15V14_7<'static>, g15_q4_globals)];
     const _: [(); 0x28] = [(); core::mem::offset_of!(InitDataG15V14_7<'static>, g15_q5_host_mapped)];
-    const _: [(); 0x30] = [(); core::mem::offset_of!(InitDataG15V14_7<'static>, g15_q6_q18_uat)];
+    const _: [(); 0x30] = [(); core::mem::offset_of!(InitDataG15V14_7<'static>, g15_q6_q20_uat)];
     const _: [(); 0xa8] = [(); core::mem::offset_of!(InitDataG15V14_7<'static>, g15_q21)];
     const _: [(); 0xb0] = [(); core::mem::offset_of!(InitDataG15V14_7<'static>, g15_q22)];
     const _: [(); 0xb8] = [(); core::mem::offset_of!(InitDataG15V14_7<'static>, g15_q23)];
