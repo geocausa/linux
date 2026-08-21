@@ -191,6 +191,94 @@ pub(crate) mod raw {
     const _: [(); 0xbe5] = [(); core::mem::offset_of!(G15Q4Config, table_be5)];
     const _: [(); 0xde5] = [(); core::mem::offset_of!(G15Q4Config, zero_de5)];
 
+    /// G15 q22 cache-flush ring control block, exact 0x20 bytes.
+    /// Firmware consumes entries from read_idx and compares against write_idx
+    /// at +0x10 modulo 256.
+    #[derive(Debug)]
+    #[repr(C)]
+    pub(crate) struct G15CacheFlushState {
+        pub(crate) read_idx: AtomicU32,   // +0x00
+        pub(crate) pad_004: Pad<0x0c>,
+        pub(crate) write_idx: AtomicU32,  // +0x10
+        pub(crate) pad_014: Pad<0x0c>,
+    }
+    default_zeroed!(G15CacheFlushState);
+    const _: [(); 0x20] = [(); core::mem::size_of::<G15CacheFlushState>()];
+    const _: [(); 0x10] = [(); core::mem::offset_of!(G15CacheFlushState, write_idx)];
+
+    /// One G15 cache-flush ring entry, exact 0x18 bytes. Firmware walks 256
+    /// entries, so the Apple ring allocation is exactly 0x1800 bytes.
+    #[derive(Debug, Default, Clone, Copy)]
+    #[repr(C)]
+    pub(crate) struct G15CacheFlushEntry {
+        pub(crate) addr: U64,        // +0x00
+        pub(crate) unk_08: U32,      // +0x08
+        pub(crate) context_id: U32,  // +0x0c
+        pub(crate) page_count: u16,  // +0x10
+        pub(crate) flags: u16,       // +0x12
+        pub(crate) unk_14: U32,      // +0x14
+    }
+    const _: [(); 0x18] = [(); core::mem::size_of::<G15CacheFlushEntry>()];
+    const _: [(); 0x0c] = [(); core::mem::offset_of!(G15CacheFlushEntry, context_id)];
+    const _: [(); 0x10] = [(); core::mem::offset_of!(G15CacheFlushEntry, page_count)];
+    const _: [(); 0x12] = [(); core::mem::offset_of!(G15CacheFlushEntry, flags)];
+
+    /// G15 root q22: exact 0xc3d0-byte host/FW shared object.
+    ///
+    /// Apple maps CPU/GPU pair +0x620/+0x630 into root q22. The fields below
+    /// are all directly observed in host initialization or firmware accesses;
+    /// unresolved regions stay zeroed and offset-named.
+    #[derive(Debug)]
+    #[repr(C)]
+    pub(crate) struct G15Q22Shared {
+        pub(crate) host_zero_0000: U32,
+        pub(crate) pad_0004: Pad<0x04>,
+        pub(crate) host_zero_0008: U32,
+        pub(crate) pad_000c: Pad<0x4024>,
+        pub(crate) trace_enable_4030: U32,
+        pub(crate) pad_4034: Pad<0x18>,
+        pub(crate) trace_desc_ptr_404c: U64,
+        pub(crate) trace_desc_count_4054: U32,
+        pub(crate) pad_4058: Pad<0x510>,
+        pub(crate) shared_ptr_4568: U64,
+        pub(crate) shared_ptr_4570: U64,
+        pub(crate) pad_4578: Pad<0x08>,
+        pub(crate) epoch_4580: U64,
+        pub(crate) pad_4588: Pad<0x08>,
+        pub(crate) state_4590: U32,
+        pub(crate) pad_4594: Pad<0x0c>,
+        pub(crate) state_45a0: U32,
+        pub(crate) pad_45a4: Pad<0x0c>,
+        pub(crate) state_45b0: U32,
+        pub(crate) pad_45b4: Pad<0x0c>,
+        pub(crate) counter_45c0: U32,
+        pub(crate) host_flag_45c4: U32,
+        pub(crate) pad_45c8: Pad<0x7e00>,
+        pub(crate) host_zero_c3c8: U32,
+        pub(crate) feature_c3cc: U32,
+    }
+    default_zeroed!(G15Q22Shared);
+    const _: [(); 0xc3d0] = [(); core::mem::size_of::<G15Q22Shared>()];
+    const _: [(); 0x4030] = [(); core::mem::offset_of!(G15Q22Shared, trace_enable_4030)];
+    const _: [(); 0x404c] = [(); core::mem::offset_of!(G15Q22Shared, trace_desc_ptr_404c)];
+    const _: [(); 0x4054] = [(); core::mem::offset_of!(G15Q22Shared, trace_desc_count_4054)];
+    const _: [(); 0x4568] = [(); core::mem::offset_of!(G15Q22Shared, shared_ptr_4568)];
+    const _: [(); 0x4580] = [(); core::mem::offset_of!(G15Q22Shared, epoch_4580)];
+    const _: [(); 0x45c4] = [(); core::mem::offset_of!(G15Q22Shared, host_flag_45c4)];
+    const _: [(); 0xc3c8] = [(); core::mem::offset_of!(G15Q22Shared, host_zero_c3c8)];
+    const _: [(); 0xc3cc] = [(); core::mem::offset_of!(G15Q22Shared, feature_c3cc)];
+
+    /// G15 root q23: exact 0x238-byte host/FW shared state object. Apple maps
+    /// CPU/GPU pair +0x628/+0x638 into q23. Host initialization is zero for the
+    /// observed fields (including +0x1e8); firmware owns most runtime updates.
+    #[derive(Debug)]
+    #[repr(C)]
+    pub(crate) struct G15Q23Shared {
+        pub(crate) opaque: Array<0x238, u8>,
+    }
+    default_zeroed!(G15Q23Shared);
+    const _: [(); 0x238] = [(); core::mem::size_of::<G15Q23Shared>()];
+
     #[derive(Debug)]
     #[repr(C)]
     pub(crate) struct HwDataShared1 {
@@ -1270,7 +1358,7 @@ pub(crate) mod raw {
         #[ver(G == G15)]
         pub(crate) hwdata_b: GpuPointer<'a, super::HwDataB::ver>, // +0x000
         #[ver(G == G15)]
-        pub(crate) g15_unk_008: U64,
+        pub(crate) g15_fwbrn_table: U64, // +0x008: null on G15 (FWBRN size getter returns 0)
         #[ver(G == G15)]
         pub(crate) g15_unk_010: U64,
         #[ver(G == G15)]
@@ -1341,6 +1429,7 @@ pub(crate) mod raw {
     const _: [(); 0x490] = [(); core::mem::size_of::<RuntimePointersG15V14_7<'static>>()];
 
     const _: [(); 0x000] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, hwdata_b)];
+    const _: [(); 0x008] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_fwbrn_table)];
     const _: [(); 0x018] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, pipes)];
     const _: [(); 0x198] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, device_control)];
     const _: [(); 0x1b8] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, event)];
@@ -1760,6 +1849,9 @@ impl<U: Copy> ChannelRing<channels::ChannelState, U> {
 trivial_gpustruct!(FwStatus);
 trivial_gpustruct!(G15SharedStatus);
 trivial_gpustruct!(G15Q4Config);
+trivial_gpustruct!(G15CacheFlushState);
+trivial_gpustruct!(G15Q22Shared);
+trivial_gpustruct!(G15Q23Shared);
 trivial_gpustruct!(G15StatsVtx);
 trivial_gpustruct!(G15StatsFrag);
 trivial_gpustruct!(G15StatsComp);
@@ -1846,9 +1938,13 @@ pub(crate) struct InitData {
     #[ver(G == G15)]
     pub(crate) g15_q21: GpuObject<G15SharedStatus>,
     #[ver(G == G15)]
-    pub(crate) g15_q22: GpuArray<u8>,
+    pub(crate) g15_cache_flush_state: GpuObject<G15CacheFlushState>,
     #[ver(G == G15)]
-    pub(crate) g15_q23: GpuArray<u8>,
+    pub(crate) g15_cache_flush_ring: GpuArray<raw::G15CacheFlushEntry>,
+    #[ver(G == G15)]
+    pub(crate) g15_q22: GpuObject<G15Q22Shared>,
+    #[ver(G == G15)]
+    pub(crate) g15_q23: GpuObject<G15Q23Shared>,
 }
 
 #[versions(AGX)]

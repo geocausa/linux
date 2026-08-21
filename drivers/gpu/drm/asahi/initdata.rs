@@ -991,7 +991,7 @@ impl<'a> InitDataBuilder::ver<'a> {
                     #[ver(G == G15)]
                     hwdata_b: inner.hwdata_b.gpu_pointer(),
                     #[ver(G == G15)]
-                    g15_unk_008: U64(0),
+                    g15_fwbrn_table: U64(0),
                     #[ver(G == G15)]
                     g15_unk_010: U64(inner.g15_aux_010.gpu_va().get()),
                     #[ver(G == G15)]
@@ -1135,19 +1135,36 @@ impl<'a> InitDataBuilder::ver<'a> {
             },
         )?;
         #[ver(G == G15)]
-        let mut g15_q22 = self.alloc.shared.array_empty(0xc3d0)?;
+        let g15_cache_flush_state = self.alloc.shared.new_default::<G15CacheFlushState>()?;
         #[ver(G == G15)]
-        let g15_q23 = self.alloc.shared.array_empty(0x238)?;
+        let g15_cache_flush_ring = self
+            .alloc
+            .shared
+            .array_empty::<raw::G15CacheFlushEntry>(0x100)?;
+        #[ver(G == G15)]
+        let g15_q22 = self.alloc.shared.new_object(
+            Default::default(),
+            |_inner| raw::G15Q22Shared {
+                // Apple maps the exact 0x20 control block and 0x1800 ring at
+                // q22 +0x4568/+0x4570. Firmware consumes 0x18-byte entries.
+                shared_ptr_4568: U64(g15_cache_flush_state.gpu_va().get()),
+                shared_ptr_4570: U64(g15_cache_flush_ring.gpu_va().get()),
+                // Apple sets +0x45c4 to one before firmware starts. G15's
+                // accelerator configure path clears feature bit 28 before the
+                // const smart-idle query, so +0xc3cc is exactly zero on J615.
+                host_flag_45c4: U32(1),
+                feature_c3cc: U32(0),
+                ..Default::default()
+            },
+        )?;
+        #[ver(G == G15)]
+        let g15_q23 = self.alloc.shared.new_default::<G15Q23Shared>()?;
 
         #[ver(G == G15)]
         {
-            // Apple host-proven initial values for the remaining opaque shared
-            // root objects. q21 is now a typed 0x20-byte G15SharedStatus above.
-            g15_q22.as_mut_slice()[0x45c4..0x45c8].copy_from_slice(&1u32.to_le_bytes());
-
-            // q4 is now a typed exact-size G15Q4Config above. Proven J615
-            // constants are initialized in the raw constructor; fields whose
-            // accelerator/ADT source is not yet reconstructed stay zero.
+            // q4/q21/q22/q23 are now exact-size typed G15 root objects.
+            // Fields whose accelerator/ADT source is not yet reconstructed
+            // deliberately remain zero; runtime G15 dispatch is still off.
         }
         let cfg = self.cfg;
 
@@ -1175,6 +1192,10 @@ impl<'a> InitDataBuilder::ver<'a> {
                 g15_globals,
                 #[ver(G == G15)]
                 g15_q21,
+                #[ver(G == G15)]
+                g15_cache_flush_state,
+                #[ver(G == G15)]
+                g15_cache_flush_ring,
                 #[ver(G == G15)]
                 g15_q22,
                 #[ver(G == G15)]
