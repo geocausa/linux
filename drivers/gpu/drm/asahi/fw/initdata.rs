@@ -117,8 +117,8 @@ pub(crate) mod raw {
         pub(crate) unk_054: u16,                   // accelerator +0x6c8
         pub(crate) zero_056: U32,                  // deliberately unaligned
         pub(crate) low2_clear_05a: U32,            // ((accelerator[0x9d08] & 3) == 0)
-        pub(crate) unk_05e: U32,                   // deliberately unaligned
-        pub(crate) unk_062: U32,                   // deliberately unaligned
+        pub(crate) cswitch_timer_multiplier_05e: U32, // deliberately unaligned
+        pub(crate) cdm_cswitch_mode_change_062: U32, // deliberately unaligned
         pub(crate) pad_066: Pad<0x0a>,
         pub(crate) command_submission_enabled_070: U32,
         pub(crate) unk_074: U32,
@@ -126,7 +126,7 @@ pub(crate) mod raw {
         pub(crate) pad_07c: Pad<0x04>,
         pub(crate) unk_080: U32,
         pub(crate) pad_084: Pad<0x08>,
-        pub(crate) unk_08c: U32,
+        pub(crate) perf_state_cap_percent_08c: U32,
         pub(crate) performance_target_090: U32,
         pub(crate) performance_transfer_output_094: U32,
         pub(crate) performance_boost_min_util_098: U32,
@@ -190,8 +190,10 @@ pub(crate) mod raw {
     const _: [(); 0x04c] = [(); core::mem::offset_of!(G15Q4Config, kick_channel_qos_arg1_04c)];
     const _: [(); 0x056] = [(); core::mem::offset_of!(G15Q4Config, zero_056)];
     const _: [(); 0x05a] = [(); core::mem::offset_of!(G15Q4Config, low2_clear_05a)];
-    const _: [(); 0x05e] = [(); core::mem::offset_of!(G15Q4Config, unk_05e)];
+    const _: [(); 0x05e] = [(); core::mem::offset_of!(G15Q4Config, cswitch_timer_multiplier_05e)];
+    const _: [(); 0x062] = [(); core::mem::offset_of!(G15Q4Config, cdm_cswitch_mode_change_062)];
     const _: [(); 0x070] = [(); core::mem::offset_of!(G15Q4Config, command_submission_enabled_070)];
+    const _: [(); 0x08c] = [(); core::mem::offset_of!(G15Q4Config, perf_state_cap_percent_08c)];
     const _: [(); 0x090] = [(); core::mem::offset_of!(G15Q4Config, performance_target_090)];
     const _: [(); 0x094] = [(); core::mem::offset_of!(G15Q4Config, performance_transfer_output_094)];
     const _: [(); 0x098] = [(); core::mem::offset_of!(G15Q4Config, performance_boost_min_util_098)];

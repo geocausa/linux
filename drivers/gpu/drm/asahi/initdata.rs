@@ -1186,7 +1186,8 @@ impl<'a> InitDataBuilder::ver<'a> {
                 // On exact J615, the `model-slow` probe property is absent.
                 // Apple therefore writes 1 to HwDataB +0xa6c, and the arm
                 // firmware setup copies/defaults that value into q4 +0x05e.
-                unk_05e: U32(1),
+                // The same field is the target of setCSwitchTimerMultiplier().
+                cswitch_timer_multiplier_05e: U32(1),
                 // AGXArmFirmware::setupConfig copies the four values below
                 // from accelerator +0x1e48..+0x1e60. AGXAccelerator's static
                 // initialization proves their exact J615 values.
