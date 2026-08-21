@@ -161,7 +161,7 @@ pub(crate) mod raw {
         pub(crate) unk_9a0: U32,
         pub(crate) unk_9a4: U32,
         pub(crate) unk_9a8: U32,
-        pub(crate) zero_9ac: U32,
+        pub(crate) gvdm_timer_interval_9ac: U32,
         pub(crate) cl_context_switch_timeout_9b0: U32,
         pub(crate) cl_kill_timeout_9b4: U32,
         pub(crate) zero_9b8: U32,
@@ -209,7 +209,7 @@ pub(crate) mod raw {
     const _: [(); 0x7dc] = [(); core::mem::offset_of!(G15Q4Config, gpu_keepalive_off_mode_threshold_7dc)];
     const _: [(); 0x96c] = [(); core::mem::offset_of!(G15Q4Config, unk_96c)];
     const _: [(); 0x97c] = [(); core::mem::offset_of!(G15Q4Config, unk_97c)];
-    const _: [(); 0x9ac] = [(); core::mem::offset_of!(G15Q4Config, zero_9ac)];
+    const _: [(); 0x9ac] = [(); core::mem::offset_of!(G15Q4Config, gvdm_timer_interval_9ac)];
     const _: [(); 0x9b0] = [(); core::mem::offset_of!(G15Q4Config, cl_context_switch_timeout_9b0)];
     const _: [(); 0x9b4] = [(); core::mem::offset_of!(G15Q4Config, cl_kill_timeout_9b4)];
     const _: [(); 0x9bc] = [(); core::mem::offset_of!(G15Q4Config, cdm_backoff_timeout_9bc)];

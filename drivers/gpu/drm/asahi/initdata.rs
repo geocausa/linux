@@ -1223,6 +1223,9 @@ impl<'a> InitDataBuilder::ver<'a> {
                 // calls in AGXArmFirmware::initFirmwareData.
                 cl_context_switch_timeout_9b0: U32(0x28),
                 cl_kill_timeout_9b4: U32(0x32),
+                // initFirmwareData explicitly clears the GVDM timer field;
+                // setGVDMTimerInterval() targets the same q4 +0x9ac word.
+                gvdm_timer_interval_9ac: U32(0),
                 cdm_backoff_timeout_9bc: 0x04,
                 ..Default::default()
             },
