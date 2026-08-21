@@ -1175,6 +1175,15 @@ impl<'a> InitDataBuilder::ver<'a> {
                 // setRelaxedCLKillTimeout(); ChinookV9's default is 3000.
                 relaxed_cl_kill_timeout_020: U32(0x0bb8),
                 frg_task_timeout_024: U32(0),
+                // Base AGXAccelerator::configureDevice() forces config bit 0
+                // on before firmware data construction. AGXFirmware copies
+                // that bit directly to q4 +0x02c.
+                accelerator_config_bit0_02c: U32(1),
+                // q4 +0x030 is accelerator config bit 1 / Smart Idle Off.
+                // The exact AGXG15G personality table has three T8122
+                // matches (G15G, G15G_A0, G15G_B0), and every matching
+                // subclass returns 1 from halIsSmartidleOffEnabled().
+                smart_idle_off_enabled_030: U32(1),
                 constant_038: U32(0x78),
                 unk_050: 0xffff,
                 unk_052: 0x0028,

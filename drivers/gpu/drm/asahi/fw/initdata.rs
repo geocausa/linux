@@ -103,8 +103,8 @@ pub(crate) mod raw {
         pub(crate) relaxed_cl_kill_timeout_020: U32,
         pub(crate) frg_task_timeout_024: U32,       // setFRGTaskTimeout(); exact G15 zero
         pub(crate) unk_028: U32,
-        pub(crate) unk_02c: U32,
-        pub(crate) unk_030: U32,
+        pub(crate) accelerator_config_bit0_02c: U32,
+        pub(crate) smart_idle_off_enabled_030: U32,
         pub(crate) zero_034: U32,
         pub(crate) constant_038: U32,              // exact host constant 0x78
         pub(crate) cpms_window_size_03c: U32,       // setCPMSWindowSize()
@@ -186,6 +186,8 @@ pub(crate) mod raw {
     const _: [(); 0x01c] = [(); core::mem::offset_of!(G15Q4Config, unk_01c)];
     const _: [(); 0x020] = [(); core::mem::offset_of!(G15Q4Config, relaxed_cl_kill_timeout_020)];
     const _: [(); 0x024] = [(); core::mem::offset_of!(G15Q4Config, frg_task_timeout_024)];
+    const _: [(); 0x02c] = [(); core::mem::offset_of!(G15Q4Config, accelerator_config_bit0_02c)];
+    const _: [(); 0x030] = [(); core::mem::offset_of!(G15Q4Config, smart_idle_off_enabled_030)];
     const _: [(); 0x038] = [(); core::mem::offset_of!(G15Q4Config, constant_038)];
     const _: [(); 0x03c] = [(); core::mem::offset_of!(G15Q4Config, cpms_window_size_03c)];
     const _: [(); 0x040] = [(); core::mem::offset_of!(G15Q4Config, cpms_tfca_size_040)];
