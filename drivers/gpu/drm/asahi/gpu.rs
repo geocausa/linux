@@ -1653,10 +1653,10 @@ impl GpuManager for GpuManager::ver {
 
         #[ver(G == G15)]
         {
-            // q22 +0x4568/+0x4570 is the exact G15 successor: its 0x20 state
-            // has the same read/write-index positions, while each request grows
-            // from the legacy 0x14 bytes to 0x18 bytes. Do not feed the legacy
-            // message/channel into it until the extra +0x14 word is proven.
+            // q22 +0x4568/+0x4570 is the exact G15 successor. Apple proves the
+            // new +0x14 dword is zero, but notifyNewMapping() also constructs
+            // the legacy-looking +0x08/+0x10/+0x12 fields differently. Keep
+            // this fail-closed until the G15-native request encoder is ported.
             let _ = msg;
             return Err(ENODEV);
         }

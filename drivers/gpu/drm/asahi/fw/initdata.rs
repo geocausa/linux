@@ -207,10 +207,10 @@ pub(crate) mod raw {
     const _: [(); 0x20] = [(); core::mem::size_of::<G15CacheFlushState>()];
     const _: [(); 0x10] = [(); core::mem::offset_of!(G15CacheFlushState, write_idx)];
 
-    /// One G15 firmware-control/cache-flush entry, exact 0x18 bytes. Its
-    /// first 0x14 bytes are field-for-field the legacy FwCtlMsg ABI
-    /// (address/+8/+c context/+10 count/+12 flags), with a new G15 u32 at
-    /// +0x14. Firmware walks 256 entries, so Apple allocates exactly 0x1800.
+    /// One G15 firmware-control/mapping entry, exact 0x18 bytes. Its first
+    /// 0x14 bytes retain the legacy FwCtlMsg field boundaries, but G15 host
+    /// construction has changed semantics. Apple zeroes the new +0x14 dword
+    /// before insertion. Firmware walks 256 entries, so the ring is 0x1800.
     #[derive(Debug, Default, Clone, Copy)]
     #[repr(C)]
     pub(crate) struct G15CacheFlushEntry {
@@ -219,12 +219,13 @@ pub(crate) mod raw {
         pub(crate) context_id: U32,  // +0x0c
         pub(crate) page_count: u16,  // +0x10
         pub(crate) flags: u16,       // +0x12
-        pub(crate) unk_14: U32,      // +0x14
+        pub(crate) reserved_14: U32, // +0x14, Apple notifyNewMapping writes zero
     }
     const _: [(); 0x18] = [(); core::mem::size_of::<G15CacheFlushEntry>()];
     const _: [(); 0x0c] = [(); core::mem::offset_of!(G15CacheFlushEntry, context_id)];
     const _: [(); 0x10] = [(); core::mem::offset_of!(G15CacheFlushEntry, page_count)];
     const _: [(); 0x12] = [(); core::mem::offset_of!(G15CacheFlushEntry, flags)];
+    const _: [(); 0x14] = [(); core::mem::offset_of!(G15CacheFlushEntry, reserved_14)];
 
     /// G15 root q22: exact 0xc3d0-byte host/FW shared object.
     ///
