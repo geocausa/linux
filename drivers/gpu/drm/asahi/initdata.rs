@@ -1066,7 +1066,12 @@ impl<'a> InitDataBuilder::ver<'a> {
                     #[ver(G == G15)]
                     g15_zero_2d4: 0,
                     #[ver(G == G15)]
-                    g15_opaque_2d8: Default::default(),
+                    // Firmware owns +0x2d8..+0x3af and performs its own
+                    // first-boot initialization (including +0x2fc = 1 and
+                    // +0x314 = 0xabcdabcd). Keep the compile-only host image
+                    // zeroed until any additional host-side initialization is
+                    // directly proven.
+                    g15_runtime_state: Default::default(),
                     #[ver(G == G15)]
                     g15_marker_3b0: 0xff,
                     #[ver(G == G15)]

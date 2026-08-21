@@ -1151,6 +1151,68 @@ pub(crate) mod raw {
     }
     const _: [(); 0x08] = [(); core::mem::size_of::<G15HWDSCounterEntry>()];
 
+    /// Firmware-owned G15 runtime accounting state embedded in the compact
+    /// wrapper at +0x2d8. The observed host init methods do not populate this
+    /// region; early firmware binds it as a persistent state block, clears the
+    /// ranges below, sets +0x2fc to 1 and writes the +0x314 magic marker.
+    #[derive(Debug)]
+    #[repr(C)]
+    pub(crate) struct G15RuntimeState {
+        pub(crate) state_2d8: AtomicU32,             // +0x00 / wrapper +0x2d8
+        pub(crate) zero_2dc_2fb: Pad<0x20>,          // +0x04
+        pub(crate) fw_initialized_2fc: AtomicU32,    // +0x24, FW sets to 1
+        pub(crate) active_mask_300: U64,             // +0x28
+        pub(crate) active_mask_308: U64,             // +0x30
+        pub(crate) state_310: AtomicU32,             // +0x38
+        pub(crate) magic_314: U32,                   // +0x3c, FW sets 0xabcdabcd
+        pub(crate) active_318: AtomicU32,            // +0x40
+        pub(crate) active_31c: AtomicU32,            // +0x44
+        pub(crate) active_320: AtomicU32,            // +0x48
+        pub(crate) counts_324: Array<36, u16>,       // +0x4c, exact 0x48 bytes
+        pub(crate) active_36c: AtomicU32,            // +0x94
+        pub(crate) opaque_370: Pad<0x08>,            // +0x98
+        pub(crate) zero_378: U32,                    // +0xa0
+        pub(crate) zero_37c: U64,                    // +0xa4 (unaligned)
+        pub(crate) zero_384: U64,                    // +0xac
+        pub(crate) zero_38c: U64,                    // +0xb4
+        pub(crate) zero_394: U64,                    // +0xbc
+        pub(crate) zero_39c: U64,                    // +0xc4
+        pub(crate) zero_3a4: U64,                    // +0xcc
+        pub(crate) opaque_3ac: Pad<0x04>,            // +0xd4
+    }
+    default_zeroed!(G15RuntimeState);
+    const _: [(); 0xd8] = [(); core::mem::size_of::<G15RuntimeState>()];
+    const _: [(); 0x24] = [(); core::mem::offset_of!(G15RuntimeState, fw_initialized_2fc)];
+    const _: [(); 0x28] = [(); core::mem::offset_of!(G15RuntimeState, active_mask_300)];
+    const _: [(); 0x38] = [(); core::mem::offset_of!(G15RuntimeState, state_310)];
+    const _: [(); 0x3c] = [(); core::mem::offset_of!(G15RuntimeState, magic_314)];
+    const _: [(); 0x40] = [(); core::mem::offset_of!(G15RuntimeState, active_318)];
+    const _: [(); 0x4c] = [(); core::mem::offset_of!(G15RuntimeState, counts_324)];
+    const _: [(); 0x94] = [(); core::mem::offset_of!(G15RuntimeState, active_36c)];
+    const _: [(); 0xa0] = [(); core::mem::offset_of!(G15RuntimeState, zero_378)];
+    const _: [(); 0xd4] = [(); core::mem::offset_of!(G15RuntimeState, opaque_3ac)];
+
+    /// G15 wrapper tail at +0x459. AGXArmFirmware::init() explicitly clears
+    /// four deliberately unaligned qwords at +0x46d/+0x475/+0x47d/+0x485.
+    /// The remaining bytes are still semantically unresolved.
+    #[derive(Debug)]
+    #[repr(C)]
+    pub(crate) struct G15WrapperTail {
+        pub(crate) opaque_459: Pad<0x14>,
+        pub(crate) zero_46d: U64,
+        pub(crate) zero_475: U64,
+        pub(crate) zero_47d: U64,
+        pub(crate) zero_485: U64,
+        pub(crate) opaque_48d: Pad<0x03>,
+    }
+    default_zeroed!(G15WrapperTail);
+    const _: [(); 0x37] = [(); core::mem::size_of::<G15WrapperTail>()];
+    const _: [(); 0x14] = [(); core::mem::offset_of!(G15WrapperTail, zero_46d)];
+    const _: [(); 0x1c] = [(); core::mem::offset_of!(G15WrapperTail, zero_475)];
+    const _: [(); 0x24] = [(); core::mem::offset_of!(G15WrapperTail, zero_47d)];
+    const _: [(); 0x2c] = [(); core::mem::offset_of!(G15WrapperTail, zero_485)];
+    const _: [(); 0x34] = [(); core::mem::offset_of!(G15WrapperTail, opaque_48d)];
+
     /// Exact G15 global statistics backing allocations referenced by wrapper
     /// +0x234/+0x23c/+0x244. They remain separate from the legacy Stats owner
     /// until the G15 render/compute command statistics ABI is reconstructed.
@@ -1437,7 +1499,7 @@ pub(crate) mod raw {
         #[ver(G == G15)]
         pub(crate) g15_zero_2d4: u32, // +0x2d4: accelerator +0x1e0c, explicitly zeroed
         #[ver(G == G15)]
-        pub(crate) g15_opaque_2d8: Array<0xd8, u8>,
+        pub(crate) g15_runtime_state: G15RuntimeState, // +0x2d8..+0x3af, FW-owned
         #[ver(G == G15)]
         pub(crate) g15_marker_3b0: u8,
         #[ver(G == G15)]
@@ -1449,7 +1511,7 @@ pub(crate) mod raw {
         #[ver(G == G15)]
         pub(crate) g15_zero_451: U64, // +0x451: accelerator +0x1d88, same zeroed 16-byte block
         #[ver(G == G15)]
-        pub(crate) g15_tail_459: Array<0x37, u8>,
+        pub(crate) g15_tail_459: G15WrapperTail,
     }
     #[versions(AGX)]
     no_debug!(RuntimePointers::ver<'_>);
@@ -1473,6 +1535,7 @@ pub(crate) mod raw {
     const _: [(); 0x2a8] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_hwds_counters)];
     const _: [(); 0x2d0] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_usc_max_tgmem)];
     const _: [(); 0x2d4] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_zero_2d4)];
+    const _: [(); 0x2d8] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_runtime_state)];
     const _: [(); 0x2b0] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_pb_desc_addr)];
     const _: [(); 0x2c8] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_uma_page_pool_desc_fw_addr)];
     const _: [(); 0x3b0] = [(); core::mem::offset_of!(RuntimePointersG15V14_7<'static>, g15_marker_3b0)];
