@@ -1002,6 +1002,11 @@ impl<'a> InitDataBuilder::ver<'a> {
                     ver_info: Array::new([0x6ba0, 0x1f28, 0x601, 0xb0]),
                     #[ver(V == V13_5 && G == G14X)]
                     ver_info: Array::new([0xb390, 0x70f8, 0x601, 0xb0]),
+                    // Exact AGXG15G / RTKit-2419.140.12 InitData interface signature.
+                    // This defines the compile-time ABI variant only; T8122 runtime
+                    // dispatch and OF matching remain intentionally absent.
+                    #[ver(V == V14_7 && G == G15)]
+                    ver_info: Array::new([0x0490, 0x8380, 0xe21e, 0x0c08]),
                     unk_buf: inner.unk_buf.gpu_pointer(),
                     unk_8: 0,
                     unk_c: 0,

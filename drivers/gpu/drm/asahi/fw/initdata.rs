@@ -616,9 +616,13 @@ pub(crate) mod raw {
         {
             0x18
         }
-        #[ver(V >= V13_5)]
+        #[ver(V >= V13_5 && G < G15)]
         {
             0x19
+        }
+        #[ver(G == G15)]
+        {
+            0x1f
         }
     };
 
