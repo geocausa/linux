@@ -107,11 +107,11 @@ pub(crate) mod raw {
         pub(crate) unk_030: U32,
         pub(crate) zero_034: U32,
         pub(crate) constant_038: U32,              // exact host constant 0x78
-        pub(crate) zero_03c: U32,
-        pub(crate) zero_040: U32,
+        pub(crate) cpms_window_size_03c: U32,       // setCPMSWindowSize()
+        pub(crate) cpms_tfca_size_040: U32,         // setCPMSTFCASize()
         pub(crate) zero_044: U32,
-        pub(crate) zero_048: U32,
-        pub(crate) zero_04c: U32,
+        pub(crate) kick_channel_qos_arg2_048: U32, // setKickChannelQos() arg2
+        pub(crate) kick_channel_qos_arg1_04c: U32, // setKickChannelQos() arg1
         pub(crate) unk_050: u16,                   // accelerator +0x6c4
         pub(crate) unk_052: u16,                   // accelerator +0x6c6
         pub(crate) unk_054: u16,                   // accelerator +0x6c8
@@ -120,19 +120,19 @@ pub(crate) mod raw {
         pub(crate) unk_05e: U32,                   // deliberately unaligned
         pub(crate) unk_062: U32,                   // deliberately unaligned
         pub(crate) pad_066: Pad<0x0a>,
-        pub(crate) unk_070: U32,
+        pub(crate) command_submission_enabled_070: U32,
         pub(crate) unk_074: U32,
         pub(crate) unk_078: U32,
         pub(crate) pad_07c: Pad<0x04>,
         pub(crate) unk_080: U32,
         pub(crate) pad_084: Pad<0x08>,
         pub(crate) unk_08c: U32,
-        pub(crate) unk_090: U32,
-        pub(crate) unk_094: U32,
-        pub(crate) unk_098: U32,
-        pub(crate) unk_09c: U32,
-        pub(crate) pad_0a0: Pad<0x04>,
-        pub(crate) unk_0a4: u8,
+        pub(crate) performance_target_090: U32,
+        pub(crate) performance_transfer_output_094: U32,
+        pub(crate) performance_boost_min_util_098: U32,
+        pub(crate) performance_boost_ce_step_09c: U32,
+        pub(crate) performance_reset_iters_0a0: U32,
+        pub(crate) performance_boost_min_util_valid_0a4: u8,
         pub(crate) pad_0a5: Pad<0x1ca>,
         pub(crate) unk_26f: u8,
         pub(crate) pad_270: Pad<0x538>,
@@ -184,9 +184,20 @@ pub(crate) mod raw {
     const _: [(); 0x020] = [(); core::mem::offset_of!(G15Q4Config, relaxed_cl_kill_timeout_020)];
     const _: [(); 0x024] = [(); core::mem::offset_of!(G15Q4Config, frg_task_timeout_024)];
     const _: [(); 0x038] = [(); core::mem::offset_of!(G15Q4Config, constant_038)];
+    const _: [(); 0x03c] = [(); core::mem::offset_of!(G15Q4Config, cpms_window_size_03c)];
+    const _: [(); 0x040] = [(); core::mem::offset_of!(G15Q4Config, cpms_tfca_size_040)];
+    const _: [(); 0x048] = [(); core::mem::offset_of!(G15Q4Config, kick_channel_qos_arg2_048)];
+    const _: [(); 0x04c] = [(); core::mem::offset_of!(G15Q4Config, kick_channel_qos_arg1_04c)];
     const _: [(); 0x056] = [(); core::mem::offset_of!(G15Q4Config, zero_056)];
     const _: [(); 0x05a] = [(); core::mem::offset_of!(G15Q4Config, low2_clear_05a)];
     const _: [(); 0x05e] = [(); core::mem::offset_of!(G15Q4Config, unk_05e)];
+    const _: [(); 0x070] = [(); core::mem::offset_of!(G15Q4Config, command_submission_enabled_070)];
+    const _: [(); 0x090] = [(); core::mem::offset_of!(G15Q4Config, performance_target_090)];
+    const _: [(); 0x094] = [(); core::mem::offset_of!(G15Q4Config, performance_transfer_output_094)];
+    const _: [(); 0x098] = [(); core::mem::offset_of!(G15Q4Config, performance_boost_min_util_098)];
+    const _: [(); 0x09c] = [(); core::mem::offset_of!(G15Q4Config, performance_boost_ce_step_09c)];
+    const _: [(); 0x0a0] = [(); core::mem::offset_of!(G15Q4Config, performance_reset_iters_0a0)];
+    const _: [(); 0x0a4] = [(); core::mem::offset_of!(G15Q4Config, performance_boost_min_util_valid_0a4)];
     const _: [(); 0x7a8] = [(); core::mem::offset_of!(G15Q4Config, unk_7a8)];
     const _: [(); 0x96c] = [(); core::mem::offset_of!(G15Q4Config, unk_96c)];
     const _: [(); 0x97c] = [(); core::mem::offset_of!(G15Q4Config, unk_97c)];
