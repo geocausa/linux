@@ -1326,6 +1326,18 @@ impl<'a> InitDataBuilder::ver<'a> {
                 // setGVDMTimerInterval() targets the same q4 +0x9ac word.
                 gvdm_timer_interval_9ac: U32(0),
                 cdm_backoff_timeout_9bc: 0x04,
+                // Exact host bootstrap clears/retains these as zero. The
+                // table selector is explicitly zeroed before firmware can
+                // take the optional +0x9e5 table-copy path.
+                zero_9b8: U32(0),
+                table_selector_9dd: U64(0),
+                zero_de5: U32(0),
+                // Keepalive override setters are runtime-only. Zero means
+                // no override; threshold getters fall back to +0x7d8/+0x7dc.
+                gpu_keepalive_override_de9: U32(0),
+                gfxc_keepalive_override_ded: U32(0),
+                gpu_keepalive_perf_mode_threshold_override_df1: U32(0),
+                gpu_keepalive_off_mode_threshold_override_df5: U32(0),
                 // initFirmwareData calls ChinookV9 initSoftFaultSettings(true).
                 // Its updater encodes enabled as bit0=1, bit1=0, bit2=0 and
                 // masks the word to three bits, yielding exact q4 +0xdf9 = 1.
