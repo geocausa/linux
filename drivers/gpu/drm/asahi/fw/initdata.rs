@@ -100,7 +100,7 @@ pub(crate) mod raw {
         pub(crate) zero_014: U32,
         pub(crate) zero_018: U32,
         pub(crate) unk_01c: U32,                   // exact G15 source +0x2970; zero
-        pub(crate) unk_020: U32,
+        pub(crate) relaxed_cl_kill_timeout_020: U32,
         pub(crate) frg_task_timeout_024: U32,       // setFRGTaskTimeout(); exact G15 zero
         pub(crate) unk_028: U32,
         pub(crate) unk_02c: U32,
@@ -162,10 +162,11 @@ pub(crate) mod raw {
         pub(crate) unk_9a4: U32,
         pub(crate) unk_9a8: U32,
         pub(crate) zero_9ac: U32,
-        pub(crate) unk_9b0: U32,
-        pub(crate) unk_9b4: U32,
+        pub(crate) cl_context_switch_timeout_9b0: U32,
+        pub(crate) cl_kill_timeout_9b4: U32,
         pub(crate) zero_9b8: U32,
-        pub(crate) pad_9bc: Pad<0x21>,
+        pub(crate) cdm_backoff_timeout_9bc: u8,
+        pub(crate) pad_9bd: Pad<0x20>,
         pub(crate) table_selector_9dd: U64,
         pub(crate) table_9e5: Array<0x200, u8>,
         pub(crate) table_be5: Array<0x200, u8>,
@@ -180,6 +181,7 @@ pub(crate) mod raw {
     default_zeroed!(G15Q4Config);
     const _: [(); 0xe00] = [(); core::mem::size_of::<G15Q4Config>()];
     const _: [(); 0x01c] = [(); core::mem::offset_of!(G15Q4Config, unk_01c)];
+    const _: [(); 0x020] = [(); core::mem::offset_of!(G15Q4Config, relaxed_cl_kill_timeout_020)];
     const _: [(); 0x024] = [(); core::mem::offset_of!(G15Q4Config, frg_task_timeout_024)];
     const _: [(); 0x038] = [(); core::mem::offset_of!(G15Q4Config, constant_038)];
     const _: [(); 0x056] = [(); core::mem::offset_of!(G15Q4Config, zero_056)];
@@ -189,6 +191,9 @@ pub(crate) mod raw {
     const _: [(); 0x96c] = [(); core::mem::offset_of!(G15Q4Config, unk_96c)];
     const _: [(); 0x97c] = [(); core::mem::offset_of!(G15Q4Config, unk_97c)];
     const _: [(); 0x9ac] = [(); core::mem::offset_of!(G15Q4Config, zero_9ac)];
+    const _: [(); 0x9b0] = [(); core::mem::offset_of!(G15Q4Config, cl_context_switch_timeout_9b0)];
+    const _: [(); 0x9b4] = [(); core::mem::offset_of!(G15Q4Config, cl_kill_timeout_9b4)];
+    const _: [(); 0x9bc] = [(); core::mem::offset_of!(G15Q4Config, cdm_backoff_timeout_9bc)];
     const _: [(); 0x9dd] = [(); core::mem::offset_of!(G15Q4Config, table_selector_9dd)];
     const _: [(); 0x9e5] = [(); core::mem::offset_of!(G15Q4Config, table_9e5)];
     const _: [(); 0xbe5] = [(); core::mem::offset_of!(G15Q4Config, table_be5)];

@@ -1171,6 +1171,9 @@ impl<'a> InitDataBuilder::ver<'a> {
                 // population path is gated by config bit 34. Base configure
                 // clears bit 34 and G15 never restores it, so both are exact 0.
                 unk_01c: U32(0),
+                // Apple pairs getDefaultRelaxedCLContextSwitchTimeout() with
+                // setRelaxedCLKillTimeout(); ChinookV9's default is 3000.
+                relaxed_cl_kill_timeout_020: U32(0x0bb8),
                 frg_task_timeout_024: U32(0),
                 constant_038: U32(0x78),
                 unk_050: 0xffff,
@@ -1191,6 +1194,11 @@ impl<'a> InitDataBuilder::ver<'a> {
                 unk_984: U64(0x0000_0001_0000_00fa),
                 unk_98c: U64(0x0000_0064_0000_0001),
                 unk_994: U32(1),
+                // Exact ChinookV9 defaults, applied by paired getter/setter
+                // calls in AGXArmFirmware::initFirmwareData.
+                cl_context_switch_timeout_9b0: U32(0x28),
+                cl_kill_timeout_9b4: U32(0x32),
+                cdm_backoff_timeout_9bc: 0x04,
                 ..Default::default()
             },
         )?;
