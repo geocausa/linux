@@ -182,6 +182,7 @@ pub(crate) mod raw {
     const _: [(); 0x038] = [(); core::mem::offset_of!(G15Q4Config, constant_038)];
     const _: [(); 0x056] = [(); core::mem::offset_of!(G15Q4Config, zero_056)];
     const _: [(); 0x05a] = [(); core::mem::offset_of!(G15Q4Config, unk_05a)];
+    const _: [(); 0x05e] = [(); core::mem::offset_of!(G15Q4Config, unk_05e)];
     const _: [(); 0x7a8] = [(); core::mem::offset_of!(G15Q4Config, unk_7a8)];
     const _: [(); 0x96c] = [(); core::mem::offset_of!(G15Q4Config, unk_96c)];
     const _: [(); 0x97c] = [(); core::mem::offset_of!(G15Q4Config, unk_97c)];
@@ -1742,6 +1743,7 @@ pub(crate) mod raw {
     // from V13.5 +0x960 to the exact G15 host/firmware offset +0xa20.
     const _: [(); 0x28] = [(); core::mem::offset_of!(HwDataBG15V14_7, timestamp_area_base)];
     const _: [(); 0xa20] = [(); core::mem::offset_of!(HwDataBG15V14_7, sgx_sram_ptr)];
+    const _: [(); 0xa6c] = [(); core::mem::offset_of!(HwDataBG15V14_7, power_sample_period)];
     const _: [(); 0x1860] = [(); core::mem::size_of::<HwDataBG15V14_7>()];
     const _: [(); 0x183c] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_b68)];
     const _: [(); 0x1840] = [(); core::mem::offset_of!(HwDataBG15V14_7, g15_tail_1840)];

@@ -556,7 +556,12 @@ impl<'a> InitDataBuilder::ver<'a> {
                     unk_484: 0x1,
                     unk_48c: 0x1,
                     base_clock_khz: cfg.base_clock_hz / 1000,
+                    #[ver(G != G15)]
                     power_sample_period: dyncfg.pwr.power_sample_period,
+                    #[ver(G == G15)]
+                    // Exact J615 production path: `model-slow` is absent from
+                    // Apple's ADT, so AGXFirmware writes 1 to HwDataB +0xa6c.
+                    power_sample_period: 1,
                     unk_49c: 0x1,
                     unk_4a0: 0x1,
                     unk_4a4: 0x1,
@@ -1166,6 +1171,10 @@ impl<'a> InitDataBuilder::ver<'a> {
                 unk_050: 0xffff,
                 unk_052: 0x0028,
                 unk_054: 0xffff,
+                // On exact J615, the `model-slow` probe property is absent.
+                // Apple therefore writes 1 to HwDataB +0xa6c, and the arm
+                // firmware setup copies/defaults that value into q4 +0x05e.
+                unk_05e: U32(1),
                 // AGXArmFirmware::setupConfig copies the four values below
                 // from accelerator +0x1e48..+0x1e60. AGXAccelerator's static
                 // initialization proves their exact J615 values.
