@@ -1790,6 +1790,10 @@ pub(crate) struct RuntimePointers {
     // until the G15 queue statistics pointer ABI is reconstructed.
     pub(crate) stats: Stats::ver,
     #[ver(G == G15)]
+    pub(crate) g15_aux_010: GpuArray<u8>, // exact Apple backing size 0x88
+    #[ver(G == G15)]
+    pub(crate) g15_aux_24c: GpuArray<u8>, // exact Apple backing size 0x60
+    #[ver(G == G15)]
     pub(crate) g15_stats_vtx: GpuObject<G15StatsVtx>,
     #[ver(G == G15)]
     pub(crate) g15_stats_frag: GpuObject<G15StatsFrag>,

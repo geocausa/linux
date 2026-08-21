@@ -882,6 +882,10 @@ impl<'a> InitDataBuilder::ver<'a> {
                         })
                     },
                     #[ver(G == G15)]
+                    g15_aux_010: alloc.private.array_empty_tagged(0x88, b"G010")?,
+                    #[ver(G == G15)]
+                    g15_aux_24c: alloc.private.array_empty_tagged(0x60, b"G24C")?,
+                    #[ver(G == G15)]
                     g15_stats_vtx: alloc.private.new_default::<G15StatsVtx>()?,
                     #[ver(G == G15)]
                     g15_stats_frag: alloc.private.new_object(
@@ -989,7 +993,7 @@ impl<'a> InitDataBuilder::ver<'a> {
                     #[ver(G == G15)]
                     g15_unk_008: U64(0),
                     #[ver(G == G15)]
-                    g15_unk_010: U64(0),
+                    g15_unk_010: U64(inner.g15_aux_010.gpu_va().get()),
                     #[ver(G == G15)]
                     pipes: Default::default(),
                     #[ver(G == G15)]
@@ -1017,7 +1021,7 @@ impl<'a> InitDataBuilder::ver<'a> {
                     #[ver(G == G15)]
                     g15_ptr_244: U64(inner.g15_stats_comp.gpu_va().get()),
                     #[ver(G == G15)]
-                    g15_ptr_24c: U64(0),
+                    g15_ptr_24c: U64(inner.g15_aux_24c.gpu_va().get()),
                     #[ver(G == G15)]
                     g15_pad_254: Default::default(),
                     #[ver(G == G15)]
