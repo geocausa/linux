@@ -1225,6 +1225,14 @@ impl<'a> InitDataBuilder::ver<'a> {
                 clvr_engagement_enabled_7d4: U32(1),
                 gpu_keepalive_perf_mode_threshold_7d8: U32(100),
                 gpu_keepalive_off_mode_threshold_7dc: U32(100),
+                // These are runtime inputs from the IOGPU
+                // set_display_params_for_gpu user-client method. Apple starts
+                // the zeroed q4 block with no display override; firmware falls
+                // back to its live timestamp/interval state while both are 0.
+                // The interval, once supplied, is clamped by the host to
+                // 100000..400000 ticks in the firmware 24 MHz timebase.
+                display_pm_timestamp_96c: U64(0),
+                display_pm_interval_974: U64(0),
                 // AGXArmFirmware::setupConfig copies the four values below
                 // from accelerator +0x1e48..+0x1e60. AGXAccelerator's static
                 // initialization proves their exact J615 values.

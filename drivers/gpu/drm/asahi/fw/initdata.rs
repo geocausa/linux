@@ -151,8 +151,8 @@ pub(crate) mod raw {
         pub(crate) gpu_keepalive_perf_mode_threshold_7d8: U32,
         pub(crate) gpu_keepalive_off_mode_threshold_7dc: U32,
         pub(crate) pad_7e0: Pad<0x18c>,
-        pub(crate) unk_96c: U64,
-        pub(crate) unk_974: U64,
+        pub(crate) display_pm_timestamp_96c: U64,
+        pub(crate) display_pm_interval_974: U64,
         pub(crate) progress_check_interval_3d_97c: U32,
         pub(crate) progress_check_interval_ta_980: U32,
         pub(crate) progress_check_interval_cl_984: U32,
@@ -210,7 +210,8 @@ pub(crate) mod raw {
     const _: [(); 0x7d4] = [(); core::mem::offset_of!(G15Q4Config, clvr_engagement_enabled_7d4)];
     const _: [(); 0x7d8] = [(); core::mem::offset_of!(G15Q4Config, gpu_keepalive_perf_mode_threshold_7d8)];
     const _: [(); 0x7dc] = [(); core::mem::offset_of!(G15Q4Config, gpu_keepalive_off_mode_threshold_7dc)];
-    const _: [(); 0x96c] = [(); core::mem::offset_of!(G15Q4Config, unk_96c)];
+    const _: [(); 0x96c] = [(); core::mem::offset_of!(G15Q4Config, display_pm_timestamp_96c)];
+    const _: [(); 0x974] = [(); core::mem::offset_of!(G15Q4Config, display_pm_interval_974)];
     const _: [(); 0x97c] = [(); core::mem::offset_of!(G15Q4Config, progress_check_interval_3d_97c)];
     const _: [(); 0x980] = [(); core::mem::offset_of!(G15Q4Config, progress_check_interval_ta_980)];
     const _: [(); 0x984] = [(); core::mem::offset_of!(G15Q4Config, progress_check_interval_cl_984)];
