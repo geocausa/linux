@@ -134,7 +134,7 @@ pub(crate) mod raw {
         pub(crate) performance_reset_iters_0a0: U32,
         pub(crate) performance_boost_min_util_valid_0a4: u8,
         pub(crate) pad_0a5: Pad<0x1ca>,
-        pub(crate) unk_26f: u8,
+        pub(crate) conflict_scan_enable_26f: u8, // exact J615 zero; gates FW conflict/resource scan
         pub(crate) pad_270: Pad<0x538>,
         pub(crate) smart_idle_standby_timer_us_7a8: U32,
         pub(crate) smart_idle_prob_init_val_7ac: F32,
@@ -210,6 +210,7 @@ pub(crate) mod raw {
     const _: [(); 0x09c] = [(); core::mem::offset_of!(G15Q4Config, performance_boost_ce_step_09c)];
     const _: [(); 0x0a0] = [(); core::mem::offset_of!(G15Q4Config, performance_reset_iters_0a0)];
     const _: [(); 0x0a4] = [(); core::mem::offset_of!(G15Q4Config, performance_boost_min_util_valid_0a4)];
+    const _: [(); 0x26f] = [(); core::mem::offset_of!(G15Q4Config, conflict_scan_enable_26f)];
     const _: [(); 0x7a8] = [(); core::mem::offset_of!(G15Q4Config, smart_idle_standby_timer_us_7a8)];
     const _: [(); 0x7ac] = [(); core::mem::offset_of!(G15Q4Config, smart_idle_prob_init_val_7ac)];
     const _: [(); 0x7cc] = [(); core::mem::offset_of!(G15Q4Config, smart_idle_reset_iterations_7cc)];

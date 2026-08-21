@@ -1262,6 +1262,10 @@ impl<'a> InitDataBuilder::ver<'a> {
                 performance_boost_ce_step_09c: U32(0),
                 performance_reset_iters_0a0: U32(0),
                 performance_boost_min_util_valid_0a4: 0,
+                // Firmware caches q4 +0x26f and uses it to gate an extra
+                // conflict/resource scan. The exact J615 host never writes
+                // this byte, so it remains zero from the allocation.
+                conflict_scan_enable_26f: 0,
                 // AGXAccelerator::configurePowerAndPerformanceController()
                 // establishes the Smart Idle defaults before configureDevice
                 // probes its optional gpu-idleoff-* overrides. Exact J615
