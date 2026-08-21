@@ -1173,6 +1173,15 @@ impl<'a> InitDataBuilder::ver<'a> {
                 // q4 +0x000 is 7 only when accelerator config bit 28 is set.
                 // Exact J615 keeps bit 28 clear throughout setup.
                 flags_000: U32(0),
+                // Base/Arm initFirmwareData explicitly clear these prefix
+                // dwords. +0x034 has no non-zero host writer and remains
+                // zero on either branch from the zero-filled allocation.
+                zero_004: U32(0),
+                zero_008: U32(0),
+                zero_00c: U32(0),
+                zero_010: U32(0),
+                zero_014: U32(0),
+                zero_018: U32(0),
                 unk_01c: U32(0),
                 // Apple pairs getDefaultRelaxedCLContextSwitchTimeout() with
                 // setRelaxedCLKillTimeout(); ChinookV9's default is 3000.
@@ -1192,6 +1201,7 @@ impl<'a> InitDataBuilder::ver<'a> {
                 // matches (G15G, G15G_A0, G15G_B0), and every matching
                 // subclass returns 1 from halIsSmartidleOffEnabled().
                 smart_idle_off_enabled_030: U32(1),
+                zero_034: U32(0),
                 constant_038: U32(0x78),
                 // Apple explicitly starts the CPMS/QoS control words at
                 // zero in AGXArmFirmware::initFirmwareData. +0x044 has
