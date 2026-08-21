@@ -1295,6 +1295,10 @@ impl<'a> InitDataBuilder::ver<'a> {
                 // setGVDMTimerInterval() targets the same q4 +0x9ac word.
                 gvdm_timer_interval_9ac: U32(0),
                 cdm_backoff_timeout_9bc: 0x04,
+                // initFirmwareData calls ChinookV9 initSoftFaultSettings(true).
+                // Its updater encodes enabled as bit0=1, bit1=0, bit2=0 and
+                // masks the word to three bits, yielding exact q4 +0xdf9 = 1.
+                soft_fault_settings_df9: U32(1),
                 ..Default::default()
             },
         )?;
