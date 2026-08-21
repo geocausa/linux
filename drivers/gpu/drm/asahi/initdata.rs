@@ -1188,6 +1188,21 @@ impl<'a> InitDataBuilder::ver<'a> {
                 // firmware setup copies/defaults that value into q4 +0x05e.
                 // The same field is the target of setCSwitchTimerMultiplier().
                 cswitch_timer_multiplier_05e: U32(1),
+                // AGXAccelerator::configurePowerAndPerformanceController()
+                // establishes the Smart Idle defaults before configureDevice
+                // probes its optional gpu-idleoff-* overrides. Exact J615
+                // omits all ten properties, so initFirmwareData copies these
+                // unchanged defaults into q4 +0x7a8..+0x7cc.
+                smart_idle_standby_timer_us_7a8: U32(700),
+                smart_idle_prob_init_val_7ac: f32!(1.0),
+                smart_idle_fn_hit_7b0: f32!(0.8),
+                smart_idle_fi_hit_7b4: f32!(0.2),
+                smart_idle_fn_miss_7b8: f32!(0.9),
+                smart_idle_fi_miss_7bc: f32!(0.1),
+                smart_idle_nei_hit_7c0: f32!(0.25),
+                smart_idle_min_confidence_7c4: f32!(0.7),
+                smart_idle_high_confidence_7c8: f32!(0.9),
+                smart_idle_reset_iterations_7cc: U32(6),
                 // AGXArmFirmware::setupConfig copies the four values below
                 // from accelerator +0x1e48..+0x1e60. AGXAccelerator's static
                 // initialization proves their exact J615 values.
