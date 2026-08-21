@@ -1176,6 +1176,10 @@ impl<'a> InitDataBuilder::ver<'a> {
                 unk_050: 0xffff,
                 unk_052: 0x0028,
                 unk_054: 0xffff,
+                // G15 constructor/start establishes accelerator+0x9d08 low two
+                // bits as zero; later writers touch bits 3/5 only. Apple stores
+                // ((byte & 3) == 0) here, so the exact J615 value is 1.
+                low2_clear_05a: U32(1),
                 // On exact J615, the `model-slow` probe property is absent.
                 // Apple therefore writes 1 to HwDataB +0xa6c, and the arm
                 // firmware setup copies/defaults that value into q4 +0x05e.

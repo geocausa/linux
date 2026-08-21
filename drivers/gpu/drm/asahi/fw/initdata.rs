@@ -116,7 +116,7 @@ pub(crate) mod raw {
         pub(crate) unk_052: u16,                   // accelerator +0x6c6
         pub(crate) unk_054: u16,                   // accelerator +0x6c8
         pub(crate) zero_056: U32,                  // deliberately unaligned
-        pub(crate) unk_05a: U32,                   // deliberately unaligned
+        pub(crate) low2_clear_05a: U32,            // ((accelerator[0x9d08] & 3) == 0)
         pub(crate) unk_05e: U32,                   // deliberately unaligned
         pub(crate) unk_062: U32,                   // deliberately unaligned
         pub(crate) pad_066: Pad<0x0a>,
@@ -183,7 +183,7 @@ pub(crate) mod raw {
     const _: [(); 0x024] = [(); core::mem::offset_of!(G15Q4Config, frg_task_timeout_024)];
     const _: [(); 0x038] = [(); core::mem::offset_of!(G15Q4Config, constant_038)];
     const _: [(); 0x056] = [(); core::mem::offset_of!(G15Q4Config, zero_056)];
-    const _: [(); 0x05a] = [(); core::mem::offset_of!(G15Q4Config, unk_05a)];
+    const _: [(); 0x05a] = [(); core::mem::offset_of!(G15Q4Config, low2_clear_05a)];
     const _: [(); 0x05e] = [(); core::mem::offset_of!(G15Q4Config, unk_05e)];
     const _: [(); 0x7a8] = [(); core::mem::offset_of!(G15Q4Config, unk_7a8)];
     const _: [(); 0x96c] = [(); core::mem::offset_of!(G15Q4Config, unk_96c)];
