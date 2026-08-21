@@ -1196,6 +1196,15 @@ impl<'a> InitDataBuilder::ver<'a> {
                 // G15 constructor/start establishes accelerator+0x9d08 low two
                 // bits as zero; later writers touch bits 3/5 only. Apple stores
                 // ((byte & 3) == 0) here, so the exact J615 value is 1.
+                // Apple seeds power interface 0 from accelerator +0x2288.
+                // Base configure uses 0xfe6 (4070), and exact J615 has no
+                // `gpu-max-power` override, so q4 +0x078 receives 4070.
+                gpu_max_power_078: U32(4070),
+                // setupConfig enables interfaces 1/2 with a full-scale 0x10000
+                // target. With J615's two perf states, max pstate index 1 and
+                // gpu-pwr-min-duty-cycle=30, normalization yields 100 for both.
+                power_interface_1_target_07c: U32(100),
+                power_interface_2_target_080: U32(100),
                 low2_clear_05a: U32(1),
                 // On exact J615, the `model-slow` probe property is absent.
                 // Apple therefore writes 1 to HwDataB +0xa6c, and the arm
