@@ -1188,6 +1188,19 @@ impl<'a> InitDataBuilder::ver<'a> {
                 // firmware setup copies/defaults that value into q4 +0x05e.
                 // The same field is the target of setCSwitchTimerMultiplier().
                 cswitch_timer_multiplier_05e: U32(1),
+                // setupConfig explicitly clears the firmware-object backing
+                // words at +0x17a0/+0x17a4/+0x17a8/+0x17ac/+0x17b0 and
+                // the +0x17b4 validity byte. initPowerAndPerformanceData()
+                // copies those bootstrap values to q4 +0x90..+0xa4 before
+                // any performance-controller runtime update. The J615 ADT
+                // target/boost values are configuration inputs, not these
+                // initial q4 words.
+                performance_target_090: U32(0),
+                performance_transfer_output_094: U32(0),
+                performance_boost_min_util_098: U32(0),
+                performance_boost_ce_step_09c: U32(0),
+                performance_reset_iters_0a0: U32(0),
+                performance_boost_min_util_valid_0a4: 0,
                 // AGXAccelerator::configurePowerAndPerformanceController()
                 // establishes the Smart Idle defaults before configureDevice
                 // probes its optional gpu-idleoff-* overrides. Exact J615
