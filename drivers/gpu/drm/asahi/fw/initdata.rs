@@ -773,6 +773,20 @@ pub(crate) mod raw {
         pub(crate) afr_unkpad: u32,
     }
 
+    /// Final G15 HwDataB trailer, replacing the larger V13.5 legacy tail.
+    #[derive(Debug)]
+    #[repr(C)]
+    pub(crate) struct G15HwDataBTail {
+        pub(crate) pad_1840: Pad<0x18>,
+        // Apple host writes the inverse of accelerator-global flag bit 4 here;
+        // firmware imports this exact dword during early init.
+        pub(crate) flag_1858: u32,
+        pub(crate) pad_185c: Pad<0x04>,
+    }
+    default_zeroed!(G15HwDataBTail);
+    const _: [(); 0x20] = [(); core::mem::size_of::<G15HwDataBTail>()];
+    const _: [(); 0x18] = [(); core::mem::offset_of!(G15HwDataBTail, flag_1858)];
+
     #[versions(AGX)]
     #[derive(Debug)]
     #[repr(C)]
@@ -956,20 +970,27 @@ pub(crate) mod raw {
         pub(crate) unk_b38: Array<0xc, u32>,
         pub(crate) unk_b68: u32,
 
-        #[ver(V >= V13_0B4)]
+        #[ver(V >= V13_0B4 && G != G15)]
         pub(crate) unk_b6c: Array<0xd0, u8>,
 
         #[ver(G >= G14X)]
         pub(crate) unk_c3c_0: Array<0x8, u8>,
 
-        #[ver(G < G14X && V >= V13_5)]
+        #[ver(G < G14X && G != G15 && V >= V13_5)]
         pub(crate) unk_c3c_8: Array<0x10, u8>,
 
-        #[ver(V >= V13_5)]
+        #[ver(V >= V13_5 && G != G15)]
         pub(crate) unk_c3c_18: Array<0x20, u8>,
 
-        #[ver(V >= V13_0B4)]
+        #[ver(V >= V13_0B4 && G != G15)]
         pub(crate) unk_c3c: u32,
+
+        // G15 keeps the inherited layout byte-exact through +0x183f
+        // (`unk_b68` at +0x183c), then replaces the old 0x104-byte V13.5
+        // trailer with an exact 0x20-byte tail. Apple's allocation is 0x1860
+        // and firmware directly reads the final active word at +0x1858.
+        #[ver(G == G15)]
+        pub(crate) g15_tail_1840: G15HwDataBTail,
     }
     #[versions(AGX)]
     default_zeroed!(HwDataB::ver);
@@ -1269,6 +1290,9 @@ pub(crate) mod raw {
     // Six extra 0x20-byte I/O descriptors move the inherited SRAM pointer
     // from V13.5 +0x960 to the exact G15 host/firmware offset +0xa20.
     const _: [(); 0xa20] = [(); core::mem::offset_of!(HwDataBG15V14_7, sgx_sram_ptr)];
+    const _: [(); 0x1860] = [(); core::mem::size_of::<HwDataBG15V14_7>()];
+    const _: [(); 0x183c] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_b68)];
+    const _: [(); 0x1840] = [(); core::mem::offset_of!(HwDataBG15V14_7, g15_tail_1840)];
 
     #[derive(Debug)]
     #[repr(C)]

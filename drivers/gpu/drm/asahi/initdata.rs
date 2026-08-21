@@ -594,9 +594,9 @@ impl<'a> InitDataBuilder::ver<'a> {
                     #[ver(V >= V13_0B4)]
                     unk_b38_4: 1,
                     unk_b38: Array::new([0xffffffff; 12]),
-                    #[ver(V >= V13_0B4 && V < V13_3)]
+                    #[ver(V >= V13_0B4 && V < V13_3 && G != G15)]
                     unk_c3c: 0x19,
-                    #[ver(V >= V13_3)]
+                    #[ver(V >= V13_3 && G != G15)]
                     unk_c3c: 0x1a,
                     ..Zeroable::init_zeroed()
                 })
