@@ -207,24 +207,36 @@ pub(crate) mod raw {
     const _: [(); 0x20] = [(); core::mem::size_of::<G15CacheFlushState>()];
     const _: [(); 0x10] = [(); core::mem::offset_of!(G15CacheFlushState, write_idx)];
 
-    /// One G15 firmware-control/mapping entry, exact 0x18 bytes. Its first
-    /// 0x14 bytes retain the legacy FwCtlMsg field boundaries, but G15 host
-    /// construction has changed semantics. Apple zeroes the new +0x14 dword
-    /// before insertion. Firmware walks 256 entries, so the ring is 0x1800.
+    #[allow(dead_code)]
+    pub(crate) const G15_MAP_FLAG_MAP: u16 = 1 << 0;
+    #[allow(dead_code)]
+    pub(crate) const G15_MAP_FLAG_SPECIAL_APERTURE: u16 = 1 << 1;
+    #[allow(dead_code)]
+    pub(crate) const G15_MAP_FLAG_PROPERTY: u16 = 1 << 2;
+
+    /// One G15 firmware-control/mapping entry, exact 0x18 bytes. Apple builds
+    /// these from AGXMemoryMap page-walker callbacks before inserting them into
+    /// q22's 256-entry ring. G15's GPU-VA-to-FW-VA conversion is identity.
     #[derive(Debug, Default, Clone, Copy)]
     #[repr(C)]
     pub(crate) struct G15CacheFlushEntry {
-        pub(crate) addr: U64,        // +0x00
-        pub(crate) unk_08: U32,      // +0x08
-        pub(crate) context_id: U32,  // +0x0c
-        pub(crate) page_count: u16,  // +0x10
-        pub(crate) flags: u16,       // +0x12
-        pub(crate) reserved_14: U32, // +0x14, Apple notifyNewMapping writes zero
+        pub(crate) addr: U64,                 // +0x00: firmware-visible GPU VA
+        pub(crate) phys_page_4k: U32,          // +0x08: physical address >> 12
+        // Firmware's secure-flush branch consumes this as a context ID. The
+        // normal Apple page walker emits 0 for map and 0xffff_ffff for unmap.
+        pub(crate) secure_context_id: U32,    // +0x0c
+        // 1 << (GART page shift - FW page shift). J615 uses ChinookV9 with
+        // FW shift 14 and the platform GART shift follows kernel page_shift.
+        pub(crate) fw_page_count: u16,        // +0x10
+        // bit0=map, bit1=special 64MiB aperture, bit2=map property
+        pub(crate) mapping_flags: u16,        // +0x12
+        pub(crate) reserved_14: U32,          // +0x14: exact zero, map and unmap
     }
     const _: [(); 0x18] = [(); core::mem::size_of::<G15CacheFlushEntry>()];
-    const _: [(); 0x0c] = [(); core::mem::offset_of!(G15CacheFlushEntry, context_id)];
-    const _: [(); 0x10] = [(); core::mem::offset_of!(G15CacheFlushEntry, page_count)];
-    const _: [(); 0x12] = [(); core::mem::offset_of!(G15CacheFlushEntry, flags)];
+    const _: [(); 0x08] = [(); core::mem::offset_of!(G15CacheFlushEntry, phys_page_4k)];
+    const _: [(); 0x0c] = [(); core::mem::offset_of!(G15CacheFlushEntry, secure_context_id)];
+    const _: [(); 0x10] = [(); core::mem::offset_of!(G15CacheFlushEntry, fw_page_count)];
+    const _: [(); 0x12] = [(); core::mem::offset_of!(G15CacheFlushEntry, mapping_flags)];
     const _: [(); 0x14] = [(); core::mem::offset_of!(G15CacheFlushEntry, reserved_14)];
 
     /// G15 root q22: exact 0xc3d0-byte host/FW shared object.
