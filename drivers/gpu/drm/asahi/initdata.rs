@@ -1190,9 +1190,19 @@ impl<'a> InitDataBuilder::ver<'a> {
                 // subclass returns 1 from halIsSmartidleOffEnabled().
                 smart_idle_off_enabled_030: U32(1),
                 constant_038: U32(0x78),
+                // Apple explicitly starts the CPMS/QoS control words at
+                // zero in AGXArmFirmware::initFirmwareData. +0x044 has
+                // no host population path and remains allocation-zeroed.
+                cpms_window_size_03c: U32(0),
+                cpms_tfca_size_040: U32(0),
+                zero_044: U32(0),
+                kick_channel_qos_arg2_048: U32(0),
+                kick_channel_qos_arg1_04c: U32(0),
                 unk_050: 0xffff,
                 unk_052: 0x0028,
                 unk_054: 0xffff,
+                // Exact host clear immediately after the 0x50/0x52/0x54 tuple.
+                zero_056: U32(0),
                 // G15 constructor/start establishes accelerator+0x9d08 low two
                 // bits as zero; later writers touch bits 3/5 only. Apple stores
                 // ((byte & 3) == 0) here, so the exact J615 value is 1.
