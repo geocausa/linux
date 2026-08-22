@@ -28,20 +28,40 @@ pub(crate) trait Command: GpuStruct + Send + Sync {}
 pub(crate) mod raw {
     use super::*;
 
+    #[versions(AGX)]
     #[derive(Debug)]
     #[repr(C)]
     pub(crate) struct Barrier {
         pub(crate) tag: CommandType,
         pub(crate) wait_stamp: GpuWeakPointer<FwStamp>,
+        // G15 setupBarrierCommand() writes a second unaligned stamp pointer
+        // at +0x0c before the value/slot fields. In the common case Apple
+        // writes the same FW stamp address into both pointers; alternate
+        // event mappings may select different backing stamp spaces.
+        #[ver(G == G15)]
+        pub(crate) wait_stamp_2: GpuWeakPointer<FwStamp>,
         pub(crate) wait_value: EventValue,
         pub(crate) wait_slot: u32,
         pub(crate) stamp_self: EventValue,
         pub(crate) uuid: u32,
         pub(crate) external_barrier: u32,
-        // G14X addition
+        // G14X/G15 use this final control word for internal barrier state.
         pub(crate) internal_barrier_type: u32,
+        #[ver(G != G15)]
         pub(crate) padding: Pad<0x1c>,
+        #[ver(G == G15)]
+        pub(crate) padding: Pad<0x04>,
     }
+
+    const _: [(); 0x30] = [(); core::mem::size_of::<BarrierG15V14_7>()];
+    const _: [(); 0x04] = [(); core::mem::offset_of!(BarrierG15V14_7, wait_stamp)];
+    const _: [(); 0x0c] = [(); core::mem::offset_of!(BarrierG15V14_7, wait_stamp_2)];
+    const _: [(); 0x14] = [(); core::mem::offset_of!(BarrierG15V14_7, wait_value)];
+    const _: [(); 0x18] = [(); core::mem::offset_of!(BarrierG15V14_7, wait_slot)];
+    const _: [(); 0x1c] = [(); core::mem::offset_of!(BarrierG15V14_7, stamp_self)];
+    const _: [(); 0x20] = [(); core::mem::offset_of!(BarrierG15V14_7, uuid)];
+    const _: [(); 0x24] = [(); core::mem::offset_of!(BarrierG15V14_7, external_barrier)];
+    const _: [(); 0x28] = [(); core::mem::offset_of!(BarrierG15V14_7, internal_barrier_type)];
 
     #[derive(Debug, Clone, Copy)]
     #[repr(C)]
@@ -172,10 +192,22 @@ pub(crate) mod raw {
     const _: [(); 0xac] = [(); core::mem::offset_of!(QueueInfoG15V14_7<'static>, cdm_backoff_timeout_ac)];
 }
 
-trivial_gpustruct!(Barrier);
 trivial_gpustruct!(RingState);
 
-impl Command for Barrier {}
+#[versions(AGX)]
+#[derive(Debug)]
+pub(crate) struct Barrier {}
+
+#[versions(AGX)]
+default_zeroed!(Barrier::ver);
+
+#[versions(AGX)]
+impl GpuStruct for Barrier::ver {
+    type Raw<'a> = raw::Barrier::ver;
+}
+
+#[versions(AGX)]
+impl Command for Barrier::ver {}
 
 pub(crate) struct GpuContextData {
     pub(crate) _buffer: Arc<dyn core::any::Any + Send + Sync>,

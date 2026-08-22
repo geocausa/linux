@@ -800,12 +800,14 @@ impl Queue for Queue::ver {
                     };
                     mod_dev_dbg!(self.dev, "[Submission {}] Create Explicit Barrier\n", id);
                     let barrier = alloc.private.new_init(
-                        pin_init::zeroed::<fw::workqueue::Barrier>(),
+                        pin_init::zeroed::<fw::workqueue::Barrier::ver>(),
                         |_inner, _p| {
                             let queue_job = &queue_job;
-                            try_init!(fw::workqueue::raw::Barrier {
+                            try_init!(fw::workqueue::raw::Barrier::ver {
                                 tag: fw::workqueue::CommandType::Barrier,
                                 wait_stamp: event.fw_stamp_pointer,
+                                #[ver(G == G15)]
+                                wait_stamp_2: event.fw_stamp_pointer,
                                 wait_value: event.value,
                                 wait_slot: event.slot,
                                 stamp_self: queue_job.event_info().value.next(),

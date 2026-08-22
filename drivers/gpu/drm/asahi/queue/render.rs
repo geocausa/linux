@@ -353,11 +353,13 @@ impl super::QueueInner::ver {
 
         mod_dev_dbg!(self.dev, "[Submission {}] Create Barrier\n", id);
         let barrier = kalloc.private.new_init(
-            pin_init::zeroed::<fw::workqueue::Barrier>(),
+            pin_init::zeroed::<fw::workqueue::Barrier::ver>(),
             |_inner, _p| {
-                try_init!(fw::workqueue::raw::Barrier {
+                try_init!(fw::workqueue::raw::Barrier::ver {
                     tag: fw::workqueue::CommandType::Barrier,
                     wait_stamp: ev_vtx.fw_stamp_pointer,
+                    #[ver(G == G15)]
+                    wait_stamp_2: ev_vtx.fw_stamp_pointer,
                     wait_value: ev_vtx.value.next(),
                     wait_slot: ev_vtx.slot,
                     stamp_self: ev_frag.value.next(),
