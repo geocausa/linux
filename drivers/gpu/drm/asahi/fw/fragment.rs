@@ -319,6 +319,13 @@ pub(crate) mod raw {
     const _: [(); 0xb6c] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, encoder_params)];
     const _: [(); 0xba0] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, unk_pointee)];
     const _: [(); 0xba8] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, meta)];
+    // Apple AGX3DChannelSKU::submitBuffer copies the queue-local
+    // monotonically increasing render sequence to command +0xbd0, matching
+    // JobMeta.event_seq at meta +0x28.
+    const _: [(); 0xbd0] = [();
+        core::mem::offset_of!(RunFragmentG15V14_7<'static>, meta)
+            + core::mem::offset_of!(job::raw::JobMeta, event_seq)
+    ];
     const _: [(); 0xbd4] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, unk_after_meta)];
     const _: [(); 0xbd8] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, unk_buf_0)];
     const _: [(); 0xbf0] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, command_time)];
