@@ -341,10 +341,34 @@ impl super::QueueInner::ver {
                     job_params2 <- try_init!(fw::compute::raw::JobParameters2::ver {
                         #[ver(V >= V13_0B4)]
                         unk_0_0: 0,
+                        #[ver(G != G15)]
                         unk_0: Default::default(),
+                        #[ver(G == G15)]
+                        g15_unk_770: U32(0),
+                        #[ver(G == G15)]
+                        g15_state_774: U64(0),
+                        #[ver(G == G15)]
+                        g15_state_77c: U64(0),
+                        #[ver(G == G15)]
+                        g15_state_784: U64(0),
+                        #[ver(G == G15)]
+                        g15_state_78c: U64(0),
                         preempt_buf1: inner.preempt_buf.gpu_pointer(),
                         cdm_ctrl_stream_end: U64(cmdbuf.cdm_ctrl_stream_end),
+                        #[ver(G != G15)]
                         unk_34: Default::default(),
+                        #[ver(G == G15)]
+                        g15_state_7a4: U64(0),
+                        #[ver(G == G15)]
+                        g15_state_7ac: U32(0),
+                        #[ver(G == G15)]
+                        g15_unk_7b0: U32(0),
+                        #[ver(G == G15)]
+                        g15_state_7b4: U64(0),
+                        #[ver(G == G15)]
+                        g15_state_7bc: U32(0),
+                        #[ver(G == G15)]
+                        g15_unk_7c0: U32(0),
                         #[ver(G < G14X && G != G15)]
                         unk_g14x: 0,
                         #[ver(G >= G14X && G != G15)]

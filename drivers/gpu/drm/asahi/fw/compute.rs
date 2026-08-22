@@ -45,10 +45,38 @@ pub(crate) mod raw {
     pub(crate) struct JobParameters2<'a> {
         #[ver(V >= V13_0B4)]
         pub(crate) unk_0_0: u32,
+        #[ver(G != G15)]
         pub(crate) unk_0: Array<0x24, u8>,
+        // G15 submitBuffer() copies four consecutive descriptor qwords into
+        // command +0x774..+0x793, preceded by one still-unresolved dword.
+        #[ver(G == G15)]
+        pub(crate) g15_unk_770: U32,
+        #[ver(G == G15)]
+        pub(crate) g15_state_774: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_state_77c: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_state_784: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_state_78c: U64,
         pub(crate) preempt_buf1: GpuPointer<'a, &'a [u8]>,
         pub(crate) cdm_ctrl_stream_end: U64,
+        #[ver(G != G15)]
         pub(crate) unk_34: Array<0x20, u8>,
+        // G15 submitBuffer() writes qword/dword pairs at +0x7a4/+0x7ac and
+        // +0x7b4/+0x7bc, leaving the intervening dwords untouched here.
+        #[ver(G == G15)]
+        pub(crate) g15_state_7a4: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_state_7ac: U32,
+        #[ver(G == G15)]
+        pub(crate) g15_unk_7b0: U32,
+        #[ver(G == G15)]
+        pub(crate) g15_state_7b4: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_state_7bc: U32,
+        #[ver(G == G15)]
+        pub(crate) g15_unk_7c0: U32,
         #[ver(G != G15)]
         pub(crate) unk_g14x: u32,
         #[ver(G != G15)]
@@ -62,6 +90,19 @@ pub(crate) mod raw {
     }
 
     const _: [(); 0x60] = [(); core::mem::size_of::<JobParameters2G15V14_7<'static>>()];
+    const _: [(); 0x04] = [(); core::mem::offset_of!(JobParameters2G15V14_7<'static>, g15_unk_770)];
+    const _: [(); 0x08] = [(); core::mem::offset_of!(JobParameters2G15V14_7<'static>, g15_state_774)];
+    const _: [(); 0x10] = [(); core::mem::offset_of!(JobParameters2G15V14_7<'static>, g15_state_77c)];
+    const _: [(); 0x18] = [(); core::mem::offset_of!(JobParameters2G15V14_7<'static>, g15_state_784)];
+    const _: [(); 0x20] = [(); core::mem::offset_of!(JobParameters2G15V14_7<'static>, g15_state_78c)];
+    const _: [(); 0x28] = [(); core::mem::offset_of!(JobParameters2G15V14_7<'static>, preempt_buf1)];
+    const _: [(); 0x30] = [(); core::mem::offset_of!(JobParameters2G15V14_7<'static>, cdm_ctrl_stream_end)];
+    const _: [(); 0x38] = [(); core::mem::offset_of!(JobParameters2G15V14_7<'static>, g15_state_7a4)];
+    const _: [(); 0x40] = [(); core::mem::offset_of!(JobParameters2G15V14_7<'static>, g15_state_7ac)];
+    const _: [(); 0x44] = [(); core::mem::offset_of!(JobParameters2G15V14_7<'static>, g15_unk_7b0)];
+    const _: [(); 0x48] = [(); core::mem::offset_of!(JobParameters2G15V14_7<'static>, g15_state_7b4)];
+    const _: [(); 0x50] = [(); core::mem::offset_of!(JobParameters2G15V14_7<'static>, g15_state_7bc)];
+    const _: [(); 0x54] = [(); core::mem::offset_of!(JobParameters2G15V14_7<'static>, g15_unk_7c0)];
     const _: [(); 0x58] = [(); core::mem::offset_of!(JobParameters2G15V14_7<'static>, g15_reg_1a440_value)];
 
     #[versions(AGX)]
