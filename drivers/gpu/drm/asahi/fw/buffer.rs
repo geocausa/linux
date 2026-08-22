@@ -73,8 +73,10 @@ pub(crate) mod raw {
         // Scheduler dispatch increments only the low byte for those shared
         // compute pools. No recovered consumer gives the upper bits a role.
         pub(crate) shared_compute_dispatch_seq_5c: U32,
-        pub(crate) zero_60: U64,                    // +0x60
-        pub(crate) zero_68: U64,                    // +0x68
+        // Apple populateFirmwareState() initializes these qwords to zero.
+        // No recovered RTKit CPU consumer gives them a stronger semantic.
+        pub(crate) host_zero_60: U64,               // +0x60
+        pub(crate) host_zero_68: U64,               // +0x68
     }
     default_zeroed!(G15UMAPagePoolState);
     const _: [(); 0x70] = [(); core::mem::size_of::<G15UMAPagePoolState>()];
@@ -90,6 +92,8 @@ pub(crate) mod raw {
     const _: [(); 0x50] = [(); core::mem::offset_of!(G15UMAPagePoolState, fw_uncached_state_mirror)];
     const _: [(); 0x58] = [(); core::mem::offset_of!(G15UMAPagePoolState, shared_compute_pool)];
     const _: [(); 0x5c] = [(); core::mem::offset_of!(G15UMAPagePoolState, shared_compute_dispatch_seq_5c)];
+    const _: [(); 0x60] = [(); core::mem::offset_of!(G15UMAPagePoolState, host_zero_60)];
+    const _: [(); 0x68] = [(); core::mem::offset_of!(G15UMAPagePoolState, host_zero_68)];
 
     #[derive(Debug, Default)]
     #[repr(C)]
