@@ -334,13 +334,13 @@ impl super::QueueInner::ver {
                     #[ver(G == G15)]
                     g15_pre_micro_730: Default::default(),
                     #[ver(G == G15)]
-                    g15_raw_compute_c0_740: U64(0),
+                    g15_queue_state_20_740: U64(0),
                     #[ver(G == G15)]
-                    g15_raw_compute_d8_lo_748: U32(0),
+                    g15_queue_state_38_lo_748: U32(0),
                     #[ver(G == G15)]
                     g15_pre_micro_74c: Default::default(),
                     #[ver(G == G15)]
-                    g15_raw_compute_d8_hi_750: U32(0),
+                    g15_queue_state_38_hi_750: U32(0),
                     #[ver(G == G15)]
                     g15_pre_micro_754: Default::default(),
                     microsequence: inner.micro_seq.gpu_pointer(),
