@@ -7,9 +7,19 @@
 use crate::file;
 use crate::fw::job::UserTimestamp;
 
+use core::sync::atomic::{AtomicU64, Ordering};
 use kernel::prelude::*;
 use kernel::uapi;
 use kernel::xarray;
+
+// Apple G15 command descriptors share one kernel-global 64-bit ID counter.
+// The host initializes it to 1 and uses an atomic LDADD of 1 for every
+// Compute, 3D, and TA descriptor; JobMeta.uuid carries the low 32 bits.
+static G15_COMMAND_UUID: AtomicU64 = AtomicU64::new(1);
+
+pub(super) fn next_g15_command_uuid() -> u32 {
+    G15_COMMAND_UUID.fetch_add(1, Ordering::Relaxed) as u32
+}
 
 pub(super) fn get_timestamp_object(
     objects: Pin<&xarray::XArray<KBox<file::Object>>>,

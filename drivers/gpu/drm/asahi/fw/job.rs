@@ -30,9 +30,11 @@ pub(crate) mod raw {
         pub(crate) event_seq: u32,
     }
 
-    // G15 host submission writes its monotonically increasing queue sequence
-    // to command meta +0x28, independently confirming the existing field.
+    // G15 host submission copies the low 32 bits of its shared atomic
+    // command-descriptor ID to meta +0x24 and the independent queue-local
+    // event sequence to meta +0x28.
     const _: [(); 0x2c] = [(); core::mem::size_of::<JobMeta>()];
+    const _: [(); 0x24] = [(); core::mem::offset_of!(JobMeta, uuid)];
     const _: [(); 0x28] = [(); core::mem::offset_of!(JobMeta, event_seq)];
 
     #[derive(Debug)]

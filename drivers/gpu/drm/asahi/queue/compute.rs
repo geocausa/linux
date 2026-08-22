@@ -115,7 +115,10 @@ impl super::QueueInner::ver {
             GFP_KERNEL,
         )?;
 
+        #[ver(G != G15)]
         let uuid = 0;
+        #[ver(G == G15)]
+        let uuid = common::next_g15_command_uuid();
         mod_dev_dbg!(self.dev, "[Submission {}] UUID = {:#x?}\n", id, uuid);
 
         // TODO: check

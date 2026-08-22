@@ -334,8 +334,16 @@ impl super::QueueInner::ver {
             ev_frag.value.next(),
         );
 
+        #[ver(G != G15)]
         let uuid_3d = 0;
+        #[ver(G != G15)]
         let uuid_ta = 0;
+        // Apple allocates the 3D descriptor before the TA descriptor and both
+        // consume the same global command-descriptor ID sequence.
+        #[ver(G == G15)]
+        let uuid_3d = common::next_g15_command_uuid();
+        #[ver(G == G15)]
+        let uuid_ta = common::next_g15_command_uuid();
 
         mod_dev_dbg!(
             self.dev,
