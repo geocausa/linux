@@ -523,7 +523,10 @@ impl super::QueueInner::ver {
                             event_seq: U64(ev_frag.event_seq),
                             unk_68: 0,
                             unk_758_flag: inner_weak_ptr!(ptr, unk_758_flag),
+                            #[ver(G != G15)]
                             unk_job_buf: inner_weak_ptr!(ptr, unk_buf_0),
+                            #[ver(G == G15)]
+                            unk_job_buf: inner_weak_ptr!(ptr, g15_zero_bd8),
                             #[ver(V >= V13_3)]
                             unk_7c_0: U64(0),
                             unk_7c: 0,
@@ -1005,12 +1008,20 @@ impl super::QueueInner::ver {
                     unk_after_meta: unk1.into(),
                     #[ver(G == G15)]
                     g15_raw_render_619_eq_2_bd4: U32(0),
+                    #[ver(G != G15)]
                     unk_buf_0: U64(0),
+                    #[ver(G != G15)]
                     unk_buf_8: U64(0),
                     #[ver(G < G14X && G != G15)]
                     unk_buf_10: U64(1),
-                    #[ver(G >= G14X || G == G15)]
+                    #[ver(G >= G14X && G != G15)]
                     unk_buf_10: U64(0),
+                    #[ver(G == G15)]
+                    g15_zero_bd8: U64(0),
+                    #[ver(G == G15)]
+                    g15_zero_be0: U64(0),
+                    #[ver(G == G15)]
+                    g15_zero_be8: U64(0),
                     command_time: U64(0),
                     timestamp_pointers <- try_init!(fw::job::raw::TimestampPointers {
                         start_addr: Some(inner_ptr!(inner.timestamps.gpu_pointer(), frag.start)),

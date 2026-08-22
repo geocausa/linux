@@ -315,9 +315,21 @@ pub(crate) mod raw {
         // AGX3DChannelSKU::submitBuffer() writes (descriptor[0x7b0] == 2) here.
         #[ver(G == G15)]
         pub(crate) g15_raw_render_619_eq_2_bd4: U32,
+        #[ver(G != G15)]
         pub(crate) unk_buf_0: U64,
+        #[ver(G != G15)]
         pub(crate) unk_buf_8: U64,
+        #[ver(G != G15)]
         pub(crate) unk_buf_10: U64,
+        // G15 3D submit writes +0xbd8 directly as zero. Its vslot +0x220
+        // resolves to generateFrgBarrierRegister(), which returns zero and does
+        // not touch the pre-zeroed output pointer, so +0xbe0/+0xbe8 stay zero.
+        #[ver(G == G15)]
+        pub(crate) g15_zero_bd8: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_zero_be0: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_zero_be8: U64,
         pub(crate) command_time: U64,
         pub(crate) timestamp_pointers: job::raw::TimestampPointers<'a>,
         pub(crate) user_timestamp_pointers: job::raw::TimestampPointers<'a>,
@@ -399,7 +411,9 @@ pub(crate) mod raw {
             + core::mem::offset_of!(job::raw::G15JobMeta, event_seq)
     ];
     const _: [(); 0xbd4] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_raw_render_619_eq_2_bd4)];
-    const _: [(); 0xbd8] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, unk_buf_0)];
+    const _: [(); 0xbd8] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_zero_bd8)];
+    const _: [(); 0xbe0] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_zero_be0)];
+    const _: [(); 0xbe8] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_zero_be8)];
     const _: [(); 0xbf0] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, command_time)];
     const _: [(); 0xbf8] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, timestamp_pointers)];
     const _: [(); 0xc08] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, user_timestamp_pointers)];
