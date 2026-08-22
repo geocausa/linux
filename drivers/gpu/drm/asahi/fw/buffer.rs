@@ -45,7 +45,9 @@ pub(crate) mod raw {
     pub(crate) struct G15UMAPagePoolState {
         pub(crate) pool_id: U64,                    // +0x00: AGXUMAPool global ID
         pub(crate) descriptor_index: U32,           // +0x08: host initializes 0xffffffff; RTKit accepts 0..255
-        pub(crate) config_flag_0c: U32,             // +0x0c: AGXUMAPool::init() final bool
+        // Copied from AGXUMAPool +0xa2. This flag gates FList async-grow
+        // preallocation/retirement and async submit bookkeeping.
+        pub(crate) async_grow_enabled: U32,
         pub(crate) priority: U32,                   // +0x10: _AGFIUMAPoolPriorityType
         pub(crate) page_pool_list_fwva: U64,        // +0x14: Apple "UMA Page Pool List"
         pub(crate) page_pool_list_capacity: U32,    // +0x1c: backing allocation size / 8
@@ -74,6 +76,7 @@ pub(crate) mod raw {
     default_zeroed!(G15UMAPagePoolState);
     const _: [(); 0x70] = [(); core::mem::size_of::<G15UMAPagePoolState>()];
     const _: [(); 0x08] = [(); core::mem::offset_of!(G15UMAPagePoolState, descriptor_index)];
+    const _: [(); 0x0c] = [(); core::mem::offset_of!(G15UMAPagePoolState, async_grow_enabled)];
     const _: [(); 0x14] = [(); core::mem::offset_of!(G15UMAPagePoolState, page_pool_list_fwva)];
     const _: [(); 0x1c] = [(); core::mem::offset_of!(G15UMAPagePoolState, page_pool_list_capacity)];
     const _: [(); 0x20] = [(); core::mem::offset_of!(G15UMAPagePoolState, dynamic_20)];
