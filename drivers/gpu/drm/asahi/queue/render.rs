@@ -916,7 +916,11 @@ impl super::QueueInner::ver {
                             // Exact G15 command geometry uses the register-list body,
                             // but individual 3D register entries are not yet imported.
                             // Keep the proven/common inputs type-checked without emitting
-                            // unverified register programming.
+                            // unverified register programming. Apple also has three optional
+                            // G15 registers gated by AGXPerfCtrSampler state; fresh/inactive
+                            // sampler state makes that outer gate false, so they are not part
+                            // of the base render list and stay absent until G15 perf sampling
+                            // has its own independently correct lifecycle.
                             let _ = (
                                 frg_unk_158,
                                 utile_config,
