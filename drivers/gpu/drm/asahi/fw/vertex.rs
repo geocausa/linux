@@ -254,17 +254,17 @@ pub(crate) mod raw {
         #[ver(G == G15)]
         pub(crate) g15_pad_8d0: Array<0x06, u8>,
         #[ver(G == G15)]
-        pub(crate) g15_fwva_8d6: U64,
+        pub(crate) g15_uma_page_pool_state_fwva_8d6: U64,
         #[ver(G == G15)]
-        pub(crate) g15_byte_8de: u8,
+        pub(crate) g15_uma_prepared_8de: u8,
         #[ver(G == G15)]
-        pub(crate) g15_state_8df: U64,
+        pub(crate) g15_uma_min_pool_size_8df: U64,
         #[ver(G == G15)]
-        pub(crate) g15_state_8e7: U64,
+        pub(crate) g15_uma_ideal_pool_size_8e7: U64,
         #[ver(G == G15)]
-        pub(crate) g15_fwva_8ef: U64,
+        pub(crate) g15_uma_metrics_fwva_8ef: U64,
         #[ver(G == G15)]
-        pub(crate) g15_byte_8f7: u8,
+        pub(crate) g15_context_id_generation_8f7: u8,
         // The G15 TA encoder embeds command_fwva +0x8f8. RTKit writes the
         // dispatch/start timestamp at +0x8f8; normal TA completion requires
         // +0x8f8 < +0x908 and measures that interval. The shared timing state
@@ -315,12 +315,12 @@ pub(crate) mod raw {
     const _: [(); 0x8c0] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_state_8c0)];
     const _: [(); 0x8c8] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_state_8c8)];
     const _: [(); 0x8d0] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_pad_8d0)];
-    const _: [(); 0x8d6] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_fwva_8d6)];
-    const _: [(); 0x8de] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_byte_8de)];
-    const _: [(); 0x8df] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_state_8df)];
-    const _: [(); 0x8e7] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_state_8e7)];
-    const _: [(); 0x8ef] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_fwva_8ef)];
-    const _: [(); 0x8f7] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_byte_8f7)];
+    const _: [(); 0x8d6] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_uma_page_pool_state_fwva_8d6)];
+    const _: [(); 0x8de] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_uma_prepared_8de)];
+    const _: [(); 0x8df] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_uma_min_pool_size_8df)];
+    const _: [(); 0x8e7] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_uma_ideal_pool_size_8e7)];
+    const _: [(); 0x8ef] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_uma_metrics_fwva_8ef)];
+    const _: [(); 0x8f7] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_context_id_generation_8f7)];
     const _: [(); 0x8f8] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_sku_timing_8f8)];
     const _: [(); 0x908] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_sku_timing_8f8)
         + core::mem::offset_of!(job::raw::G15SkuTimingState, complete_timestamp)];

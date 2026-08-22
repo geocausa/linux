@@ -1515,17 +1515,17 @@ impl super::QueueInner::ver {
                     #[ver(G == G15)]
                     g15_pad_8d0: Default::default(),
                     #[ver(G == G15)]
-                    g15_fwva_8d6: U64(0),
+                    g15_uma_page_pool_state_fwva_8d6: U64(0),
                     #[ver(G == G15)]
-                    g15_byte_8de: 0,
+                    g15_uma_prepared_8de: 0,
                     #[ver(G == G15)]
-                    g15_state_8df: U64(0),
+                    g15_uma_min_pool_size_8df: U64(0),
                     #[ver(G == G15)]
-                    g15_state_8e7: U64(0),
+                    g15_uma_ideal_pool_size_8e7: U64(0),
                     #[ver(G == G15)]
-                    g15_fwva_8ef: U64(0),
+                    g15_uma_metrics_fwva_8ef: U64(0),
                     #[ver(G == G15)]
-                    g15_byte_8f7: 0,
+                    g15_context_id_generation_8f7: 0,
                     #[ver(G == G15)]
                     g15_sku_timing_8f8: Default::default(),
                     #[ver(G == G15)]
