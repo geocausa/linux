@@ -921,6 +921,11 @@ impl super::QueueInner::ver {
                             // sampler state makes that outer gate false, so they are not part
                             // of the base render list and stay absent until G15 perf sampling
                             // has its own independently correct lifecycle.
+                            // PM registers 0x1ca28 (3D) and 0x1ca30/0x16c39/0x1c910 (TA)
+                            // are also source-closed: Apple G15 uses per-slot slices of its
+                            // Parameter Scene Allocations resource plus a separate PM page-metrics
+                            // array. Linux does not implement those G15 PM lifecycles yet, so do
+                            // not emit them from legacy scene/buffer pointers.
                             // RTM/common formulas independently matched to the existing
                             // kernel-owned geometry producers. Keep these typed here so later
                             // list import cannot silently drift while G15 emission is disabled.
