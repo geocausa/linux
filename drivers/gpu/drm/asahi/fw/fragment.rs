@@ -263,8 +263,16 @@ pub(crate) mod raw {
         pub(crate) registers: job::raw::RegisterArray,
 
         pub(crate) job_params3: JobParameters3::ver,
+        #[ver(G != G15)]
         pub(crate) unk_758_flag: u32,
+        #[ver(G != G15)]
         pub(crate) unk_75c_flag: u32,
+        // G15 3D descriptor init clears +0x680 and normal Render setup never
+        // rewrites it, so submit exports zero at +0xa48. +0xa4c is not written.
+        #[ver(G == G15)]
+        pub(crate) g15_zero_a48: u32,
+        #[ver(G == G15)]
+        pub(crate) g15_pad_a4c: u32,
         #[ver(G != G15)]
         pub(crate) unk_buf: Array<0x110, u8>,
         // G15 3D submit copies descriptor +0x530 (= raw Render +0x2d8)
@@ -409,7 +417,8 @@ pub(crate) mod raw {
     const _: [(); 0xc60] = [(); core::mem::size_of::<RunFragmentG15V14_7<'static>>()];
     const _: [(); 0x80] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, registers)];
     const _: [(); 0x790] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, job_params3)];
-    const _: [(); 0xa48] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, unk_758_flag)];
+    const _: [(); 0xa48] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_zero_a48)];
+    const _: [(); 0xa4c] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_pad_a4c)];
     const _: [(); 0xa50] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_raw_render_2d8_a50)];
     const _: [(); 0xa58] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_zero_a58)];
     const _: [(); 0xb60] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, busy_flag)];

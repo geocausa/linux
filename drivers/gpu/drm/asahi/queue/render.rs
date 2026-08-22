@@ -522,7 +522,10 @@ impl super::QueueInner::ver {
                             sync_grow: 0,
                             event_seq: U64(ev_frag.event_seq),
                             unk_68: 0,
+                            #[ver(G != G15)]
                             unk_758_flag: inner_weak_ptr!(ptr, unk_758_flag),
+                            #[ver(G == G15)]
+                            unk_758_flag: inner_weak_ptr!(ptr, g15_zero_a48),
                             #[ver(G != G15)]
                             unk_job_buf: inner_weak_ptr!(ptr, unk_buf_0),
                             #[ver(G == G15)]
@@ -603,7 +606,10 @@ impl super::QueueInner::ver {
                             work_item: ptr,
                             vm_slot: vm_bind.slot(),
                             unk_60: 0,
+                            #[ver(G != G15)]
                             unk_758_flag: inner_weak_ptr!(ptr, unk_758_flag),
+                            #[ver(G == G15)]
+                            unk_758_flag: inner_weak_ptr!(ptr, g15_zero_a48),
                             #[ver(V >= V13_3)]
                             unk_6c_0: U64(0),
                             unk_6c: U64(0),
@@ -912,8 +918,14 @@ impl super::QueueInner::ver {
                         unk_390_0: U64(0x0),
                         isp_zls_pixels: U64(cmdbuf.isp_zls_pixels as u64),
                     }),
+                    #[ver(G != G15)]
                     unk_758_flag: 0,
+                    #[ver(G != G15)]
                     unk_75c_flag: 0,
+                    #[ver(G == G15)]
+                    g15_zero_a48: 0,
+                    #[ver(G == G15)]
+                    g15_pad_a4c: 0,
                     #[ver(G != G15)]
                     unk_buf: Default::default(),
                     #[ver(G == G15)]
