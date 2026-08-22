@@ -265,16 +265,14 @@ pub(crate) mod raw {
         pub(crate) g15_fwva_8ef: U64,
         #[ver(G == G15)]
         pub(crate) g15_byte_8f7: u8,
-        // The G15 TA encoder embeds command_fwva +0x8f8 into the SKU stream.
-        // Generic TA submission initializes the pointed-to qword to zero.
+        // The G15 TA encoder embeds command_fwva +0x8f8. RTKit writes the
+        // dispatch/start timestamp at +0x8f8; normal TA completion requires
+        // +0x8f8 < +0x908 and measures that interval. The shared timing state
+        // occupies +0x8f8..+0x917; the final command qword remains opaque.
         #[ver(G == G15)]
-        pub(crate) g15_sku_state_8f8: U64,
+        pub(crate) g15_sku_timing_8f8: job::raw::G15SkuTimingState,
         #[ver(G == G15)]
-        pub(crate) g15_tail_900: Array<0x08, u8>,
-        #[ver(G == G15)]
-        pub(crate) g15_zero_908: U64,
-        #[ver(G == G15)]
-        pub(crate) g15_tail_910: Array<0x10, u8>,
+        pub(crate) g15_tail_918: Array<0x08, u8>,
     }
 
     const _: [(); 0x920] = [(); core::mem::size_of::<RunVertexG15V14_7<'static>>()];
@@ -323,10 +321,10 @@ pub(crate) mod raw {
     const _: [(); 0x8e7] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_state_8e7)];
     const _: [(); 0x8ef] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_fwva_8ef)];
     const _: [(); 0x8f7] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_byte_8f7)];
-    const _: [(); 0x8f8] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_sku_state_8f8)];
-    const _: [(); 0x900] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_tail_900)];
-    const _: [(); 0x908] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_zero_908)];
-    const _: [(); 0x910] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_tail_910)];
+    const _: [(); 0x8f8] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_sku_timing_8f8)];
+    const _: [(); 0x908] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_sku_timing_8f8)
+        + core::mem::offset_of!(job::raw::G15SkuTimingState, complete_timestamp)];
+    const _: [(); 0x918] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_tail_918)];
 }
 
 #[versions(AGX)]

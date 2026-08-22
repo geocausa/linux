@@ -309,12 +309,12 @@ pub(crate) mod raw {
         pub(crate) g15_uma_metrics_fwva_c37: U64,
         #[ver(G == G15)]
         pub(crate) g15_context_id_generation_c3f: u8,
-        // The G15 3D SKU encoder embeds command_fwva + 0xc40 as one
-        // opaque 0x20-byte pointee. Host submission explicitly zeroes the
-        // qwords at +0xc40 and +0xc50; no command-local firmware consumer
-        // for the previously split +0xc48/+0xc58 members is proven.
+        // The G15 3D SKU encoder embeds command_fwva +0xc40. RTKit writes
+        // the dispatch/start timestamp at +0xc40; normal fragment completion
+        // requires +0xc40 < +0xc50 and measures that interval. The two
+        // intervening/last qwords remain deliberately unnamed.
         #[ver(G == G15)]
-        pub(crate) g15_sku_pointee_c40: Array<0x20, u8>,
+        pub(crate) g15_sku_timing_c40: job::raw::G15SkuTimingState,
     }
 
     const _: [(); 0xc60] = [(); core::mem::size_of::<RunFragmentG15V14_7<'static>>()];
@@ -345,7 +345,9 @@ pub(crate) mod raw {
     const _: [(); 0xc2f] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_uma_ideal_pool_size_c2f)];
     const _: [(); 0xc37] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_uma_metrics_fwva_c37)];
     const _: [(); 0xc3f] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_context_id_generation_c3f)];
-    const _: [(); 0xc40] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_sku_pointee_c40)];
+    const _: [(); 0xc40] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_sku_timing_c40)];
+    const _: [(); 0xc50] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_sku_timing_c40)
+        + core::mem::offset_of!(job::raw::G15SkuTimingState, complete_timestamp)];
 }
 
 #[versions(AGX)]

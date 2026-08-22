@@ -983,7 +983,7 @@ impl super::QueueInner::ver {
                     #[ver(G == G15)]
                     g15_context_id_generation_c3f: 0,
                     #[ver(G == G15)]
-                    g15_sku_pointee_c40: Default::default(),
+                    g15_sku_timing_c40: Default::default(),
                 })
             },
         )?;
@@ -1527,13 +1527,9 @@ impl super::QueueInner::ver {
                     #[ver(G == G15)]
                     g15_byte_8f7: 0,
                     #[ver(G == G15)]
-                    g15_sku_state_8f8: U64(0),
+                    g15_sku_timing_8f8: Default::default(),
                     #[ver(G == G15)]
-                    g15_tail_900: Default::default(),
-                    #[ver(G == G15)]
-                    g15_zero_908: U64(0),
-                    #[ver(G == G15)]
-                    g15_tail_910: Default::default(),
+                    g15_tail_918: Default::default(),
                 })
             },
         )?;

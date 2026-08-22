@@ -37,6 +37,22 @@ pub(crate) mod raw {
     const _: [(); 0x24] = [(); core::mem::offset_of!(JobMeta, uuid)];
     const _: [(); 0x28] = [(); core::mem::offset_of!(JobMeta, event_seq)];
 
+    /// G15 TA/3D SKU-local timing state. Firmware scheduling writes the first
+    /// timestamp when work is dispatched. Completion paths require the first
+    /// timestamp to precede the third qword and feed their difference to the
+    /// common latency histogram helper. The other two qwords remain unnamed.
+    #[derive(Debug, Default, Clone, Copy)]
+    #[repr(C)]
+    pub(crate) struct G15SkuTimingState {
+        pub(crate) start_timestamp: U64,    // +0x00
+        pub(crate) unk_08: U64,             // +0x08
+        pub(crate) complete_timestamp: U64, // +0x10
+        pub(crate) unk_18: U64,             // +0x18
+    }
+    const _: [(); 0x20] = [(); core::mem::size_of::<G15SkuTimingState>()];
+    const _: [(); 0x00] = [(); core::mem::offset_of!(G15SkuTimingState, start_timestamp)];
+    const _: [(); 0x10] = [(); core::mem::offset_of!(G15SkuTimingState, complete_timestamp)];
+
     #[derive(Debug)]
     #[repr(C)]
     pub(crate) struct EncoderParams {
