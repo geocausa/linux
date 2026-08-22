@@ -17,6 +17,11 @@ pub(crate) mod raw {
     #[derive(Debug, Clone, Copy)]
     #[repr(C)]
     pub(crate) struct JobMeta {
+        // These legacy names describe the pre-G15 layout only. Apple G15
+        // reuses the entire first dword as engine-specific state: Compute
+        // repacks four raw command bytes, while TA and 3D synthesize different
+        // feature-gated dwords. Keep G15 zero/fail-closed until that producer
+        // contract is modeled per engine; do not infer no_preemption at +0x03.
         pub(crate) unk_0: u16,
         pub(crate) unk_2: u8,
         pub(crate) no_preemption: u8,
