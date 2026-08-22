@@ -103,6 +103,18 @@ const G15_PM_DEVICE_CONFIG: G15PmDeviceConfig = G15PmDeviceConfig {
 const G15_J615_PM_RECORD_COUNT: usize = 0x50;
 const G15_J615_PM_SCENE_GROUP_COUNT: usize = 0x24;
 
+/// `AGXArmFirmware::allocFirmwareData()` sizes one PMPageMetricsBuffer resource
+/// element as `align(record_count * 4, 0x40)`. Each PM record then receives a
+/// distinct four-byte slot within that element at `base + 4 * record_index`.
+/// Keep this as geometry only until the G15 firmware-resource lifecycle exists.
+const G15_PM_PAGE_METRICS_SLOT_BYTES: usize = 4;
+const G15_PM_PAGE_METRICS_ALIGNMENT: usize = 0x40;
+
+const fn g15_pm_page_metrics_bytes(record_count: usize) -> usize {
+    let bytes = record_count * G15_PM_PAGE_METRICS_SLOT_BYTES;
+    (bytes + G15_PM_PAGE_METRICS_ALIGNMENT - 1) & !(G15_PM_PAGE_METRICS_ALIGNMENT - 1)
+}
+
 const fn g15_j615_pm_scene_stride(pb_max_size: usize) -> usize {
     let pages = (pb_max_size + PAGE_SIZE - 1) / PAGE_SIZE;
     let entries = (pages + G15_PM_DEVICE_CONFIG.scene_pages_per_entry - 1)
@@ -119,6 +131,7 @@ const fn g15_j615_pm_scene_stride(pb_max_size: usize) -> usize {
 const _: [(); 4] = [(); G15_PM_DEVICE_CONFIG.usage_page_granule];
 const _: [(); 0x50] = [(); G15_J615_PM_RECORD_COUNT];
 const _: [(); 0x24] = [(); G15_J615_PM_SCENE_GROUP_COUNT];
+const _: [(); 0x140] = [(); g15_pm_page_metrics_bytes(G15_J615_PM_RECORD_COUNT)];
 const _: [(); 0x30] = [(); g15_j615_pm_scene_stride(0x3366_0000)];
 const _: [(); 0x6c0] = [(); G15_J615_PM_SCENE_GROUP_COUNT
     * g15_j615_pm_scene_stride(0x3366_0000)];
