@@ -330,13 +330,13 @@ impl super::QueueInner::ver {
                     #[ver(G == G15)]
                     g15_pre_micro_730: Default::default(),
                     #[ver(G == G15)]
-                    g15_state_740: U64(0),
+                    g15_raw_compute_c0_740: U64(0),
                     #[ver(G == G15)]
-                    g15_state_748: U32(0),
+                    g15_raw_compute_d8_lo_748: U32(0),
                     #[ver(G == G15)]
                     g15_pre_micro_74c: Default::default(),
                     #[ver(G == G15)]
-                    g15_state_750: U32(0),
+                    g15_raw_compute_d8_hi_750: U32(0),
                     #[ver(G == G15)]
                     g15_pre_micro_754: Default::default(),
                     microsequence: inner.micro_seq.gpu_pointer(),
@@ -396,17 +396,17 @@ impl super::QueueInner::ver {
                         sampler_max: (cmdbuf.sampler_count as u32) + 1,
                     }),
                     #[ver(G == G15)]
-                    g15_encoder_state_7cc: U32(0),
+                    g15_raw_compute_50_lo_7cc: U32(0),
                     #[ver(G == G15)]
                     g15_encoder_pad_7d0: Default::default(),
                     #[ver(G == G15)]
-                    g15_encoder_byte_7d4: 0,
+                    g15_raw_compute_ac_7d4: 0,
                     #[ver(G == G15)]
                     g15_encoder_pad_7d5: Default::default(),
                     #[ver(G == G15)]
-                    g15_encoder_state_7d8: U64(0),
+                    g15_raw_compute_a8_b0_lo_7d8: U64(0),
                     #[ver(G == G15)]
-                    g15_encoder_state_7e0: U32(0),
+                    g15_raw_compute_b0_hi_7e0: U32(0),
                     meta <- try_init!(fw::job::raw::JobMeta {
                         unk_0: 0,
                         unk_2: 0,
