@@ -1513,6 +1513,11 @@ impl super::QueueInner::ver {
                     }),
                     #[ver(G == G15)]
                     meta <- try_init!(fw::job::raw::G15JobMeta {
+                        // J615/G15G C0 Apple TA submission leaves +0x860 zero:
+                        // accelerator packed feature bit 35 is provably zero.
+                        // Descriptor +0xe08 is (raw Render[0x1bc] != 0), and
+                        // ChinookV9 isForceGTPDiscardEnabled() is false, but
+                        // the bit-35 gate prevents either path from enabling it.
                         engine_state: U32(0),
                         stamp: ev_vtx.stamp_pointer,
                         fw_stamp: ev_vtx.fw_stamp_pointer,
