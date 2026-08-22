@@ -61,7 +61,10 @@ pub(crate) mod raw {
         pub(crate) lifecycle_state_30: U32,
         pub(crate) backup_page_list_fwva: U64,      // +0x34: Apple "UMA Backup Page List"
         pub(crate) unk_3c: Pad<0x08>,               // +0x3c..+0x43: not written by host helper
-        pub(crate) backup_page_list_count: U32,     // +0x44: compact-list count, rounded to 8
+        // Count of 8-byte compact extent entries in the Backup Page List.
+        // Host population rounds it to 8 entries; RTKit adds each completed
+        // async-grow request's entry count, also rounded to 8.
+        pub(crate) backup_page_list_entry_count: U32,
         pub(crate) fw_uncached_state_fwva: U64,     // +0x48: Apple "UMA FW Uncached State"
         pub(crate) fw_uncached_state_mirror: U64,   // +0x50: cached qword compared by FW
         // +0x58 is nonzero exactly for a reusable/shared UMA pool whose
@@ -82,7 +85,7 @@ pub(crate) mod raw {
     const _: [(); 0x20] = [(); core::mem::offset_of!(G15UMAPagePoolState, dynamic_20)];
     const _: [(); 0x30] = [(); core::mem::offset_of!(G15UMAPagePoolState, lifecycle_state_30)];
     const _: [(); 0x34] = [(); core::mem::offset_of!(G15UMAPagePoolState, backup_page_list_fwva)];
-    const _: [(); 0x44] = [(); core::mem::offset_of!(G15UMAPagePoolState, backup_page_list_count)];
+    const _: [(); 0x44] = [(); core::mem::offset_of!(G15UMAPagePoolState, backup_page_list_entry_count)];
     const _: [(); 0x48] = [(); core::mem::offset_of!(G15UMAPagePoolState, fw_uncached_state_fwva)];
     const _: [(); 0x50] = [(); core::mem::offset_of!(G15UMAPagePoolState, fw_uncached_state_mirror)];
     const _: [(); 0x58] = [(); core::mem::offset_of!(G15UMAPagePoolState, shared_compute_pool)];
