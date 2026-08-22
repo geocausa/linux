@@ -204,6 +204,28 @@ pub(crate) mod raw {
         pub(crate) isp_zls_pixels: U64,
     }
 
+    #[derive(Debug)]
+    #[repr(C)]
+    pub(crate) struct G15EncoderState {
+        pub(crate) zero_b6c: u32,
+        pub(crate) zero_b70: u32,
+        pub(crate) zero_b74: u32,
+        pub(crate) zero_b78: u32,
+        pub(crate) raw_render_2dd_b7c: u32,
+        pub(crate) raw_render_1c0_nonzero_b80: u32,
+        pub(crate) raw_render_60c_b84: u32,
+        pub(crate) raw_render_608_610_b88: U64,
+        pub(crate) raw_render_614_b90: u32,
+    }
+
+    const _: [(); 0x28] = [(); core::mem::size_of::<G15EncoderState>()];
+    const _: [(); 0x00] = [(); core::mem::offset_of!(G15EncoderState, zero_b6c)];
+    const _: [(); 0x10] = [(); core::mem::offset_of!(G15EncoderState, raw_render_2dd_b7c)];
+    const _: [(); 0x14] = [(); core::mem::offset_of!(G15EncoderState, raw_render_1c0_nonzero_b80)];
+    const _: [(); 0x18] = [(); core::mem::offset_of!(G15EncoderState, raw_render_60c_b84)];
+    const _: [(); 0x1c] = [(); core::mem::offset_of!(G15EncoderState, raw_render_608_610_b88)];
+    const _: [(); 0x24] = [(); core::mem::offset_of!(G15EncoderState, raw_render_614_b90)];
+
     #[versions(AGX)]
     #[derive(Debug)]
     #[repr(C)]
@@ -254,7 +276,10 @@ pub(crate) mod raw {
         pub(crate) busy_flag: u32,
         pub(crate) tvb_overflow_count: u32,
         pub(crate) unk_878: u32,
+        #[ver(G != G15)]
         pub(crate) encoder_params: job::raw::EncoderParams,
+        #[ver(G == G15)]
+        pub(crate) g15_encoder_state: G15EncoderState,
         pub(crate) process_empty_tiles: u32,
         pub(crate) no_clear_pipeline_textures: u32,
         pub(crate) msaa_zs: u32,
@@ -345,7 +370,7 @@ pub(crate) mod raw {
     const _: [(); 0xa58] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_zero_a58)];
     const _: [(); 0xb60] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, busy_flag)];
     const _: [(); 0xb64] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, tvb_overflow_count)];
-    const _: [(); 0xb6c] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, encoder_params)];
+    const _: [(); 0xb6c] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_encoder_state)];
     const _: [(); 0xba0] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, unk_pointee)];
     const _: [(); 0xba4] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_raw_render_4b8_ba4)];
     const _: [(); 0xba8] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, meta)];

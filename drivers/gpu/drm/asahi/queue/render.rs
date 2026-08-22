@@ -928,19 +928,17 @@ impl super::QueueInner::ver {
                         sampler_max: (cmdbuf.sampler_count as u32) + 1,
                     }),
                     #[ver(G == G15)]
-                    encoder_params <- try_init!(fw::job::raw::EncoderParams {
-                        unk_8: 0,
-                        sync_grow: 0,
-                        unk_10: 0,
-                        // AGX3DChannelSKU::submitBuffer() fixes command +0xb78 to zero.
-                        encoder_id: 0,
-                        unk_18: 0,
-                        // Apple G15 writes (raw Render byte +0x1c0 != 0) to +0xb80.
-                        // Linux has no G15 raw producer yet, so keep it fail-closed.
-                        unk_mask: 0,
-                        sampler_array: U64(cmdbuf.sampler_heap),
-                        sampler_count: cmdbuf.sampler_count as u32,
-                        sampler_max: (cmdbuf.sampler_count as u32) + 1,
+                    g15_encoder_state <- try_init!(fw::fragment::raw::G15EncoderState {
+                        zero_b6c: 0,
+                        zero_b70: 0,
+                        zero_b74: 0,
+                        zero_b78: 0,
+                        // Apple sources below are exact; Linux has no G15 raw producer yet.
+                        raw_render_2dd_b7c: 0,
+                        raw_render_1c0_nonzero_b80: 0,
+                        raw_render_60c_b84: 0,
+                        raw_render_608_610_b88: U64(0),
+                        raw_render_614_b90: 0,
                     }),
                     process_empty_tiles: (cmdbuf.flags
                         & uapi::drm_asahi_render_flags_DRM_ASAHI_RENDER_PROCESS_EMPTY_TILES as u32
