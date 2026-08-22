@@ -1532,7 +1532,7 @@ impl super::QueueInner::ver {
                     #[ver(G == G15)]
                     g15_zero_8a8: U64(0),
                     #[ver(G == G15)]
-                    g15_state_8b0: U64(0),
+                    g15_segment_resource_list_fwva_8b0: U64(0),
                     #[ver(G == G15)]
                     g15_state_8b8: U64(0),
                     #[ver(G == G15)]

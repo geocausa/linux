@@ -246,8 +246,11 @@ pub(crate) mod raw {
         pub(crate) g15_tail_898: Array<0x10, u8>,
         #[ver(G == G15)]
         pub(crate) g15_zero_8a8: U64,
+        // processRenderSetup() stores the IOGPUSegmentResourceList GPUVA at
+        // descriptor +0x6d0 (unless feature-gated to zero); TA submit converts
+        // it through AGXArmFirmware::convertGPUVAToFWVA() into command +0x8b0.
         #[ver(G == G15)]
-        pub(crate) g15_state_8b0: U64,
+        pub(crate) g15_segment_resource_list_fwva_8b0: U64,
         #[ver(G == G15)]
         pub(crate) g15_state_8b8: U64,
         #[ver(G == G15)]
@@ -316,7 +319,7 @@ pub(crate) mod raw {
     const _: [(); 0x890] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_barrier_state_890)];
     const _: [(); 0x898] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_tail_898)];
     const _: [(); 0x8a8] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_zero_8a8)];
-    const _: [(); 0x8b0] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_state_8b0)];
+    const _: [(); 0x8b0] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_segment_resource_list_fwva_8b0)];
     const _: [(); 0x8b8] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_state_8b8)];
     const _: [(); 0x8c0] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_state_8c0)];
     const _: [(); 0x8c8] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_state_8c8)];
