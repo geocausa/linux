@@ -256,10 +256,12 @@ pub(crate) mod raw {
         // then ChinookV9 convertGPUVAToFWVA() exports it here.
         #[ver(G == G15)]
         pub(crate) g15_block_fence_time0_fwva_8b8: U64,
+        // AGXMTLCounterSampler::fwTokenEncode() writes its two U64 outputs to
+        // TA descriptor +0x1080/+0x1088; submitBuffer() copies them unchanged.
         #[ver(G == G15)]
-        pub(crate) g15_state_8c0: U64,
+        pub(crate) g15_mtl_counter_fw_token_0_8c0: U64,
         #[ver(G == G15)]
-        pub(crate) g15_state_8c8: U64,
+        pub(crate) g15_mtl_counter_fw_token_1_8c8: U64,
         // Apple G15 submission leaves +0x8d0..+0x8d5 unwritten; the first explicit
         // late-tail store begins at +0x8d6. The same six-byte packed-ABI gap
         // appears in Compute, TA, and 3D immediately before an unaligned U64.
@@ -324,8 +326,8 @@ pub(crate) mod raw {
     const _: [(); 0x8a8] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_zero_8a8)];
     const _: [(); 0x8b0] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_segment_resource_list_fwva_8b0)];
     const _: [(); 0x8b8] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_block_fence_time0_fwva_8b8)];
-    const _: [(); 0x8c0] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_state_8c0)];
-    const _: [(); 0x8c8] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_state_8c8)];
+    const _: [(); 0x8c0] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_mtl_counter_fw_token_0_8c0)];
+    const _: [(); 0x8c8] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_mtl_counter_fw_token_1_8c8)];
     const _: [(); 0x8d0] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_pad_8d0)];
     const _: [(); 0x8d6] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_uma_page_pool_state_fwva_8d6)];
     const _: [(); 0x8de] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_uma_prepared_8de)];

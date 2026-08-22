@@ -1536,9 +1536,9 @@ impl super::QueueInner::ver {
                     #[ver(G == G15)]
                     g15_block_fence_time0_fwva_8b8: U64(0),
                     #[ver(G == G15)]
-                    g15_state_8c0: U64(0),
+                    g15_mtl_counter_fw_token_0_8c0: U64(0),
                     #[ver(G == G15)]
-                    g15_state_8c8: U64(0),
+                    g15_mtl_counter_fw_token_1_8c8: U64(0),
                     #[ver(G == G15)]
                     g15_pad_8d0: Default::default(),
                     #[ver(G == G15)]
