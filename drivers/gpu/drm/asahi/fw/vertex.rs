@@ -137,10 +137,10 @@ pub(crate) mod raw {
         #[ver(G >= G14X || G == G15)]
         pub(crate) registers: job::raw::RegisterArray,
 
-        // G15 keeps the register-list command generation, with 0x10 bytes of
-        // command state inserted after the register array.
+        // The G15 RegisterArray ends at +0x74f. Apple TA submit has no writer
+        // for +0x750..+0x75f; the next explicit store begins with TPC at +0x760.
         #[ver(G == G15)]
-        pub(crate) g15_pre_tpc_750: Array<0x10, u8>,
+        pub(crate) g15_pad_750: Array<0x10, u8>,
         pub(crate) tpc: GpuPointer<'a, &'a [u8]>,
         pub(crate) tpc_size: U64,
         pub(crate) microsequence: GpuPointer<'a, &'a [u8]>,

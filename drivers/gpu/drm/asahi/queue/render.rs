@@ -1413,7 +1413,7 @@ impl super::QueueInner::ver {
                         },
                     ),
                     #[ver(G == G15)]
-                    g15_pre_tpc_750: Default::default(),
+                    g15_pad_750: Default::default(),
                     tpc: inner.scene.tpc_pointer(),
                     tpc_size: U64(tile_info.tpc_size as u64),
                     microsequence: inner.micro_seq.gpu_pointer(),
