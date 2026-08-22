@@ -24,13 +24,17 @@ pub(crate) mod raw {
     }
     default_zeroed!(BlockControl);
 
+    #[versions(AGX)]
     #[derive(Debug)]
     #[repr(C)]
     pub(crate) struct Counter {
         pub(crate) count: AtomicU32,
+        #[ver(G != G15)]
         __pad: Pad<0x3c>,
     }
-    default_zeroed!(Counter);
+
+    #[versions(AGX)]
+    default_zeroed!(Counter::ver);
 
     #[derive(Debug, Default)]
     #[repr(C)]
@@ -68,20 +72,57 @@ pub(crate) mod raw {
         pub(crate) block_list: GpuPointer<'a, &'a [u32]>,
         pub(crate) block_ctl: GpuPointer<'a, super::BlockControl>,
         pub(crate) last_page: AtomicU32,
+
+        // G15 keeps the legacy-compatible prefix through +0x48, then switches
+        // to a compact 0x80-byte parameter-buffer state. Apple allocates the
+        // external control word as a separate 4-byte object and stores its FW
+        // address at +0x58.
+        #[ver(G == G15)]
+        pub(crate) g15_unk_4c: u32,
+        #[ver(G == G15)]
+        pub(crate) g15_unk_50: U64,
+        #[ver(G == G15)]
+        pub(crate) counter: GpuPointer<'a, super::Counter::ver>,
+        #[ver(G == G15)]
+        pub(crate) g15_unk_60: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_unk_68: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_unk_70: u32,
+        #[ver(G == G15)]
+        pub(crate) g15_unk_74: u32,
+        #[ver(G == G15)]
+        pub(crate) g15_unk_78: U64,
+
+        #[ver(G != G15)]
         pub(crate) gpu_page_ptr1: u32,
+        #[ver(G != G15)]
         pub(crate) gpu_page_ptr2: u32,
+        #[ver(G != G15)]
         pub(crate) unk_58: u32,
+        #[ver(G != G15)]
         pub(crate) block_size: u32,
+        #[ver(G != G15)]
         pub(crate) unk_60: U64,
-        pub(crate) counter: GpuPointer<'a, super::Counter>,
+        #[ver(G != G15)]
+        pub(crate) counter: GpuPointer<'a, super::Counter::ver>,
+        #[ver(G != G15)]
         pub(crate) unk_70: u32,
+        #[ver(G != G15)]
         pub(crate) unk_74: u32,
+        #[ver(G != G15)]
         pub(crate) unk_78: u32,
+        #[ver(G != G15)]
         pub(crate) unk_7c: u32,
+        #[ver(G != G15)]
         pub(crate) unk_80: u32,
+        #[ver(G != G15)]
         pub(crate) max_pages: u32,
+        #[ver(G != G15)]
         pub(crate) max_pages_nomemless: u32,
+        #[ver(G != G15)]
         pub(crate) unk_8c: u32,
+        #[ver(G != G15)]
         pub(crate) unk_90: Array<0x30, u8>,
     }
 
@@ -89,9 +130,9 @@ pub(crate) mod raw {
     #[derive(Debug)]
     #[repr(C)]
     pub(crate) struct Scene<'a> {
-        #[ver(G >= G14X)]
+        #[ver(G >= G14X || G == G15)]
         pub(crate) control_word: GpuPointer<'a, &'a [u32]>,
-        #[ver(G >= G14X)]
+        #[ver(G >= G14X || G == G15)]
         pub(crate) control_word2: GpuPointer<'a, &'a [u32]>,
         pub(crate) pass_page_count: AtomicU32,
         pub(crate) unk_4: u32,
@@ -99,15 +140,44 @@ pub(crate) mod raw {
         pub(crate) unk_10: U64,
         pub(crate) user_buffer: GpuPointer<'a, &'a [u8]>,
         pub(crate) unk_20: u32,
+        // G15 has one extra dword here. This moves the following U64/pointers
+        // to the exact firmware-observed +0x38/+0x40/+0x48 anchors.
+        #[ver(G == G15)]
+        pub(crate) g15_unk_34: u32,
         #[ver(V >= V13_3)]
         pub(crate) unk_28: U64,
         pub(crate) stats: GpuWeakPointer<super::Stats>,
         pub(crate) total_page_count: AtomicU32,
-        #[ver(G < G14X)]
+        #[ver(G < G14X && G != G15)]
         pub(crate) unk_30: U64, // pad
-        #[ver(G < G14X)]
+        #[ver(G < G14X && G != G15)]
         pub(crate) unk_38: U64, // pad
+        // Apple backs each G15 scene with 0x80 bytes. RTKit actively
+        // invalidates/uses the first 0x50; the remaining bytes stay opaque.
+        #[ver(G == G15)]
+        pub(crate) g15_tail: Pad<0x34>,
     }
+
+    // Exact G15 parameter-buffer backing recovered from Apple host allocation
+    // and RTKit command handling.
+    const _: [(); 0x04] = [(); core::mem::size_of::<CounterG15V14_7>()];
+    const _: [(); 0x80] = [(); core::mem::size_of::<InfoG15V14_7<'static>>()];
+    const _: [(); 0x1c] = [(); core::mem::offset_of!(InfoG15V14_7<'static>, page_list)];
+    const _: [(); 0x28] = [(); core::mem::offset_of!(InfoG15V14_7<'static>, page_count)];
+    const _: [(); 0x30] = [(); core::mem::offset_of!(InfoG15V14_7<'static>, block_count)];
+    const _: [(); 0x38] = [(); core::mem::offset_of!(InfoG15V14_7<'static>, block_list)];
+    const _: [(); 0x40] = [(); core::mem::offset_of!(InfoG15V14_7<'static>, block_ctl)];
+    const _: [(); 0x48] = [(); core::mem::offset_of!(InfoG15V14_7<'static>, last_page)];
+    const _: [(); 0x58] = [(); core::mem::offset_of!(InfoG15V14_7<'static>, counter)];
+    const _: [(); 0x80] = [(); core::mem::size_of::<SceneG15V14_7<'static>>()];
+    const _: [(); 0x00] = [(); core::mem::offset_of!(SceneG15V14_7<'static>, control_word)];
+    const _: [(); 0x08] = [(); core::mem::offset_of!(SceneG15V14_7<'static>, control_word2)];
+    const _: [(); 0x10] = [(); core::mem::offset_of!(SceneG15V14_7<'static>, pass_page_count)];
+    const _: [(); 0x28] = [(); core::mem::offset_of!(SceneG15V14_7<'static>, user_buffer)];
+    const _: [(); 0x34] = [(); core::mem::offset_of!(SceneG15V14_7<'static>, g15_unk_34)];
+    const _: [(); 0x38] = [(); core::mem::offset_of!(SceneG15V14_7<'static>, unk_28)];
+    const _: [(); 0x40] = [(); core::mem::offset_of!(SceneG15V14_7<'static>, stats)];
+    const _: [(); 0x48] = [(); core::mem::offset_of!(SceneG15V14_7<'static>, total_page_count)];
 
     #[versions(AGX)]
     #[derive(Debug)]
@@ -136,14 +206,15 @@ pub(crate) mod raw {
 }
 
 trivial_gpustruct!(BlockControl);
-trivial_gpustruct!(Counter);
+#[versions(AGX)]
+trivial_gpustruct!(Counter::ver);
 trivial_gpustruct!(Stats);
 
 #[versions(AGX)]
 #[derive(Debug)]
 pub(crate) struct Info {
     pub(crate) block_ctl: GpuObject<BlockControl>,
-    pub(crate) counter: GpuObject<Counter>,
+    pub(crate) counter: GpuObject<Counter::ver>,
     pub(crate) page_list: GpuArray<u32>,
     pub(crate) block_list: GpuArray<u32>,
 }
@@ -167,7 +238,7 @@ pub(crate) struct Scene {
     pub(crate) tpc: Arc<GpuArray<u8>>,
     pub(crate) clustering: Option<ClusterBuffers>,
     pub(crate) preempt_buf: GpuArray<u8>,
-    #[ver(G >= G14X)]
+    #[ver(G >= G14X || G == G15)]
     pub(crate) control_word: GpuArray<u32>,
 }
 

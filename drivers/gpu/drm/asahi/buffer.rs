@@ -336,6 +336,7 @@ impl Buffer::ver {
         let max_blocks = max_size / BLOCK_SIZE;
         let max_blocks_nomemless = max_size_nomemless / BLOCK_SIZE;
         let max_pages = max_blocks * PAGES_PER_BLOCK;
+        #[allow(unused_variables)] // G15's compact Info has no legacy max-pages tail.
         let max_pages_nomemless = max_blocks_nomemless * PAGES_PER_BLOCK;
 
         let num_clusters = gpu.get_dyncfg().id.num_clusters as usize;
@@ -355,7 +356,7 @@ impl Buffer::ver {
                 let ualloc_priv = &ualloc_priv;
                 try_init!(buffer::Info::ver {
                     block_ctl: shared.new_default::<buffer::BlockControl>()?,
-                    counter: shared.new_default::<buffer::Counter>()?,
+                    counter: shared.new_default::<buffer::Counter::ver>()?,
                     page_list: ualloc_priv.lock().array_empty_tagged(max_pages, b"PLST")?,
                     block_list: ualloc_priv
                         .lock()
@@ -382,20 +383,51 @@ impl Buffer::ver {
                     block_list: inner.block_list.gpu_pointer(),
                     block_ctl: inner.block_ctl.gpu_pointer(),
                     last_page: AtomicU32::new(0),
-                    gpu_page_ptr1: 0x0,
-                    gpu_page_ptr2: 0x0,
-                    unk_58: 0x0,
-                    block_size: BLOCK_SIZE as u32,
-                    unk_60: U64(0x0),
+                    #[ver(G == G15)]
+                    g15_unk_4c: 0,
+                    #[ver(G == G15)]
+                    g15_unk_50: U64(0),
+                    #[ver(G == G15)]
                     counter: inner.counter.gpu_pointer(),
+                    #[ver(G == G15)]
+                    g15_unk_60: U64(0),
+                    #[ver(G == G15)]
+                    g15_unk_68: U64(0),
+                    #[ver(G == G15)]
+                    g15_unk_70: 0,
+                    #[ver(G == G15)]
+                    g15_unk_74: 0,
+                    #[ver(G == G15)]
+                    g15_unk_78: U64(0),
+                    #[ver(G != G15)]
+                    gpu_page_ptr1: 0x0,
+                    #[ver(G != G15)]
+                    gpu_page_ptr2: 0x0,
+                    #[ver(G != G15)]
+                    unk_58: 0x0,
+                    #[ver(G != G15)]
+                    block_size: BLOCK_SIZE as u32,
+                    #[ver(G != G15)]
+                    unk_60: U64(0x0),
+                    #[ver(G != G15)]
+                    counter: inner.counter.gpu_pointer(),
+                    #[ver(G != G15)]
                     unk_70: 0x0,
+                    #[ver(G != G15)]
                     unk_74: 0x0,
+                    #[ver(G != G15)]
                     unk_78: 0x0,
+                    #[ver(G != G15)]
                     unk_7c: 0x0,
+                    #[ver(G != G15)]
                     unk_80: 0x1,
+                    #[ver(G != G15)]
                     max_pages: max_pages.try_into()?,
+                    #[ver(G != G15)]
                     max_pages_nomemless: max_pages_nomemless.try_into()?,
+                    #[ver(G != G15)]
                     unk_8c: 0x0,
+                    #[ver(G != G15)]
                     unk_90: Default::default(),
                 })
             },
@@ -652,14 +684,14 @@ impl Buffer::ver {
                 tpc: tpc,
                 clustering: clustering,
                 preempt_buf: preempt_buf,
-                #[ver(G >= G14X)]
+                #[ver(G >= G14X || G == G15)]
                 control_word: _gpu.array_empty_tagged(1, b"CWRD")?,
             }),
             |inner, _p| {
                 try_init!(buffer::raw::Scene::ver {
-                    #[ver(G >= G14X)]
+                    #[ver(G >= G14X || G == G15)]
                     control_word: inner.control_word.gpu_pointer(),
-                    #[ver(G >= G14X)]
+                    #[ver(G >= G14X || G == G15)]
                     control_word2: inner.control_word.gpu_pointer(),
                     pass_page_count: AtomicU32::new(0),
                     unk_4: 0,
@@ -667,14 +699,18 @@ impl Buffer::ver {
                     unk_10: U64(0),
                     user_buffer: inner.user_buffer.gpu_pointer(),
                     unk_20: 0,
+                    #[ver(G == G15)]
+                    g15_unk_34: 0,
                     #[ver(V >= V13_3)]
                     unk_28: U64(0),
                     stats: stats_pointer,
                     total_page_count: AtomicU32::new(0),
-                    #[ver(G < G14X)]
+                    #[ver(G < G14X && G != G15)]
                     unk_30: U64(0),
-                    #[ver(G < G14X)]
+                    #[ver(G < G14X && G != G15)]
                     unk_38: U64(0),
+                    #[ver(G == G15)]
+                    g15_tail: Default::default(),
                 })
             },
         )?;
