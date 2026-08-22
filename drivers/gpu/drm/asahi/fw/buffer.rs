@@ -121,6 +121,18 @@ pub(crate) mod raw {
         pub(crate) buffer: GpuPointer<'a, super::Info::ver>,
         pub(crate) stamp_value: EventValue,
     }
+
+    // AGXTAChannelSKU::submitBuffer() constructs the G15 tag-6 record as
+    // exactly 0x20 bytes with the same packed field geometry, including the
+    // deliberately unaligned FW-visible buffer pointer at +0x14.
+    const _: [(); 0x20] = [(); core::mem::size_of::<InitBufferG15V14_7<'static>>()];
+    const _: [(); 0x00] = [(); core::mem::offset_of!(InitBufferG15V14_7<'static>, tag)];
+    const _: [(); 0x04] = [(); core::mem::offset_of!(InitBufferG15V14_7<'static>, vm_slot)];
+    const _: [(); 0x08] = [(); core::mem::offset_of!(InitBufferG15V14_7<'static>, buffer_slot)];
+    const _: [(); 0x0c] = [(); core::mem::offset_of!(InitBufferG15V14_7<'static>, unk_c)];
+    const _: [(); 0x10] = [(); core::mem::offset_of!(InitBufferG15V14_7<'static>, block_count)];
+    const _: [(); 0x14] = [(); core::mem::offset_of!(InitBufferG15V14_7<'static>, buffer)];
+    const _: [(); 0x1c] = [(); core::mem::offset_of!(InitBufferG15V14_7<'static>, stamp_value)];
 }
 
 trivial_gpustruct!(BlockControl);
