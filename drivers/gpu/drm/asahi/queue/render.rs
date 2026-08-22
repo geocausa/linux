@@ -1022,12 +1022,25 @@ impl super::QueueInner::ver {
                     g15_zero_be0: U64(0),
                     #[ver(G == G15)]
                     g15_zero_be8: U64(0),
+                    #[ver(G != G15)]
                     command_time: U64(0),
+                    #[ver(G == G15)]
+                    g15_zero_bf0: U64(0),
+                    #[ver(G != G15)]
                     timestamp_pointers <- try_init!(fw::job::raw::TimestampPointers {
                         start_addr: Some(inner_ptr!(inner.timestamps.gpu_pointer(), frag.start)),
                         end_addr: Some(inner_ptr!(inner.timestamps.gpu_pointer(), frag.end)),
                     }),
+                    #[ver(G != G15)]
                     user_timestamp_pointers: inner.user_timestamps.pointers()?,
+                    #[ver(G == G15)]
+                    g15_segment_resource_list_fwva_bf8: U64(0),
+                    #[ver(G == G15)]
+                    g15_block_fence_time0_fwva_c00: U64(0),
+                    #[ver(G == G15)]
+                    g15_mtl_counter_fw_token_0_c08: U64(0),
+                    #[ver(G == G15)]
+                    g15_mtl_counter_fw_token_1_c10: U64(0),
                     #[ver(G != G15)]
                     client_sequence: slot_client_seq,
                     #[ver(G != G15)]

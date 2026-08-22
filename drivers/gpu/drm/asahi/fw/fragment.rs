@@ -330,9 +330,27 @@ pub(crate) mod raw {
         pub(crate) g15_zero_be0: U64,
         #[ver(G == G15)]
         pub(crate) g15_zero_be8: U64,
+        #[ver(G != G15)]
         pub(crate) command_time: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_zero_bf0: U64,
+        #[ver(G != G15)]
         pub(crate) timestamp_pointers: job::raw::TimestampPointers<'a>,
+        #[ver(G != G15)]
         pub(crate) user_timestamp_pointers: job::raw::TimestampPointers<'a>,
+        // G15 replaces the legacy timestamp-pointer pairs with firmware-facing
+        // render resources. submitBuffer() converts descriptor +0x6d0/+0x6d8
+        // through AGXArmFirmware::convertGPUVAToFWVA() for +0xbf8/+0xc00, then
+        // copies AGXMTLCounterSampler::fwTokenEncode() outputs from descriptor
+        // +0x8f8/+0x900 to +0xc08/+0xc10.
+        #[ver(G == G15)]
+        pub(crate) g15_segment_resource_list_fwva_bf8: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_block_fence_time0_fwva_c00: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_mtl_counter_fw_token_0_c08: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_mtl_counter_fw_token_1_c10: U64,
 
         #[ver(G != G15)]
         pub(crate) client_sequence: u8,
@@ -414,9 +432,11 @@ pub(crate) mod raw {
     const _: [(); 0xbd8] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_zero_bd8)];
     const _: [(); 0xbe0] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_zero_be0)];
     const _: [(); 0xbe8] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_zero_be8)];
-    const _: [(); 0xbf0] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, command_time)];
-    const _: [(); 0xbf8] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, timestamp_pointers)];
-    const _: [(); 0xc08] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, user_timestamp_pointers)];
+    const _: [(); 0xbf0] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_zero_bf0)];
+    const _: [(); 0xbf8] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_segment_resource_list_fwva_bf8)];
+    const _: [(); 0xc00] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_block_fence_time0_fwva_c00)];
+    const _: [(); 0xc08] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_mtl_counter_fw_token_0_c08)];
+    const _: [(); 0xc10] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_mtl_counter_fw_token_1_c10)];
     const _: [(); 0xc18] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_pad_c18)];
     const _: [(); 0xc1e] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_uma_page_pool_state_fwva_c1e)];
     const _: [(); 0xc26] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_uma_prepared_c26)];
