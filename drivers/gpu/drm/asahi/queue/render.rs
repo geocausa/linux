@@ -1566,7 +1566,7 @@ impl super::QueueInner::ver {
                     #[ver(G == G15)]
                     g15_barrier_state_890: U64(0),
                     #[ver(G == G15)]
-                    g15_tail_898: Default::default(),
+                    g15_pad_898: Default::default(),
                     #[ver(G == G15)]
                     g15_zero_8a8: U64(0),
                     #[ver(G == G15)]

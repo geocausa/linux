@@ -250,14 +250,15 @@ pub(crate) mod raw {
         #[ver(V >= V13_0B4 && G != G15)]
         pub(crate) unk_5dd_8: Array<0x1b, u8>,
 
-        // G15 passes command +0x890 as an AGFIBarrierState to a G15 virtual
-        // hook. The exact implementation is a no-op, so the backing remains
-        // zero at bootstrap. Keep its first qword addressable for the legacy
-        // compile-only microsequence scaffold; runtime submission is blocked.
+        // Apple passes command +0x890 as AGFIBarrierState to G15 vslot +0x218.
+        // That slot resolves to generatePreparseBarrierRegister(), whose entire
+        // body is `bti; ret`; submitBuffer() itself does not write +0x890..+0x8a7.
+        // Keep the first qword addressable for the compile-only scaffold and
+        // model the following 0x10 bytes as unwritten packed padding.
         #[ver(G == G15)]
         pub(crate) g15_barrier_state_890: U64,
         #[ver(G == G15)]
-        pub(crate) g15_tail_898: Array<0x10, u8>,
+        pub(crate) g15_pad_898: Array<0x10, u8>,
         #[ver(G == G15)]
         pub(crate) g15_zero_8a8: U64,
         // processRenderSetup() stores the IOGPUSegmentResourceList GPUVA at
@@ -338,7 +339,7 @@ pub(crate) mod raw {
         + core::mem::offset_of!(job::raw::G15JobMeta, event_seq)];
     const _: [(); 0x88c] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_raw_render_619_eq_2_88c)];
     const _: [(); 0x890] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_barrier_state_890)];
-    const _: [(); 0x898] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_tail_898)];
+    const _: [(); 0x898] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_pad_898)];
     const _: [(); 0x8a8] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_zero_8a8)];
     const _: [(); 0x8b0] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_segment_resource_list_fwva_8b0)];
     const _: [(); 0x8b8] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_block_fence_time0_fwva_8b8)];
