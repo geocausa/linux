@@ -89,6 +89,17 @@ pub(crate) mod raw {
         pub(crate) unk_pad: u32,
     }
 
+    // The G14X and G15 firmware command ABIs both embed this exact object.
+    // Keep its non-native 12-byte register stride and trailing self-pointer
+    // geometry compile-time locked before generation-specific lists diverge.
+    const _: [(); 0x0c] = [(); core::mem::size_of::<Register>()];
+    const _: [(); 0x710] = [(); core::mem::size_of::<RegisterArray>()];
+    const _: [(); 0x600] = [(); core::mem::offset_of!(RegisterArray, pad)];
+    const _: [(); 0x700] = [(); core::mem::offset_of!(RegisterArray, addr)];
+    const _: [(); 0x708] = [(); core::mem::offset_of!(RegisterArray, count)];
+    const _: [(); 0x70a] = [(); core::mem::offset_of!(RegisterArray, length)];
+    const _: [(); 0x70c] = [(); core::mem::offset_of!(RegisterArray, unk_pad)];
+
     impl RegisterArray {
         pub(crate) fn new(
             self_ptr: GpuWeakPointer<Array<128, Register>>,
