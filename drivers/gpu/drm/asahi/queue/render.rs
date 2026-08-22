@@ -1497,7 +1497,10 @@ impl super::QueueInner::ver {
                         uuid: uuid_ta,
                         event_seq: ev_vtx.event_seq as u32,
                     }),
+                    #[ver(G != G15)]
                     unk_after_meta: unk1.into(),
+                    #[ver(G == G15)]
+                    g15_raw_render_619_eq_2_88c: U32(0),
                     #[ver(G != G15)]
                     unk_buf_0: U64(0),
                     #[ver(G != G15)]

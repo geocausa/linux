@@ -208,7 +208,11 @@ pub(crate) mod raw {
         pub(crate) meta: job::raw::JobMeta,
         #[ver(G == G15)]
         pub(crate) meta: job::raw::G15JobMeta,
+        #[ver(G != G15)]
         pub(crate) unk_after_meta: u32,
+        // Apple G15 writes (raw Render byte +0x619 == 2) to command +0x88c.
+        #[ver(G == G15)]
+        pub(crate) g15_raw_render_619_eq_2_88c: U32,
         #[ver(G != G15)]
         pub(crate) unk_buf_0: U64,
         #[ver(G != G15)]
@@ -320,7 +324,7 @@ pub(crate) mod raw {
     // independently confirming JobMeta::event_seq within the G15 command.
     const _: [(); 0x888] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, meta)
         + core::mem::offset_of!(job::raw::G15JobMeta, event_seq)];
-    const _: [(); 0x88c] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, unk_after_meta)];
+    const _: [(); 0x88c] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_raw_render_619_eq_2_88c)];
     const _: [(); 0x890] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_barrier_state_890)];
     const _: [(); 0x898] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_tail_898)];
     const _: [(); 0x8a8] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_zero_8a8)];
