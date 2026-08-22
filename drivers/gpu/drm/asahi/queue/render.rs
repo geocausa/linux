@@ -1480,7 +1480,11 @@ impl super::QueueInner::ver {
                     #[ver(G == G15)]
                     g15_zero_7c0: U64(0),
                     #[ver(G == G15)]
-                    g15_mid_7c8: Default::default(),
+                    g15_pad_7c8: Default::default(),
+                    #[ver(G == G15)]
+                    g15_zero_810: Default::default(),
+                    #[ver(G == G15)]
+                    g15_pad_830: Default::default(),
                     #[ver(G == G15)]
                     g15_raw_render_60c_83c: U32(0),
                     #[ver(G == G15)]

@@ -183,8 +183,15 @@ pub(crate) mod raw {
         pub(crate) g15_zero_7b8: U64,
         #[ver(G == G15)]
         pub(crate) g15_zero_7c0: U64,
+        // Apple TA submit leaves +0x7c8..+0x80f unwritten, explicitly zeros
+        // +0x810..+0x82f with two 16-byte stores, then leaves +0x830..+0x83b
+        // unwritten before the next scalar at +0x83c.
         #[ver(G == G15)]
-        pub(crate) g15_mid_7c8: Array<0x74, u8>,
+        pub(crate) g15_pad_7c8: Array<0x48, u8>,
+        #[ver(G == G15)]
+        pub(crate) g15_zero_810: Array<0x20, u8>,
+        #[ver(G == G15)]
+        pub(crate) g15_pad_830: Array<0x0c, u8>,
         #[ver(G == G15)]
         pub(crate) g15_raw_render_60c_83c: U32,
         #[ver(G == G15)]
@@ -313,7 +320,9 @@ pub(crate) mod raw {
     const _: [(); 0x7b0] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_zero_7b0)];
     const _: [(); 0x7b8] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_zero_7b8)];
     const _: [(); 0x7c0] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_zero_7c0)];
-    const _: [(); 0x7c8] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_mid_7c8)];
+    const _: [(); 0x7c8] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_pad_7c8)];
+    const _: [(); 0x810] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_zero_810)];
+    const _: [(); 0x830] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_pad_830)];
     const _: [(); 0x83c] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_raw_render_60c_83c)];
     const _: [(); 0x840] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_raw_render_608_610_lo_840)];
     const _: [(); 0x848] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_raw_render_614_848)];
