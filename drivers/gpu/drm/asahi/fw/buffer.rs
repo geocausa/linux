@@ -62,11 +62,12 @@ pub(crate) mod raw {
         pub(crate) backup_page_list_count: U32,     // +0x44: compact-list count, rounded to 8
         pub(crate) fw_uncached_state_fwva: U64,     // +0x48: Apple "UMA FW Uncached State"
         pub(crate) fw_uncached_state_mirror: U64,   // +0x50: cached qword compared by FW
-        pub(crate) shared_pool_mode: U32,           // +0x58: zero for normal non-shared channels
-        // Scheduler dispatch increments only the low byte when +0x58 shared
-        // pool mode is nonzero. No other Page Pool State consumer recovered
-        // so far gives the upper bits or the sequence a stronger semantic.
-        pub(crate) shared_pool_dispatch_seq_5c: U32,
+        // +0x58 is nonzero exactly for a reusable/shared UMA pool whose
+        // AGXIOFenceDataMasterType is CL/compute (2). TA=0 and 3D=1.
+        pub(crate) shared_compute_pool: U32,
+        // Scheduler dispatch increments only the low byte for those shared
+        // compute pools. No recovered consumer gives the upper bits a role.
+        pub(crate) shared_compute_dispatch_seq_5c: U32,
         pub(crate) zero_60: U64,                    // +0x60
         pub(crate) zero_68: U64,                    // +0x68
     }
@@ -81,8 +82,8 @@ pub(crate) mod raw {
     const _: [(); 0x44] = [(); core::mem::offset_of!(G15UMAPagePoolState, backup_page_list_count)];
     const _: [(); 0x48] = [(); core::mem::offset_of!(G15UMAPagePoolState, fw_uncached_state_fwva)];
     const _: [(); 0x50] = [(); core::mem::offset_of!(G15UMAPagePoolState, fw_uncached_state_mirror)];
-    const _: [(); 0x58] = [(); core::mem::offset_of!(G15UMAPagePoolState, shared_pool_mode)];
-    const _: [(); 0x5c] = [(); core::mem::offset_of!(G15UMAPagePoolState, shared_pool_dispatch_seq_5c)];
+    const _: [(); 0x58] = [(); core::mem::offset_of!(G15UMAPagePoolState, shared_compute_pool)];
+    const _: [(); 0x5c] = [(); core::mem::offset_of!(G15UMAPagePoolState, shared_compute_dispatch_seq_5c)];
 
     #[derive(Debug, Default)]
     #[repr(C)]
