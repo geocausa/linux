@@ -72,6 +72,8 @@ impl super::QueueInner::ver {
         // This sequence number increases per new client/VM? assigned to some slot,
         // but it's unclear *which* slot...
         let slot_client_seq: u8 = (self.id & 0xff) as u8;
+        #[ver(G == G15)]
+        let _ = slot_client_seq; // exact G15 destination inside +0x83e..+0x85f not yet named
 
         let vm_bind = job.vm_bind.clone();
 
@@ -135,9 +137,9 @@ impl super::QueueInner::ver {
                         let start_comp = builder.add(microseq::StartCompute::ver {
                             header: microseq::op::StartCompute::HEADER,
                             unk_pointer: inner_weak_ptr!(ptr, unk_pointee),
-                            #[ver(G < G14X)]
+                            #[ver(G < G14X && G != G15)]
                             job_params1: Some(inner_weak_ptr!(ptr, job_params1)),
-                            #[ver(G >= G14X)]
+                            #[ver(G >= G14X || G == G15)]
                             job_params1: None,
                             #[ver(G >= G14X)]
                             registers: inner_weak_ptr!(ptr, registers),
@@ -255,9 +257,9 @@ impl super::QueueInner::ver {
                     vm_slot,
                     notifier: inner.notifier.gpu_pointer(),
                     unk_pointee: Default::default(),
-                    #[ver(G < G14X)]
+                    #[ver(G < G14X && G != G15)]
                     __pad0: Default::default(),
-                    #[ver(G < G14X)]
+                    #[ver(G < G14X && G != G15)]
                     job_params1 <- try_init!(fw::compute::raw::JobParameters1 {
                         preempt_buf1: inner.preempt_buf.gpu_pointer(),
                         cdm_ctrl_stream_base: U64(cmdbuf.cdm_ctrl_stream_base),
@@ -278,7 +280,7 @@ impl super::QueueInner::ver {
                         iogpu_unk_40: 0, // 0x1c if internal program used
                         __pad: Default::default(),
                     }),
-                    #[ver(G >= G14X)]
+                    #[ver(G >= G14X || G == G15)]
                     registers: fw::job::raw::RegisterArray::new(
                         inner_weak_ptr!(_ptr, registers.registers),
                         |r| {
@@ -301,7 +303,10 @@ impl super::QueueInner::ver {
                             */
                         }
                     ),
+                    #[ver(G != G15)]
                     __pad1: Default::default(),
+                    #[ver(G == G15)]
+                    g15_pre_micro: Default::default(),
                     microsequence: inner.micro_seq.gpu_pointer(),
                     microsequence_size: inner.micro_seq.len() as u32,
                     job_params2 <- try_init!(fw::compute::raw::JobParameters2::ver {
@@ -319,6 +324,7 @@ impl super::QueueInner::ver {
                         #[ver(V < V13_0B4)]
                         unk_5c: 0,
                     }),
+                    #[ver(G != G15)]
                     encoder_params <- try_init!(fw::job::raw::EncoderParams {
                         unk_8: 0x0,     // fixed
                         sync_grow: 0x0, // check!
@@ -330,6 +336,8 @@ impl super::QueueInner::ver {
                         sampler_count: cmdbuf.sampler_count as u32,
                         sampler_max: (cmdbuf.sampler_count as u32) + 1,
                     }),
+                    #[ver(G == G15)]
+                    g15_encoder_meta: Default::default(),
                     meta <- try_init!(fw::job::raw::JobMeta {
                         unk_0: 0,
                         unk_2: 0,
@@ -349,20 +357,30 @@ impl super::QueueInner::ver {
                         end_addr: Some(inner_ptr!(inner.timestamps.gpu_pointer(), end)),
                     }),
                     user_timestamp_pointers: inner.user_timestamps.pointers()?,
+                    #[ver(G != G15)]
                     client_sequence: slot_client_seq,
+                    #[ver(G != G15)]
                     pad_2d1: Default::default(),
+                    #[ver(G != G15)]
                     unk_2d4: 0,
+                    #[ver(G != G15)]
                     unk_2d8: 0,
+                    #[ver(G == G15)]
+                    g15_tail_838: Default::default(),
                     #[ver(V >= V13_0B4)]
                     context_store_req: U64(0),
+                    #[ver(G == G15)]
+                    g15_tail_868: Default::default(),
                     #[ver(V >= V13_0B4)]
                     context_store_compl: U64(0),
-                    #[ver(V >= V13_0B4)]
+                    #[ver(V >= V13_0B4 && G != G15)]
                     unk_2e9: Default::default(),
                     #[ver(V >= V13_0B4)]
                     unk_flag: U32(0),
-                    #[ver(V >= V13_0B4)]
+                    #[ver(V >= V13_0B4 && G != G15)]
                     unk_pad: Default::default(),
+                    #[ver(G == G15)]
+                    g15_tail_87c: Default::default(),
                 })
             },
         )?;
