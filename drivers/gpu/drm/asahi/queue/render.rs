@@ -965,6 +965,11 @@ impl super::QueueInner::ver {
                     }),
                     #[ver(G == G15)]
                     meta <- try_init!(fw::job::raw::G15JobMeta {
+                        // J615/G15G C0 Apple submission writes raw Render
+                        // byte +0x4c0 != 0 to command +0xba8. The accelerator
+                        // gate is fixed enabled (+0x1dd8=1), while +0x1dd9
+                        // remains zero from zeroed allocation through setup.
+                        // Linux has no G15 raw producer yet: fail closed.
                         engine_state: U32(0),
                         stamp: ev_frag.stamp_pointer,
                         fw_stamp: ev_frag.fw_stamp_pointer,
