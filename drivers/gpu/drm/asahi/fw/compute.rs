@@ -215,6 +215,11 @@ pub(crate) mod raw {
     }
 
     const _: [(); 0x880] = [(); core::mem::size_of::<RunComputeG15V14_7<'static>>()];
+    // AGXCLChannelSKU::submitBuffer() writes the G15 context ID at +0x10,
+    // matching the existing VM-slot field, then the notifier at +0x14.
+    const _: [(); 0x10] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, vm_slot)];
+    const _: [(); 0x14] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, notifier)];
+    const _: [(); 0x1c] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, unk_pointee)];
     const _: [(); 0x20] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, registers)];
     const _: [(); 0x730] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_pre_micro_730)];
     const _: [(); 0x740] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_state_740)];
