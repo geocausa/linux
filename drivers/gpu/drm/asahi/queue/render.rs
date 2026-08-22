@@ -983,15 +983,7 @@ impl super::QueueInner::ver {
                     #[ver(G == G15)]
                     g15_tail_c3f: 0,
                     #[ver(G == G15)]
-                    g15_state_c40: U64(0),
-                    #[ver(G == G15)]
-                    g15_tail_c48: Default::default(),
-                    #[ver(G == G15)]
-                    g15_state_c50: U64(0),
-                    #[ver(G == G15)]
-                    g15_state_c58: U32(0),
-                    #[ver(G == G15)]
-                    g15_tail_c5c: U32(0),
+                    g15_sku_pointee_c40: Default::default(),
                 })
             },
         )?;

@@ -296,18 +296,12 @@ pub(crate) mod raw {
         pub(crate) g15_tail_c37: U64,
         #[ver(G == G15)]
         pub(crate) g15_tail_c3f: u8,
-        // The G15 3D SKU encoder embeds command_fwva + 0xc40.
+        // The G15 3D SKU encoder embeds command_fwva + 0xc40 as one
+        // opaque 0x20-byte pointee. Host submission explicitly zeroes the
+        // qwords at +0xc40 and +0xc50; no command-local firmware consumer
+        // for the previously split +0xc48/+0xc58 members is proven.
         #[ver(G == G15)]
-        pub(crate) g15_state_c40: U64,
-        #[ver(G == G15)]
-        pub(crate) g15_tail_c48: Array<0x08, u8>,
-        #[ver(G == G15)]
-        pub(crate) g15_state_c50: U64,
-        // Firmware explicitly checks the dword at +0xc58 as live state.
-        #[ver(G == G15)]
-        pub(crate) g15_state_c58: U32,
-        #[ver(G == G15)]
-        pub(crate) g15_tail_c5c: U32,
+        pub(crate) g15_sku_pointee_c40: Array<0x20, u8>,
     }
 
     const _: [(); 0xc60] = [(); core::mem::size_of::<RunFragmentG15V14_7<'static>>()];
@@ -336,9 +330,7 @@ pub(crate) mod raw {
     const _: [(); 0xc27] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_tail_c27)];
     const _: [(); 0xc2f] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_tail_c2f)];
     const _: [(); 0xc37] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_tail_c37)];
-    const _: [(); 0xc40] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_state_c40)];
-    const _: [(); 0xc50] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_state_c50)];
-    const _: [(); 0xc58] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_state_c58)];
+    const _: [(); 0xc40] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_sku_pointee_c40)];
 }
 
 #[versions(AGX)]
