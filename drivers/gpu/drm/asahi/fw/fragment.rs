@@ -252,8 +252,12 @@ pub(crate) mod raw {
         pub(crate) no_clear_pipeline_textures: u32,
         pub(crate) msaa_zs: u32,
         pub(crate) unk_pointee: u32,
-        #[ver(V >= V13_3)]
+        #[ver(V >= V13_3 && G != G15)]
         pub(crate) unk_v13_3: u32,
+        // copy3DCommonPassthroughData() copies raw Render byte +0x4b8 to
+        // descriptor +0x6ea; G15 3D submission zero-extends it to command +0xba4.
+        #[ver(G == G15)]
+        pub(crate) g15_raw_render_4b8_ba4: U32,
         #[ver(G != G15)]
         pub(crate) meta: job::raw::JobMeta,
         #[ver(G == G15)]
@@ -334,6 +338,7 @@ pub(crate) mod raw {
     const _: [(); 0xb64] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, tvb_overflow_count)];
     const _: [(); 0xb6c] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, encoder_params)];
     const _: [(); 0xba0] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, unk_pointee)];
+    const _: [(); 0xba4] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_raw_render_4b8_ba4)];
     const _: [(); 0xba8] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, meta)];
     // Apple AGX3DChannelSKU::submitBuffer copies the queue-local
     // monotonically increasing render sequence to command +0xbd0, matching

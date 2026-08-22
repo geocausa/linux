@@ -929,8 +929,10 @@ impl super::QueueInner::ver {
                     // TODO: needs to be investigated
                     msaa_zs: 0,
                     unk_pointee: 0,
-                    #[ver(V >= V13_3)]
+                    #[ver(V >= V13_3 && G != G15)]
                     unk_v13_3: 0,
+                    #[ver(G == G15)]
+                    g15_raw_render_4b8_ba4: U32(0),
                     #[ver(G != G15)]
                     meta <- try_init!(fw::job::raw::JobMeta {
                         unk_0: 0,
