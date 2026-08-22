@@ -680,10 +680,22 @@ impl super::QueueInner::ver {
                     microsequence_size: inner.micro_seq.len() as u32,
                     #[ver(G == G15)]
                     g15_pad_10: Default::default(),
+                    #[ver(G != G15)]
                     notifier: inner.notifier.gpu_pointer(),
+                    #[ver(G != G15)]
                     buffer: inner.scene.buffer_pointer(),
+                    #[ver(G != G15)]
                     scene: inner.scene.gpu_pointer(),
+                    #[ver(G != G15)]
                     unk_buffer_buf: inner.scene.kernel_buffer_pointer(),
+                    #[ver(G == G15)]
+                    g15_desc_148_fwva_20: U64(0),
+                    #[ver(G == G15)]
+                    g15_desc_758_fwva_28: U64(0),
+                    #[ver(G == G15)]
+                    g15_pm_table_fwva_30: U64(0),
+                    #[ver(G == G15)]
+                    g15_pm_state_fwva_38: U64(0),
                     tvb_tilemap: inner.scene.tvb_tilemap_pointer(),
                     ppp_multisamplectl: U64(cmdbuf.ppp_multisamplectl),
                     samples: cmdbuf.samples as u32,
