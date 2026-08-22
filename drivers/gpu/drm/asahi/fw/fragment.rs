@@ -258,7 +258,13 @@ pub(crate) mod raw {
         pub(crate) meta: job::raw::JobMeta,
         #[ver(G == G15)]
         pub(crate) meta: job::raw::G15JobMeta,
+        #[ver(G != G15)]
         pub(crate) unk_after_meta: u32,
+        // Apple G15 processRenderSetup() copies raw Render byte +0x619 through
+        // wrapper +0x1b8 into the shared TA/3D descriptor +0x7b0;
+        // AGX3DChannelSKU::submitBuffer() writes (descriptor[0x7b0] == 2) here.
+        #[ver(G == G15)]
+        pub(crate) g15_raw_render_619_eq_2_bd4: U32,
         pub(crate) unk_buf_0: U64,
         pub(crate) unk_buf_8: U64,
         pub(crate) unk_buf_10: U64,
@@ -336,7 +342,7 @@ pub(crate) mod raw {
         core::mem::offset_of!(RunFragmentG15V14_7<'static>, meta)
             + core::mem::offset_of!(job::raw::G15JobMeta, event_seq)
     ];
-    const _: [(); 0xbd4] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, unk_after_meta)];
+    const _: [(); 0xbd4] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_raw_render_619_eq_2_bd4)];
     const _: [(); 0xbd8] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, unk_buf_0)];
     const _: [(); 0xbf0] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, command_time)];
     const _: [(); 0xbf8] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, timestamp_pointers)];
