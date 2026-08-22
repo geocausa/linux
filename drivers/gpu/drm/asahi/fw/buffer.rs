@@ -54,9 +54,14 @@ pub(crate) mod raw {
         pub(crate) priority: U32,                   // +0x10: _AGFIUMAPoolPriorityType
         pub(crate) page_pool_list_fwva: U64,        // +0x14: Apple "UMA Page Pool List"
         pub(crate) page_pool_list_capacity: U32,    // +0x1c: backing allocation size / 8
-        pub(crate) dynamic_20: U32,                 // +0x20: FW/table mirrored, semantics pending
-        pub(crate) dynamic_24: U32,                 // +0x24: FW/table mirrored, semantics pending
-        pub(crate) dynamic_28: U32,                 // +0x28: FW/table mirrored single-bit field
+        // Hardware-maintained UMA ring cursors. Host population seeds cursor
+        // +0x20 to zero and +0x24 to page_count % list_capacity. The exact
+        // producer/consumer direction is intentionally not assigned yet.
+        pub(crate) ring_cursor_20: U32,
+        pub(crate) ring_cursor_24: U32,
+        // One-bit ring state mirrored in descriptor qword1 bit 61. Host
+        // population seeds zero; an internal FW reset path can force it to 1.
+        pub(crate) ring_state_bit_28: U32,
         pub(crate) page_count: U32,                 // +0x2c: current allocated bytes >> 12; 22-bit in table
         // +0x30 is a small RTKit/page-pool lifecycle state: host initializes
         // it to 0, interrupt-post recovery can write 1, and cleanup treats
@@ -87,7 +92,9 @@ pub(crate) mod raw {
     const _: [(); 0x0c] = [(); core::mem::offset_of!(G15UMAPagePoolState, async_grow_enabled)];
     const _: [(); 0x14] = [(); core::mem::offset_of!(G15UMAPagePoolState, page_pool_list_fwva)];
     const _: [(); 0x1c] = [(); core::mem::offset_of!(G15UMAPagePoolState, page_pool_list_capacity)];
-    const _: [(); 0x20] = [(); core::mem::offset_of!(G15UMAPagePoolState, dynamic_20)];
+    const _: [(); 0x20] = [(); core::mem::offset_of!(G15UMAPagePoolState, ring_cursor_20)];
+    const _: [(); 0x24] = [(); core::mem::offset_of!(G15UMAPagePoolState, ring_cursor_24)];
+    const _: [(); 0x28] = [(); core::mem::offset_of!(G15UMAPagePoolState, ring_state_bit_28)];
     const _: [(); 0x30] = [(); core::mem::offset_of!(G15UMAPagePoolState, lifecycle_state_30)];
     const _: [(); 0x34] = [(); core::mem::offset_of!(G15UMAPagePoolState, backup_page_list_fwva)];
     const _: [(); 0x44] = [(); core::mem::offset_of!(G15UMAPagePoolState, backup_page_list_entry_count)];
