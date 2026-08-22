@@ -290,10 +290,21 @@ pub(crate) mod raw {
         #[ver(V >= V13_0B4)]
         pub(crate) counter: U64,
 
+        #[ver(G != G15)]
         pub(crate) vm_slot: u32,
+        // G15 copies AGX3DCommandDescriptor +0x7b8 here. prepare() fills that
+        // slot from AGXContextIDManager::alloc(); it is not the Linux VM slot.
+        #[ver(G == G15)]
+        pub(crate) g15_context_id_c: u32,
+        #[ver(G != G15)]
         pub(crate) unk_8: u32,
+        #[ver(G != G15)]
         pub(crate) microsequence: GpuPointer<'a, &'a [u8]>,
+        #[ver(G != G15)]
         pub(crate) microsequence_size: u32,
+        // Apple normal G15 submission does not write +0x10..+0x1f.
+        #[ver(G == G15)]
+        pub(crate) g15_pad_10: Array<0x10, u8>,
         pub(crate) notifier: GpuPointer<'a, event::Notifier::ver>,
         pub(crate) buffer: GpuPointer<'a, fw::buffer::Info::ver>,
         pub(crate) scene: GpuPointer<'a, fw::buffer::Scene::ver>,
@@ -473,6 +484,9 @@ pub(crate) mod raw {
     }
 
     const _: [(); 0xc60] = [(); core::mem::size_of::<RunFragmentG15V14_7<'static>>()];
+    const _: [(); 0x0c] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_context_id_c)];
+    const _: [(); 0x10] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_pad_10)];
+    const _: [(); 0x20] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, notifier)];
     const _: [(); 0x80] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, registers)];
     const _: [(); 0x790] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_job_params3)];
     const _: [(); 0xa48] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_zero_a48)];

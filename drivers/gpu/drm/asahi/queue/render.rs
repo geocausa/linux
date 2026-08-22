@@ -652,6 +652,7 @@ impl super::QueueInner::ver {
                 })
             },
             |inner, _ptr| {
+                #[ver(G != G15)]
                 let vm_slot = vm_bind.slot();
                 #[ver(G != G15)]
                 let aux_fb_info = fw::fragment::raw::AuxFBInfo::ver {
@@ -667,10 +668,18 @@ impl super::QueueInner::ver {
                     tag: fw::workqueue::CommandType::RunFragment,
                     #[ver(V >= V13_0B4)]
                     counter: U64(count_frag),
+                    #[ver(G != G15)]
                     vm_slot,
+                    #[ver(G == G15)]
+                    g15_context_id_c: 0,
+                    #[ver(G != G15)]
                     unk_8: 0,
+                    #[ver(G != G15)]
                     microsequence: inner.micro_seq.gpu_pointer(),
+                    #[ver(G != G15)]
                     microsequence_size: inner.micro_seq.len() as u32,
+                    #[ver(G == G15)]
+                    g15_pad_10: Default::default(),
                     notifier: inner.notifier.gpu_pointer(),
                     buffer: inner.scene.buffer_pointer(),
                     scene: inner.scene.gpu_pointer(),
