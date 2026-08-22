@@ -325,7 +325,17 @@ impl super::QueueInner::ver {
                     #[ver(G != G15)]
                     __pad1: Default::default(),
                     #[ver(G == G15)]
-                    g15_pre_micro: Default::default(),
+                    g15_pre_micro_730: Default::default(),
+                    #[ver(G == G15)]
+                    g15_state_740: U64(0),
+                    #[ver(G == G15)]
+                    g15_state_748: U32(0),
+                    #[ver(G == G15)]
+                    g15_pre_micro_74c: Default::default(),
+                    #[ver(G == G15)]
+                    g15_state_750: U32(0),
+                    #[ver(G == G15)]
+                    g15_pre_micro_754: Default::default(),
                     microsequence: inner.micro_seq.gpu_pointer(),
                     microsequence_size: inner.micro_seq.len() as u32,
                     job_params2 <- try_init!(fw::compute::raw::JobParameters2::ver {

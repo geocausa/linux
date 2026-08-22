@@ -76,12 +76,21 @@ pub(crate) mod raw {
         pub(crate) registers: job::raw::RegisterArray,
         #[ver(G != G15)]
         pub(crate) __pad1: Array<0x20, u8>,
-        // G15 keeps the register-list command generation used by G14X, but
-        // inserts 0x10 bytes of host-populated state before the microsequence.
-        // The exact semantics of this active region are not yet closed, so it
-        // remains opaque while G15 runtime submission stays fail-closed.
+        // Apple AGXCLChannelSKU::submitBuffer() exposes three host-populated
+        // fields inside the 0x30-byte G15 pre-microsequence region. Keep their
+        // source-oriented names until the descriptor semantics are closed.
         #[ver(G == G15)]
-        pub(crate) g15_pre_micro: Array<0x30, u8>,
+        pub(crate) g15_pre_micro_730: Array<0x10, u8>,
+        #[ver(G == G15)]
+        pub(crate) g15_state_740: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_state_748: U32,
+        #[ver(G == G15)]
+        pub(crate) g15_pre_micro_74c: Array<0x04, u8>,
+        #[ver(G == G15)]
+        pub(crate) g15_state_750: U32,
+        #[ver(G == G15)]
+        pub(crate) g15_pre_micro_754: Array<0x0c, u8>,
         pub(crate) microsequence: GpuPointer<'a, &'a [u8]>,
         pub(crate) microsequence_size: u32,
         pub(crate) job_params2: JobParameters2::ver<'a>,
@@ -144,6 +153,12 @@ pub(crate) mod raw {
 
     const _: [(); 0x880] = [(); core::mem::size_of::<RunComputeG15V14_7<'static>>()];
     const _: [(); 0x20] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, registers)];
+    const _: [(); 0x730] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_pre_micro_730)];
+    const _: [(); 0x740] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_state_740)];
+    const _: [(); 0x748] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_state_748)];
+    const _: [(); 0x74c] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_pre_micro_74c)];
+    const _: [(); 0x750] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_state_750)];
+    const _: [(); 0x754] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_pre_micro_754)];
     const _: [(); 0x760] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, microsequence)];
     const _: [(); 0x768] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, microsequence_size)];
     const _: [(); 0x76c] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, job_params2)];
