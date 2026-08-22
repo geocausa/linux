@@ -63,7 +63,10 @@ pub(crate) mod raw {
         pub(crate) fw_uncached_state_fwva: U64,     // +0x48: Apple "UMA FW Uncached State"
         pub(crate) fw_uncached_state_mirror: U64,   // +0x50: cached qword compared by FW
         pub(crate) shared_pool_mode: U32,           // +0x58: zero for normal non-shared channels
-        pub(crate) fw_state_5c: U32,                // +0x5c: FW mutates low byte while active
+        // Scheduler dispatch increments only the low byte when +0x58 shared
+        // pool mode is nonzero. No other Page Pool State consumer recovered
+        // so far gives the upper bits or the sequence a stronger semantic.
+        pub(crate) shared_pool_dispatch_seq_5c: U32,
         pub(crate) zero_60: U64,                    // +0x60
         pub(crate) zero_68: U64,                    // +0x68
     }
@@ -79,6 +82,7 @@ pub(crate) mod raw {
     const _: [(); 0x48] = [(); core::mem::offset_of!(G15UMAPagePoolState, fw_uncached_state_fwva)];
     const _: [(); 0x50] = [(); core::mem::offset_of!(G15UMAPagePoolState, fw_uncached_state_mirror)];
     const _: [(); 0x58] = [(); core::mem::offset_of!(G15UMAPagePoolState, shared_pool_mode)];
+    const _: [(); 0x5c] = [(); core::mem::offset_of!(G15UMAPagePoolState, shared_pool_dispatch_seq_5c)];
 
     #[derive(Debug, Default)]
     #[repr(C)]
