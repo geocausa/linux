@@ -49,11 +49,20 @@ pub(crate) mod raw {
         pub(crate) preempt_buf1: GpuPointer<'a, &'a [u8]>,
         pub(crate) cdm_ctrl_stream_end: U64,
         pub(crate) unk_34: Array<0x20, u8>,
+        #[ver(G != G15)]
         pub(crate) unk_g14x: u32,
+        #[ver(G != G15)]
         pub(crate) unk_58: u32,
+        // G15 generateRegisterList() stores the exact synthesized value used
+        // for register 0x1a440 into command +0x7c4 (JobParameters2 +0x58).
+        #[ver(G == G15)]
+        pub(crate) g15_reg_1a440_value: U64,
         #[ver(V < V13_0B4)]
         pub(crate) unk_5c: u32,
     }
+
+    const _: [(); 0x60] = [(); core::mem::size_of::<JobParameters2G15V14_7<'static>>()];
+    const _: [(); 0x58] = [(); core::mem::offset_of!(JobParameters2G15V14_7<'static>, g15_reg_1a440_value)];
 
     #[versions(AGX)]
     #[derive(Debug)]

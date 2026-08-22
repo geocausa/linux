@@ -345,11 +345,14 @@ impl super::QueueInner::ver {
                         preempt_buf1: inner.preempt_buf.gpu_pointer(),
                         cdm_ctrl_stream_end: U64(cmdbuf.cdm_ctrl_stream_end),
                         unk_34: Default::default(),
-                        #[ver(G < G14X)]
+                        #[ver(G < G14X && G != G15)]
                         unk_g14x: 0,
-                        #[ver(G >= G14X)]
+                        #[ver(G >= G14X && G != G15)]
                         unk_g14x: 0x24201,
+                        #[ver(G != G15)]
                         unk_58: 0,
+                        #[ver(G == G15)]
+                        g15_reg_1a440_value: U64(0),
                         #[ver(V < V13_0B4)]
                         unk_5c: 0,
                     }),
