@@ -130,13 +130,17 @@ pub(crate) mod raw {
         pub(crate) unk_buffer_buf: GpuWeakPointer<[u8]>,
         pub(crate) unk_34: u32,
 
-        #[ver(G < G14X)]
+        #[ver(G < G14X && G != G15)]
         pub(crate) job_params1: JobParameters1::ver<'a>,
-        #[ver(G < G14X)]
+        #[ver(G < G14X && G != G15)]
         pub(crate) tiling_params: TilingParameters,
-        #[ver(G >= G14X)]
+        #[ver(G >= G14X || G == G15)]
         pub(crate) registers: job::raw::RegisterArray,
 
+        // G15 keeps the register-list command generation, with 0x10 bytes of
+        // command state inserted after the register array.
+        #[ver(G == G15)]
+        pub(crate) g15_pre_tpc_750: Array<0x10, u8>,
         pub(crate) tpc: GpuPointer<'a, &'a [u8]>,
         pub(crate) tpc_size: U64,
         pub(crate) microsequence: GpuPointer<'a, &'a [u8]>,
@@ -144,33 +148,89 @@ pub(crate) mod raw {
         pub(crate) fragment_stamp_slot: u32,
         pub(crate) fragment_stamp_value: EventValue,
         pub(crate) unk_pointee: u32,
+        #[ver(G != G15)]
         pub(crate) unk_pad: u32,
+        #[ver(G != G15)]
         pub(crate) job_params2: JobParameters2<'a>,
+        #[ver(G != G15)]
         pub(crate) encoder_params: job::raw::EncoderParams,
+        #[ver(G != G15)]
         pub(crate) unk_55c: u32,
+        #[ver(G != G15)]
         pub(crate) unk_560: u32,
+        #[ver(G != G15)]
         pub(crate) sync_grow: u32,
+        #[ver(G != G15)]
         pub(crate) unk_568: u32,
+        #[ver(G != G15)]
         pub(crate) uses_scratch: u32,
+        // Apple fills the G15 middle region through generic TA submission and
+        // the register-list encoder. Only the address-taken +0x84c dword is
+        // named until the remaining fields are mechanically closed.
+        #[ver(G == G15)]
+        pub(crate) g15_mid_788: Array<0xc4, u8>,
+        #[ver(G == G15)]
+        pub(crate) g15_sku_state_84c: U32,
+        #[ver(G == G15)]
+        pub(crate) g15_mid_850: Array<0x10, u8>,
         pub(crate) meta: job::raw::JobMeta,
         pub(crate) unk_after_meta: u32,
+        #[ver(G != G15)]
         pub(crate) unk_buf_0: U64,
+        #[ver(G != G15)]
         pub(crate) unk_buf_8: U64,
+        #[ver(G != G15)]
         pub(crate) unk_buf_10: U64,
+        #[ver(G != G15)]
         pub(crate) command_time: U64,
+        #[ver(G != G15)]
         pub(crate) timestamp_pointers: job::raw::TimestampPointers<'a>,
+        #[ver(G != G15)]
         pub(crate) user_timestamp_pointers: job::raw::TimestampPointers<'a>,
+        #[ver(G != G15)]
         pub(crate) client_sequence: u8,
+        #[ver(G != G15)]
         pub(crate) pad_5d5: Array<3, u8>,
+        #[ver(G != G15)]
         pub(crate) unk_5d8: u32,
+        #[ver(G != G15)]
         pub(crate) unk_5dc: u8,
 
-        #[ver(V >= V13_0B4)]
+        #[ver(V >= V13_0B4 && G != G15)]
         pub(crate) unk_ts: U64,
 
-        #[ver(V >= V13_0B4)]
+        #[ver(V >= V13_0B4 && G != G15)]
         pub(crate) unk_5dd_8: Array<0x1b, u8>,
+
+        // G15 passes command +0x890 as an AGFIBarrierState to a G15 virtual
+        // hook. The exact implementation is a no-op, so the backing remains
+        // zero at bootstrap. Keep its first qword addressable for the legacy
+        // compile-only microsequence scaffold; runtime submission is blocked.
+        #[ver(G == G15)]
+        pub(crate) g15_barrier_state_890: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_tail_898: Array<0x60, u8>,
+        // The G15 TA encoder embeds command_fwva +0x8f8 into the SKU stream.
+        #[ver(G == G15)]
+        pub(crate) g15_sku_state_8f8: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_tail_900: Array<0x20, u8>,
     }
+
+    const _: [(); 0x920] = [(); core::mem::size_of::<RunVertexG15V14_7<'static>>()];
+    const _: [(); 0x40] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, registers)];
+    const _: [(); 0x760] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, tpc)];
+    const _: [(); 0x768] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, tpc_size)];
+    const _: [(); 0x770] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, microsequence)];
+    const _: [(); 0x778] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, microsequence_size)];
+    const _: [(); 0x77c] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, fragment_stamp_slot)];
+    const _: [(); 0x780] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, fragment_stamp_value)];
+    const _: [(); 0x784] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, unk_pointee)];
+    const _: [(); 0x84c] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_sku_state_84c)];
+    const _: [(); 0x860] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, meta)];
+    const _: [(); 0x88c] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, unk_after_meta)];
+    const _: [(); 0x890] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_barrier_state_890)];
+    const _: [(); 0x8f8] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_sku_state_8f8)];
 }
 
 #[versions(AGX)]

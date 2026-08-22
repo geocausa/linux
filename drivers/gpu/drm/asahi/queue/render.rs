@@ -445,8 +445,8 @@ impl super::QueueInner::ver {
         #[ver(G < G14)]
         let load_bgobjvals = cmdbuf.isp_bgobjvals as u64 | 0x400;
         let reload_zlsctrl = cmdbuf.zls_ctrl;
-        let iogpu_unk54 = 0x3a0012006b0003;
-        let iogpu_unk56 = 1;
+        let iogpu_unk54: u64 = 0x3a0012006b0003;
+        let iogpu_unk56: u64 = 1;
         #[ver(G < G14)]
         let tiling_control_2 = 0;
         #[ver(G >= G14X)]
@@ -455,7 +455,7 @@ impl super::QueueInner::ver {
         let vtx_unk_f0 = 0x1c;
         #[ver(G < G14)]
         let vtx_unk_f0 = 0x1c + (align(tile_info.meta1_blocks, 4) as u64);
-        let vtx_unk_118 = 0x1c;
+        let vtx_unk_118: u64 = 0x1c;
 
         // DRM_ASAHI_RENDER_DBIAS_IS_INT chosen to match hardware bit.
         let isp_ctl = 0xc000u32
@@ -997,13 +997,13 @@ impl super::QueueInner::ver {
 
                         let start_vtx = builder.add(microseq::StartVertex::ver {
                             header: microseq::op::StartVertex::HEADER,
-                            #[ver(G < G14X)]
+                            #[ver(G < G14X && G != G15)]
                             tiling_params: Some(inner_weak_ptr!(ptr, tiling_params)),
-                            #[ver(G < G14X)]
+                            #[ver(G < G14X && G != G15)]
                             job_params1: Some(inner_weak_ptr!(ptr, job_params1)),
-                            #[ver(G >= G14X)]
+                            #[ver(G >= G14X || G == G15)]
                             tiling_params: None,
-                            #[ver(G >= G14X)]
+                            #[ver(G >= G14X || G == G15)]
                             job_params1: None,
                             #[ver(G >= G14X)]
                             registers: inner_weak_ptr!(ptr, registers),
@@ -1019,7 +1019,10 @@ impl super::QueueInner::ver {
                             event_seq: U64(ev_vtx.event_seq),
                             unk_50: 0,
                             unk_pointer: inner_weak_ptr!(ptr, unk_pointee),
+                            #[ver(G != G15)]
                             unk_job_buf: inner_weak_ptr!(ptr, unk_buf_0),
+                            #[ver(G == G15)]
+                            unk_job_buf: inner_weak_ptr!(ptr, g15_barrier_state_890),
                             unk_64: 0x0, // fixed
                             unk_68: unk1.into(),
                             uuid: uuid_ta,
@@ -1035,6 +1038,7 @@ impl super::QueueInner::ver {
                             unk_178: (!clustering) as u32,
                         })?;
 
+                        #[ver(G != G15)]
                         if vtx_user_timestamps.any() {
                             builder.add(microseq::Timestamp::ver {
                                 header: microseq::op::Timestamp::new(true),
@@ -1059,6 +1063,7 @@ impl super::QueueInner::ver {
                             header: microseq::op::WaitForIdle2::HEADER,
                         })?;
 
+                        #[ver(G != G15)]
                         if vtx_user_timestamps.any() {
                             builder.add(microseq::Timestamp::ver {
                                 header: microseq::op::Timestamp::new(false),
@@ -1133,7 +1138,7 @@ impl super::QueueInner::ver {
                     scene: inner.scene.gpu_pointer(),
                     unk_buffer_buf: inner.scene.kernel_buffer_pointer(),
                     unk_34: 0,
-                    #[ver(G < G14X)]
+                    #[ver(G < G14X && G != G15)]
                     job_params1 <- try_init!(fw::vertex::raw::JobParameters1::ver {
                         unk_0: U64(if unk1 { 0 } else { 0x200 }), // sometimes 0
                         unk_8: f32!(1e-20),                       // fixed
@@ -1191,7 +1196,7 @@ impl super::QueueInner::ver {
                         unk_118: vtx_unk_118 as u32, // fixed
                         __pad: Default::default(),
                     }),
-                    #[ver(G < G14X)]
+                    #[ver(G < G14X && G != G15)]
                     tiling_params: tile_info.params,
                     #[ver(G >= G14X)]
                     registers: fw::job::raw::RegisterArray::new(
@@ -1301,6 +1306,25 @@ impl super::QueueInner::ver {
                             */
                         }
                     ),
+                    #[ver(G == G15)]
+                    registers: fw::job::raw::RegisterArray::new(
+                        inner_weak_ptr!(_ptr, registers.registers),
+                        |_r| {
+                            // Keep the existing helper inputs type-checked for the
+                            // later G15 register reconstruction without emitting
+                            // unproven register entries into this compile-only shell.
+                            let _ = (
+                                iogpu_unk54,
+                                iogpu_unk56,
+                                vtx_unk_118,
+                                inner.scene.preempt_buf_1_pointer(),
+                                inner.scene.preempt_buf_2_pointer(),
+                                inner.scene.preempt_buf_3_pointer(),
+                            );
+                        },
+                    ),
+                    #[ver(G == G15)]
+                    g15_pre_tpc_750: Default::default(),
                     tpc: inner.scene.tpc_pointer(),
                     tpc_size: U64(tile_info.tpc_size as u64),
                     microsequence: inner.micro_seq.gpu_pointer(),
@@ -1308,7 +1332,9 @@ impl super::QueueInner::ver {
                     fragment_stamp_slot: ev_frag.slot,
                     fragment_stamp_value: ev_frag.value.next(),
                     unk_pointee: 0,
+                    #[ver(G != G15)]
                     unk_pad: 0,
+                    #[ver(G != G15)]
                     job_params2 <- try_init!(fw::vertex::raw::JobParameters2 {
                         unk_480: Default::default(), // fixed
                         unk_498: U64(0x0),           // fixed
@@ -1324,6 +1350,7 @@ impl super::QueueInner::ver {
                         unk_518: U64(0x0), // fixed
                         unk_520: U64(0x0), // fixed
                     }),
+                    #[ver(G != G15)]
                     encoder_params <- try_init!(fw::job::raw::EncoderParams {
                         unk_8: 0x0,     // fixed
                         sync_grow: 0x0, // fixed
@@ -1335,13 +1362,24 @@ impl super::QueueInner::ver {
                         sampler_count: cmdbuf.sampler_count as u32,
                         sampler_max: (cmdbuf.sampler_count as u32) + 1,
                     }),
+                    #[ver(G != G15)]
                     unk_55c: 0,
+                    #[ver(G != G15)]
                     unk_560: 0,
+                    #[ver(G != G15)]
                     sync_grow: 0,
+                    #[ver(G != G15)]
                     unk_568: 0,
+                    #[ver(G != G15)]
                     uses_scratch: (cmdbuf.flags
                         & uapi::drm_asahi_render_flags_DRM_ASAHI_RENDER_VERTEX_SCRATCH as u32
                         != 0) as u32,
+                    #[ver(G == G15)]
+                    g15_mid_788: Default::default(),
+                    #[ver(G == G15)]
+                    g15_sku_state_84c: U32(0),
+                    #[ver(G == G15)]
+                    g15_mid_850: Default::default(),
                     meta <- try_init!(fw::job::raw::JobMeta {
                         unk_0: 0,
                         unk_2: 0,
@@ -1356,23 +1394,41 @@ impl super::QueueInner::ver {
                         event_seq: ev_vtx.event_seq as u32,
                     }),
                     unk_after_meta: unk1.into(),
+                    #[ver(G != G15)]
                     unk_buf_0: U64(0),
+                    #[ver(G != G15)]
                     unk_buf_8: U64(0),
+                    #[ver(G != G15)]
                     unk_buf_10: U64(0),
+                    #[ver(G != G15)]
                     command_time: U64(0),
+                    #[ver(G != G15)]
                     timestamp_pointers <- try_init!(fw::job::raw::TimestampPointers {
                         start_addr: Some(inner_ptr!(inner.timestamps.gpu_pointer(), vtx.start)),
                         end_addr: Some(inner_ptr!(inner.timestamps.gpu_pointer(), vtx.end)),
                     }),
+                    #[ver(G != G15)]
                     user_timestamp_pointers: inner.user_timestamps.pointers()?,
+                    #[ver(G != G15)]
                     client_sequence: slot_client_seq,
+                    #[ver(G != G15)]
                     pad_5d5: Default::default(),
+                    #[ver(G != G15)]
                     unk_5d8: 0,
+                    #[ver(G != G15)]
                     unk_5dc: 0,
-                    #[ver(V >= V13_0B4)]
+                    #[ver(V >= V13_0B4 && G != G15)]
                     unk_ts: U64(0),
-                    #[ver(V >= V13_0B4)]
+                    #[ver(V >= V13_0B4 && G != G15)]
                     unk_5dd_8: Default::default(),
+                    #[ver(G == G15)]
+                    g15_barrier_state_890: U64(0),
+                    #[ver(G == G15)]
+                    g15_tail_898: Default::default(),
+                    #[ver(G == G15)]
+                    g15_sku_state_8f8: U64(0),
+                    #[ver(G == G15)]
+                    g15_tail_900: Default::default(),
                 })
             },
         )?;
