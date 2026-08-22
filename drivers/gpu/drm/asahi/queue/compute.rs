@@ -437,15 +437,15 @@ impl super::QueueInner::ver {
                     #[ver(G == G15)]
                     g15_pad_838: Default::default(),
                     #[ver(G == G15)]
-                    g15_fwva_83e: U64(0),
+                    g15_uma_page_pool_state_fwva_83e: U64(0),
                     #[ver(G == G15)]
-                    g15_byte_846: 0,
+                    g15_uma_prepared_846: 0,
                     #[ver(G == G15)]
-                    g15_state_847: U64(0),
+                    g15_uma_min_pool_size_847: U64(0),
                     #[ver(G == G15)]
-                    g15_state_84f: U64(0),
+                    g15_uma_ideal_pool_size_84f: U64(0),
                     #[ver(G == G15)]
-                    g15_fwva_857: U64(0),
+                    g15_uma_metrics_fwva_857: U64(0),
                     #[ver(G == G15)]
                     g15_context_id_generation_85f: 0,
                     #[ver(V >= V13_0B4)]

@@ -173,25 +173,24 @@ pub(crate) mod raw {
         pub(crate) unk_2d4: u32,
         #[ver(G != G15)]
         pub(crate) unk_2d8: u8,
-        // Apple AGXCLChannelSKU::submitBuffer() exposes the exact late G15
-        // command geometry. Two translated FWVA values and three raw state
-        // fields are deliberately unaligned; semantics remain source-oriented
-        // while runtime submission stays fail-closed.
-        // Apple G15 submission leaves +0x838..+0x83d unwritten; the first explicit
-        // late-tail store begins at +0x83e. The same six-byte packed-ABI gap
-        // appears in Compute, TA, and 3D immediately before an unaligned U64.
+        // Apple G15 submission leaves +0x838..+0x83d unwritten; the first
+        // explicit late-tail store begins at +0x83e. The same six-byte
+        // packed-ABI gap appears in Compute, TA, and 3D immediately before an
+        // unaligned U64. AGXCLCommandDescriptor embeds AGXUMAData at +0x5e0;
+        // prepare/complete pass that exact record to AGXUMAPool. submitBuffer()
+        // then exports the same UMA lifecycle fields used by RunFragment.
         #[ver(G == G15)]
         pub(crate) g15_pad_838: Array<0x06, u8>,
         #[ver(G == G15)]
-        pub(crate) g15_fwva_83e: U64,
+        pub(crate) g15_uma_page_pool_state_fwva_83e: U64,
         #[ver(G == G15)]
-        pub(crate) g15_byte_846: u8,
+        pub(crate) g15_uma_prepared_846: u8,
         #[ver(G == G15)]
-        pub(crate) g15_state_847: U64,
+        pub(crate) g15_uma_min_pool_size_847: U64,
         #[ver(G == G15)]
-        pub(crate) g15_state_84f: U64,
+        pub(crate) g15_uma_ideal_pool_size_84f: U64,
         #[ver(G == G15)]
-        pub(crate) g15_fwva_857: U64,
+        pub(crate) g15_uma_metrics_fwva_857: U64,
         // Low byte of AGXContextIDManager::alloc()'s generation out-parameter.
         // Apple increments this byte whenever the context-ID slot is newly
         // allocated, keeping stale/reused IDs distinguishable.
@@ -244,11 +243,11 @@ pub(crate) mod raw {
     const _: [(); 0x818] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, timestamp_pointers)];
     const _: [(); 0x828] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, user_timestamp_pointers)];
     const _: [(); 0x838] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_pad_838)];
-    const _: [(); 0x83e] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_fwva_83e)];
-    const _: [(); 0x846] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_byte_846)];
-    const _: [(); 0x847] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_state_847)];
-    const _: [(); 0x84f] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_state_84f)];
-    const _: [(); 0x857] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_fwva_857)];
+    const _: [(); 0x83e] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_uma_page_pool_state_fwva_83e)];
+    const _: [(); 0x846] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_uma_prepared_846)];
+    const _: [(); 0x847] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_uma_min_pool_size_847)];
+    const _: [(); 0x84f] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_uma_ideal_pool_size_84f)];
+    const _: [(); 0x857] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_uma_metrics_fwva_857)];
     const _: [(); 0x85f] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_context_id_generation_85f)];
     const _: [(); 0x860] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, context_store_req)];
     const _: [(); 0x870] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, context_store_compl)];
