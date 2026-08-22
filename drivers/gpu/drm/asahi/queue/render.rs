@@ -1462,11 +1462,11 @@ impl super::QueueInner::ver {
                     #[ver(G == G15)]
                     g15_raw_render_614_848: U32(0),
                     #[ver(G == G15)]
-                    g15_sku_state_84c: U32(0),
+                    g15_host_zero_84c: U32(0),
                     #[ver(G == G15)]
                     g15_raw_render_1bf_850: U32(0),
                     #[ver(G == G15)]
-                    g15_state_854: U32(0),
+                    g15_segment_flag_198_854: U32(0),
                     #[ver(G == G15)]
                     g15_raw_render_1c1_858: U32(0),
                     #[ver(G == G15)]
