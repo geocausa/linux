@@ -102,6 +102,9 @@ const G15_PM_DEVICE_CONFIG: G15PmDeviceConfig = G15PmDeviceConfig {
 /// analyzed normal path.
 const G15_J615_PM_RECORD_COUNT: usize = 0x50;
 const G15_J615_PM_SCENE_GROUP_COUNT: usize = 0x24;
+/// G15G/C0 sets accelerator +0x1dd8, so Apple reserves one additional
+/// shared scene slice after the 36 modulo-selected per-record slices.
+const G15_J615_PM_EXTRA_SCENE_SLICES: usize = 1;
 
 /// `AGXArmFirmware::allocFirmwareData()` sizes one PMPageMetricsBuffer resource
 /// element as `align(record_count * 4, 0x40)`. Each PM record then receives a
@@ -134,6 +137,9 @@ const _: [(); 0x24] = [(); G15_J615_PM_SCENE_GROUP_COUNT];
 const _: [(); 0x140] = [(); g15_pm_page_metrics_bytes(G15_J615_PM_RECORD_COUNT)];
 const _: [(); 0x30] = [(); g15_j615_pm_scene_stride(0x3366_0000)];
 const _: [(); 0x6c0] = [(); G15_J615_PM_SCENE_GROUP_COUNT
+    * g15_j615_pm_scene_stride(0x3366_0000)];
+const _: [(); 0x6f0] = [(); (G15_J615_PM_SCENE_GROUP_COUNT
+    + G15_J615_PM_EXTRA_SCENE_SLICES)
     * g15_j615_pm_scene_stride(0x3366_0000)];
 
 /// Metadata about the tiling configuration for a scene. This is computed in the `render` module.
