@@ -366,7 +366,17 @@ impl super::QueueInner::ver {
                         sampler_max: (cmdbuf.sampler_count as u32) + 1,
                     }),
                     #[ver(G == G15)]
-                    g15_encoder_meta: Default::default(),
+                    g15_encoder_state_7cc: U32(0),
+                    #[ver(G == G15)]
+                    g15_encoder_pad_7d0: Default::default(),
+                    #[ver(G == G15)]
+                    g15_encoder_byte_7d4: 0,
+                    #[ver(G == G15)]
+                    g15_encoder_pad_7d5: Default::default(),
+                    #[ver(G == G15)]
+                    g15_encoder_state_7d8: U64(0),
+                    #[ver(G == G15)]
+                    g15_encoder_state_7e0: U32(0),
                     meta <- try_init!(fw::job::raw::JobMeta {
                         unk_0: 0,
                         unk_2: 0,

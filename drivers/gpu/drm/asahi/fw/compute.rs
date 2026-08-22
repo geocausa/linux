@@ -96,11 +96,21 @@ pub(crate) mod raw {
         pub(crate) job_params2: JobParameters2::ver<'a>,
         #[ver(G != G15)]
         pub(crate) encoder_params: job::raw::EncoderParams,
-        // Apple G15 compresses the post-JobParameters2 encoder metadata from
-        // 0x28 to 0x18 bytes, returning JobMeta to the same +0x7e4 offset as
-        // G14X. Keep it opaque until the individual host fields are named.
+        // Apple AGXCLChannelSKU::submitBuffer() writes the compact G15
+        // encoder metadata directly. The exact source semantics are still
+        // unresolved, but the byte boundaries are mechanically proven.
         #[ver(G == G15)]
-        pub(crate) g15_encoder_meta: Array<0x18, u8>,
+        pub(crate) g15_encoder_state_7cc: U32,
+        #[ver(G == G15)]
+        pub(crate) g15_encoder_pad_7d0: Array<0x04, u8>,
+        #[ver(G == G15)]
+        pub(crate) g15_encoder_byte_7d4: u8,
+        #[ver(G == G15)]
+        pub(crate) g15_encoder_pad_7d5: Array<0x03, u8>,
+        #[ver(G == G15)]
+        pub(crate) g15_encoder_state_7d8: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_encoder_state_7e0: U32,
         pub(crate) meta: job::raw::JobMeta,
         pub(crate) command_time: U64,
         pub(crate) timestamp_pointers: job::raw::TimestampPointers<'a>,
@@ -162,6 +172,12 @@ pub(crate) mod raw {
     const _: [(); 0x760] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, microsequence)];
     const _: [(); 0x768] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, microsequence_size)];
     const _: [(); 0x76c] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, job_params2)];
+    const _: [(); 0x7cc] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_encoder_state_7cc)];
+    const _: [(); 0x7d0] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_encoder_pad_7d0)];
+    const _: [(); 0x7d4] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_encoder_byte_7d4)];
+    const _: [(); 0x7d5] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_encoder_pad_7d5)];
+    const _: [(); 0x7d8] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_encoder_state_7d8)];
+    const _: [(); 0x7e0] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_encoder_state_7e0)];
     const _: [(); 0x7e4] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, meta)];
     const _: [(); 0x810] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, command_time)];
     const _: [(); 0x818] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, timestamp_pointers)];
