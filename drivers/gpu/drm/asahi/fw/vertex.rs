@@ -191,10 +191,11 @@ pub(crate) mod raw {
         pub(crate) g15_raw_render_608_610_lo_840: U64,
         #[ver(G == G15)]
         pub(crate) g15_raw_render_614_848: U32,
-        // TA descriptor init clears +0xe08 and normal Render setup never rewrites
-        // that byte, so generic submission exports zero at +0x84c.
+        // processRenderSetup() writes descriptor +0xe08 from Render wrapper +0x230,
+        // which parseAndValidate() maps from raw Render byte +0x1bc. Apple TA
+        // submission zero-extends the resulting nonzero boolean to +0x84c.
         #[ver(G == G15)]
-        pub(crate) g15_host_zero_84c: U32,
+        pub(crate) g15_raw_render_1bc_nonzero_84c: U32,
         #[ver(G == G15)]
         pub(crate) g15_raw_render_1bf_850: U32,
         // bool(AGXSegmentKernelCommand byte +0x198).
@@ -316,7 +317,7 @@ pub(crate) mod raw {
     const _: [(); 0x83c] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_raw_render_60c_83c)];
     const _: [(); 0x840] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_raw_render_608_610_lo_840)];
     const _: [(); 0x848] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_raw_render_614_848)];
-    const _: [(); 0x84c] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_host_zero_84c)];
+    const _: [(); 0x84c] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_raw_render_1bc_nonzero_84c)];
     const _: [(); 0x850] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_raw_render_1bf_850)];
     const _: [(); 0x854] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_segment_flag_198_854)];
     const _: [(); 0x858] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_raw_render_1c1_858)];
