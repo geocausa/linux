@@ -289,13 +289,15 @@ pub(crate) mod raw {
         pub(crate) g15_pad_c18: Array<0x06, u8>,
         // Apple AGXUMAPool::prepareLocked() populates the embedded AGXUMAData
         // record at descriptor +0x960. AGX3DChannelSKU::submitBuffer() then
-        // translates AGXUMAData +0x18 to command +0xc1e, copies the prepared
+        // translates AGXUMAData +0x18 to command +0xc1e. That address is the
+        // 0x70-byte AGXUMAFList firmware-state record populated in-place by
+        // AGXUMAFList::populateFirmwareState(). Apple then copies the prepared
         // byte at +0x44 to +0xc26, the minimum/ideal pool sizes at +0x48/+0x50
         // to +0xc27/+0xc2f, and translates AGXUMAHWMetrics::gpu_base + the
         // current 0x40-byte ring offset to +0xc37. +0xc3f is the generation
         // byte returned by AGXContextIDManager::alloc() for the 3D context ID.
         #[ver(G == G15)]
-        pub(crate) g15_uma_flist_aux_fwva_c1e: U64,
+        pub(crate) g15_uma_flist_state_fwva_c1e: U64,
         #[ver(G == G15)]
         pub(crate) g15_uma_prepared_c26: u8,
         #[ver(G == G15)]
@@ -336,7 +338,7 @@ pub(crate) mod raw {
     const _: [(); 0xbf8] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, timestamp_pointers)];
     const _: [(); 0xc08] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, user_timestamp_pointers)];
     const _: [(); 0xc18] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_pad_c18)];
-    const _: [(); 0xc1e] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_uma_flist_aux_fwva_c1e)];
+    const _: [(); 0xc1e] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_uma_flist_state_fwva_c1e)];
     const _: [(); 0xc26] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_uma_prepared_c26)];
     const _: [(); 0xc27] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_uma_min_pool_size_c27)];
     const _: [(); 0xc2f] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_uma_ideal_pool_size_c2f)];
