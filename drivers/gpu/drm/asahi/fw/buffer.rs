@@ -44,7 +44,10 @@ pub(crate) mod raw {
     #[repr(C, packed)]
     pub(crate) struct G15UMAPagePoolState {
         pub(crate) pool_id: U64,                    // +0x00: AGXUMAPool global ID
-        pub(crate) descriptor_index: U32,           // +0x08: host initializes 0xffffffff; RTKit accepts 0..255
+        // AGXHardwareBufferIDManager::alloc() assigns this 0..255 ID to the
+        // FList and AGXUMAPool::prepareLocked() copies the same value here.
+        // RTKit also uses it as the UMA Page Pool descriptor-table index.
+        pub(crate) hardware_buffer_id: U32,
         // Copied from AGXUMAPool +0xa2. This flag gates FList async-grow
         // preallocation/retirement and async submit bookkeeping.
         pub(crate) async_grow_enabled: U32,
@@ -80,7 +83,7 @@ pub(crate) mod raw {
     }
     default_zeroed!(G15UMAPagePoolState);
     const _: [(); 0x70] = [(); core::mem::size_of::<G15UMAPagePoolState>()];
-    const _: [(); 0x08] = [(); core::mem::offset_of!(G15UMAPagePoolState, descriptor_index)];
+    const _: [(); 0x08] = [(); core::mem::offset_of!(G15UMAPagePoolState, hardware_buffer_id)];
     const _: [(); 0x0c] = [(); core::mem::offset_of!(G15UMAPagePoolState, async_grow_enabled)];
     const _: [(); 0x14] = [(); core::mem::offset_of!(G15UMAPagePoolState, page_pool_list_fwva)];
     const _: [(); 0x1c] = [(); core::mem::offset_of!(G15UMAPagePoolState, page_pool_list_capacity)];
