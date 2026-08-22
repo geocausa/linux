@@ -53,7 +53,10 @@ pub(crate) mod raw {
         pub(crate) dynamic_24: U32,                 // +0x24: FW/table mirrored, semantics pending
         pub(crate) dynamic_28: U32,                 // +0x28: FW/table mirrored single-bit field
         pub(crate) page_count: U32,                 // +0x2c: current allocated bytes >> 12; 22-bit in table
-        pub(crate) mode_30: U32,                    // +0x30: host zero; FW also tests value 2
+        // +0x30 is a small RTKit/page-pool lifecycle state: host initializes
+        // it to 0, interrupt-post recovery can write 1, and cleanup treats
+        // value 2 specially. Exact value names remain intentionally unknown.
+        pub(crate) lifecycle_state_30: U32,
         pub(crate) backup_page_list_fwva: U64,      // +0x34: Apple "UMA Backup Page List"
         pub(crate) unk_3c: Pad<0x08>,               // +0x3c..+0x43: not written by host helper
         pub(crate) backup_page_list_count: U32,     // +0x44: compact-list count, rounded to 8
@@ -70,6 +73,7 @@ pub(crate) mod raw {
     const _: [(); 0x14] = [(); core::mem::offset_of!(G15UMAPagePoolState, page_pool_list_fwva)];
     const _: [(); 0x1c] = [(); core::mem::offset_of!(G15UMAPagePoolState, page_pool_list_capacity)];
     const _: [(); 0x20] = [(); core::mem::offset_of!(G15UMAPagePoolState, dynamic_20)];
+    const _: [(); 0x30] = [(); core::mem::offset_of!(G15UMAPagePoolState, lifecycle_state_30)];
     const _: [(); 0x34] = [(); core::mem::offset_of!(G15UMAPagePoolState, backup_page_list_fwva)];
     const _: [(); 0x44] = [(); core::mem::offset_of!(G15UMAPagePoolState, backup_page_list_count)];
     const _: [(); 0x48] = [(); core::mem::offset_of!(G15UMAPagePoolState, fw_uncached_state_fwva)];
