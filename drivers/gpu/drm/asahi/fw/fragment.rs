@@ -254,7 +254,10 @@ pub(crate) mod raw {
         pub(crate) unk_pointee: u32,
         #[ver(V >= V13_3)]
         pub(crate) unk_v13_3: u32,
+        #[ver(G != G15)]
         pub(crate) meta: job::raw::JobMeta,
+        #[ver(G == G15)]
+        pub(crate) meta: job::raw::G15JobMeta,
         pub(crate) unk_after_meta: u32,
         pub(crate) unk_buf_0: U64,
         pub(crate) unk_buf_8: U64,
@@ -331,7 +334,7 @@ pub(crate) mod raw {
     // JobMeta.event_seq at meta +0x28.
     const _: [(); 0xbd0] = [();
         core::mem::offset_of!(RunFragmentG15V14_7<'static>, meta)
-            + core::mem::offset_of!(job::raw::JobMeta, event_seq)
+            + core::mem::offset_of!(job::raw::G15JobMeta, event_seq)
     ];
     const _: [(); 0xbd4] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, unk_after_meta)];
     const _: [(); 0xbd8] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, unk_buf_0)];

@@ -201,7 +201,10 @@ pub(crate) mod raw {
         pub(crate) g15_state_858: U32,
         #[ver(G == G15)]
         pub(crate) g15_state_85c: U32,
+        #[ver(G != G15)]
         pub(crate) meta: job::raw::JobMeta,
+        #[ver(G == G15)]
+        pub(crate) meta: job::raw::G15JobMeta,
         pub(crate) unk_after_meta: u32,
         #[ver(G != G15)]
         pub(crate) unk_buf_0: U64,
@@ -305,7 +308,7 @@ pub(crate) mod raw {
     // Generic Apple TA submission writes its queue sequence directly to +0x888,
     // independently confirming JobMeta::event_seq within the G15 command.
     const _: [(); 0x888] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, meta)
-        + core::mem::offset_of!(job::raw::JobMeta, event_seq)];
+        + core::mem::offset_of!(job::raw::G15JobMeta, event_seq)];
     const _: [(); 0x88c] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, unk_after_meta)];
     const _: [(); 0x890] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_barrier_state_890)];
     const _: [(); 0x898] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_tail_898)];

@@ -472,6 +472,7 @@ impl super::QueueInner::ver {
             | (cmdbuf.flags & uapi::drm_asahi_render_flags_DRM_ASAHI_RENDER_DBIAS_IS_INT as u32);
 
         // Always allow preemption at the UAPI level
+        #[ver(G != G15)]
         let no_preemption = false;
 
         mod_dev_dbg!(self.dev, "[Submission {}] Create Frag\n", id);
@@ -930,10 +931,23 @@ impl super::QueueInner::ver {
                     unk_pointee: 0,
                     #[ver(V >= V13_3)]
                     unk_v13_3: 0,
+                    #[ver(G != G15)]
                     meta <- try_init!(fw::job::raw::JobMeta {
                         unk_0: 0,
                         unk_2: 0,
                         no_preemption: no_preemption as u8,
+                        stamp: ev_frag.stamp_pointer,
+                        fw_stamp: ev_frag.fw_stamp_pointer,
+                        stamp_value: ev_frag.value.next(),
+                        stamp_slot: ev_frag.slot,
+                        evctl_index: 0, // fixed
+                        flush_stamps: flush_stamps as u32,
+                        uuid: uuid_3d,
+                        event_seq: ev_frag.event_seq as u32,
+                    }),
+                    #[ver(G == G15)]
+                    meta <- try_init!(fw::job::raw::G15JobMeta {
+                        engine_state: U32(0),
                         stamp: ev_frag.stamp_pointer,
                         fw_stamp: ev_frag.fw_stamp_pointer,
                         stamp_value: ev_frag.value.next(),
@@ -1457,10 +1471,23 @@ impl super::QueueInner::ver {
                     g15_state_858: U32(0),
                     #[ver(G == G15)]
                     g15_state_85c: U32(0),
+                    #[ver(G != G15)]
                     meta <- try_init!(fw::job::raw::JobMeta {
                         unk_0: 0,
                         unk_2: 0,
                         no_preemption: no_preemption as u8,
+                        stamp: ev_vtx.stamp_pointer,
+                        fw_stamp: ev_vtx.fw_stamp_pointer,
+                        stamp_value: ev_vtx.value.next(),
+                        stamp_slot: ev_vtx.slot,
+                        evctl_index: 0, // fixed
+                        flush_stamps: flush_stamps as u32,
+                        uuid: uuid_ta,
+                        event_seq: ev_vtx.event_seq as u32,
+                    }),
+                    #[ver(G == G15)]
+                    meta <- try_init!(fw::job::raw::G15JobMeta {
+                        engine_state: U32(0),
                         stamp: ev_vtx.stamp_pointer,
                         fw_stamp: ev_vtx.fw_stamp_pointer,
                         stamp_value: ev_vtx.value.next(),

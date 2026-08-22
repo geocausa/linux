@@ -42,6 +42,26 @@ pub(crate) mod raw {
     const _: [(); 0x24] = [(); core::mem::offset_of!(JobMeta, uuid)];
     const _: [(); 0x28] = [(); core::mem::offset_of!(JobMeta, event_seq)];
 
+    /// G15 reuses the first JobMeta dword as engine-specific state. The common
+    /// stamp/UUID/event-sequence tail keeps the legacy offsets unchanged.
+    #[derive(Debug, Clone, Copy)]
+    #[repr(C)]
+    pub(crate) struct G15JobMeta {
+        pub(crate) engine_state: U32,
+        pub(crate) stamp: GpuWeakPointer<Stamp>,
+        pub(crate) fw_stamp: GpuWeakPointer<FwStamp>,
+        pub(crate) stamp_value: EventValue,
+        pub(crate) stamp_slot: u32,
+        pub(crate) evctl_index: u32,
+        pub(crate) flush_stamps: u32,
+        pub(crate) uuid: u32,
+        pub(crate) event_seq: u32,
+    }
+
+    const _: [(); 0x2c] = [(); core::mem::size_of::<G15JobMeta>()];
+    const _: [(); 0x24] = [(); core::mem::offset_of!(G15JobMeta, uuid)];
+    const _: [(); 0x28] = [(); core::mem::offset_of!(G15JobMeta, event_seq)];
+
     /// G15 TA/3D SKU-local timing state. Firmware scheduling writes the first
     /// timestamp when work is dispatched. Completion paths require the first
     /// timestamp to precede the third qword and feed their difference to the

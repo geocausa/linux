@@ -407,10 +407,23 @@ impl super::QueueInner::ver {
                     g15_raw_compute_a8_b0_lo_7d8: U64(0),
                     #[ver(G == G15)]
                     g15_raw_compute_b0_hi_7e0: U32(0),
+                    #[ver(G != G15)]
                     meta <- try_init!(fw::job::raw::JobMeta {
                         unk_0: 0,
                         unk_2: 0,
                         no_preemption: 0,
+                        stamp: ev_comp.stamp_pointer,
+                        fw_stamp: ev_comp.fw_stamp_pointer,
+                        stamp_value: ev_comp.value.next(),
+                        stamp_slot: ev_comp.slot,
+                        evctl_index: 0, // fixed
+                        flush_stamps: flush_stamps as u32,
+                        uuid,
+                        event_seq: ev_comp.event_seq as u32,
+                    }),
+                    #[ver(G == G15)]
+                    meta <- try_init!(fw::job::raw::G15JobMeta {
+                        engine_state: U32(0),
                         stamp: ev_comp.stamp_pointer,
                         fw_stamp: ev_comp.fw_stamp_pointer,
                         stamp_value: ev_comp.value.next(),

@@ -161,7 +161,10 @@ pub(crate) mod raw {
         pub(crate) g15_raw_compute_a8_b0_lo_7d8: U64,
         #[ver(G == G15)]
         pub(crate) g15_raw_compute_b0_hi_7e0: U32,
+        #[ver(G != G15)]
         pub(crate) meta: job::raw::JobMeta,
+        #[ver(G == G15)]
+        pub(crate) meta: job::raw::G15JobMeta,
         pub(crate) command_time: U64,
         pub(crate) timestamp_pointers: job::raw::TimestampPointers<'a>,
         pub(crate) user_timestamp_pointers: job::raw::TimestampPointers<'a>,
