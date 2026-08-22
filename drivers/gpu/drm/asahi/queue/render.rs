@@ -1438,15 +1438,15 @@ impl super::QueueInner::ver {
                         & uapi::drm_asahi_render_flags_DRM_ASAHI_RENDER_VERTEX_SCRATCH as u32
                         != 0) as u32,
                     #[ver(G == G15)]
-                    g15_state_788: U64(0),
+                    g15_raw_render_10_788: U64(0),
                     #[ver(G == G15)]
-                    g15_state_790: U64(0),
+                    g15_raw_render_18_790: U64(0),
                     #[ver(G == G15)]
-                    g15_state_798: U64(0),
+                    g15_raw_render_20_798: U64(0),
                     #[ver(G == G15)]
-                    g15_state_7a0: U64(0),
+                    g15_raw_render_28_7a0: U64(0),
                     #[ver(G == G15)]
-                    g15_state_7a8: U64(0),
+                    g15_raw_render_60_7a8: U64(0),
                     #[ver(G == G15)]
                     g15_zero_7b0: U64(0),
                     #[ver(G == G15)]
@@ -1456,21 +1456,21 @@ impl super::QueueInner::ver {
                     #[ver(G == G15)]
                     g15_mid_7c8: Default::default(),
                     #[ver(G == G15)]
-                    g15_state_83c: U32(0),
+                    g15_raw_render_60c_83c: U32(0),
                     #[ver(G == G15)]
-                    g15_state_840: U64(0),
+                    g15_raw_render_608_610_lo_840: U64(0),
                     #[ver(G == G15)]
-                    g15_state_848: U32(0),
+                    g15_raw_render_614_848: U32(0),
                     #[ver(G == G15)]
                     g15_sku_state_84c: U32(0),
                     #[ver(G == G15)]
-                    g15_state_850: U32(0),
+                    g15_raw_render_1bf_850: U32(0),
                     #[ver(G == G15)]
                     g15_state_854: U32(0),
                     #[ver(G == G15)]
-                    g15_state_858: U32(0),
+                    g15_raw_render_1c1_858: U32(0),
                     #[ver(G == G15)]
-                    g15_state_85c: U32(0),
+                    g15_raw_render_1c2_85c: U32(0),
                     #[ver(G != G15)]
                     meta <- try_init!(fw::job::raw::JobMeta {
                         unk_0: 0,

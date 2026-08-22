@@ -164,19 +164,19 @@ pub(crate) mod raw {
         pub(crate) unk_568: u32,
         #[ver(G != G15)]
         pub(crate) uses_scratch: u32,
-        // Apple generic TA submission directly writes the G15 command body
-        // through this region. Keep source-oriented names until the descriptor
-        // semantics are independently identified.
+        // Apple generic TA submission exports raw Render payload state here:
+        // +0x788/+0x790/+0x798/+0x7a0/+0x7a8 <- raw +0x10/+0x18/+0x20/+0x28/+0x60.
+        // Later +0x83c/+0x840/+0x848 pack raw +0x60c/+0x608/+0x610/+0x614.
         #[ver(G == G15)]
-        pub(crate) g15_state_788: U64,
+        pub(crate) g15_raw_render_10_788: U64,
         #[ver(G == G15)]
-        pub(crate) g15_state_790: U64,
+        pub(crate) g15_raw_render_18_790: U64,
         #[ver(G == G15)]
-        pub(crate) g15_state_798: U64,
+        pub(crate) g15_raw_render_20_798: U64,
         #[ver(G == G15)]
-        pub(crate) g15_state_7a0: U64,
+        pub(crate) g15_raw_render_28_7a0: U64,
         #[ver(G == G15)]
-        pub(crate) g15_state_7a8: U64,
+        pub(crate) g15_raw_render_60_7a8: U64,
         #[ver(G == G15)]
         pub(crate) g15_zero_7b0: U64,
         #[ver(G == G15)]
@@ -186,21 +186,21 @@ pub(crate) mod raw {
         #[ver(G == G15)]
         pub(crate) g15_mid_7c8: Array<0x74, u8>,
         #[ver(G == G15)]
-        pub(crate) g15_state_83c: U32,
+        pub(crate) g15_raw_render_60c_83c: U32,
         #[ver(G == G15)]
-        pub(crate) g15_state_840: U64,
+        pub(crate) g15_raw_render_608_610_lo_840: U64,
         #[ver(G == G15)]
-        pub(crate) g15_state_848: U32,
+        pub(crate) g15_raw_render_614_848: U32,
         #[ver(G == G15)]
         pub(crate) g15_sku_state_84c: U32,
         #[ver(G == G15)]
-        pub(crate) g15_state_850: U32,
+        pub(crate) g15_raw_render_1bf_850: U32,
         #[ver(G == G15)]
         pub(crate) g15_state_854: U32,
         #[ver(G == G15)]
-        pub(crate) g15_state_858: U32,
+        pub(crate) g15_raw_render_1c1_858: U32,
         #[ver(G == G15)]
-        pub(crate) g15_state_85c: U32,
+        pub(crate) g15_raw_render_1c2_85c: U32,
         #[ver(G != G15)]
         pub(crate) meta: job::raw::JobMeta,
         #[ver(G == G15)]
@@ -287,23 +287,23 @@ pub(crate) mod raw {
     const _: [(); 0x77c] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, fragment_stamp_slot)];
     const _: [(); 0x780] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, fragment_stamp_value)];
     const _: [(); 0x784] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, unk_pointee)];
-    const _: [(); 0x788] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_state_788)];
-    const _: [(); 0x790] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_state_790)];
-    const _: [(); 0x798] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_state_798)];
-    const _: [(); 0x7a0] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_state_7a0)];
-    const _: [(); 0x7a8] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_state_7a8)];
+    const _: [(); 0x788] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_raw_render_10_788)];
+    const _: [(); 0x790] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_raw_render_18_790)];
+    const _: [(); 0x798] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_raw_render_20_798)];
+    const _: [(); 0x7a0] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_raw_render_28_7a0)];
+    const _: [(); 0x7a8] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_raw_render_60_7a8)];
     const _: [(); 0x7b0] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_zero_7b0)];
     const _: [(); 0x7b8] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_zero_7b8)];
     const _: [(); 0x7c0] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_zero_7c0)];
     const _: [(); 0x7c8] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_mid_7c8)];
-    const _: [(); 0x83c] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_state_83c)];
-    const _: [(); 0x840] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_state_840)];
-    const _: [(); 0x848] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_state_848)];
+    const _: [(); 0x83c] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_raw_render_60c_83c)];
+    const _: [(); 0x840] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_raw_render_608_610_lo_840)];
+    const _: [(); 0x848] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_raw_render_614_848)];
     const _: [(); 0x84c] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_sku_state_84c)];
-    const _: [(); 0x850] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_state_850)];
+    const _: [(); 0x850] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_raw_render_1bf_850)];
     const _: [(); 0x854] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_state_854)];
-    const _: [(); 0x858] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_state_858)];
-    const _: [(); 0x85c] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_state_85c)];
+    const _: [(); 0x858] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_raw_render_1c1_858)];
+    const _: [(); 0x85c] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_raw_render_1c2_85c)];
     const _: [(); 0x860] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, meta)];
     // Generic Apple TA submission writes its queue sequence directly to +0x888,
     // independently confirming JobMeta::event_seq within the G15 command.
