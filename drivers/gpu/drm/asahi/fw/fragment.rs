@@ -313,12 +313,17 @@ pub(crate) mod raw {
         pub(crate) scene: GpuPointer<'a, fw::buffer::Scene::ver>,
         #[ver(G != G15)]
         pub(crate) unk_buffer_buf: GpuWeakPointer<[u8]>,
-        // G15 converts four descriptor GPUVAs through Chinook
-        // AGXArmFirmware::convertGPUVAToFWVA() into +0x20..+0x3f.
+        // G15 exports four descriptor values through
+        // AGXArmFirmware::convertGPUVAToFWVA(); for this host build that method
+        // is the identity transform (`mov x0, x1; ret`).
+        // loadCommandBufferData() copies the selected AGXCommandBuffer state
+        // entry qword +0x398 to descriptor +0x148, which submit exports here.
         #[ver(G == G15)]
-        pub(crate) g15_desc_148_fwva_20: U64,
+        pub(crate) g15_cmd_buffer_state_398_20: U64,
+        // Descriptor init zeroes +0x754..+0x763; normal Render setup never
+        // rewrites +0x758, so the identity FWVA conversion exports zero here.
         #[ver(G == G15)]
-        pub(crate) g15_desc_758_fwva_28: U64,
+        pub(crate) g15_zero_28: U64,
         #[ver(G == G15)]
         pub(crate) g15_pm_table_fwva_30: U64,
         #[ver(G == G15)]
@@ -539,8 +544,8 @@ pub(crate) mod raw {
     const _: [(); 0xc60] = [(); core::mem::size_of::<RunFragmentG15V14_7<'static>>()];
     const _: [(); 0x0c] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_context_id_c)];
     const _: [(); 0x10] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_pad_10)];
-    const _: [(); 0x20] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_desc_148_fwva_20)];
-    const _: [(); 0x28] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_desc_758_fwva_28)];
+    const _: [(); 0x20] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_cmd_buffer_state_398_20)];
+    const _: [(); 0x28] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_zero_28)];
     const _: [(); 0x30] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_pm_table_fwva_30)];
     const _: [(); 0x38] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_pm_state_fwva_38)];
     const _: [(); 0x40] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_rtm_298_addr_40)];

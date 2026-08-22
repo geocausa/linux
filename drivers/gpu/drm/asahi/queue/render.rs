@@ -692,9 +692,9 @@ impl super::QueueInner::ver {
                     #[ver(G != G15)]
                     unk_buffer_buf: inner.scene.kernel_buffer_pointer(),
                     #[ver(G == G15)]
-                    g15_desc_148_fwva_20: U64(0),
+                    g15_cmd_buffer_state_398_20: U64(0),
                     #[ver(G == G15)]
-                    g15_desc_758_fwva_28: U64(0),
+                    g15_zero_28: U64(0),
                     #[ver(G == G15)]
                     g15_pm_table_fwva_30: U64(0),
                     #[ver(G == G15)]
