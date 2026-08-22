@@ -921,9 +921,20 @@ impl super::QueueInner::ver {
                             // sampler state makes that outer gate false, so they are not part
                             // of the base render list and stay absent until G15 perf sampling
                             // has its own independently correct lifecycle.
+                            // RTM/common formulas independently matched to the existing
+                            // kernel-owned geometry producers. Keep these typed here so later
+                            // list import cannot silently drift while G15 emission is disabled.
+                            let g15_isp_mtile_size: u64 = (tile_info.utiles_per_mtile_y
+                                | (tile_info.utiles_per_mtile_x << 16))
+                                .into();
+                            let g15_te_screen: u64 = tile_info.params.te_screen.into();
+                            let g15_rgn_stride: u64 = (tile_info.params.rgn_size as u64) << 26;
                             let _ = (
                                 frg_unk_158,
                                 utile_config,
+                                g15_isp_mtile_size,
+                                g15_te_screen,
+                                g15_rgn_stride,
                                 load_bgobjvals,
                                 inner.scene.tvb_tilemap_pointer(),
                                 inner.scene.tvb_heapmeta_pointer(),
