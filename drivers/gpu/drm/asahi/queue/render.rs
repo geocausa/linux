@@ -696,17 +696,50 @@ impl super::QueueInner::ver {
                     g15_pm_table_fwva_30: U64(0),
                     #[ver(G == G15)]
                     g15_pm_state_fwva_38: U64(0),
+                    #[ver(G != G15)]
                     tvb_tilemap: inner.scene.tvb_tilemap_pointer(),
+                    #[ver(G != G15)]
                     ppp_multisamplectl: U64(cmdbuf.ppp_multisamplectl),
+                    #[ver(G != G15)]
                     samples: cmdbuf.samples as u32,
+                    #[ver(G != G15)]
                     tiles_per_mtile_y: tile_info.tiles_per_mtile_y as u16,
+                    #[ver(G != G15)]
                     tiles_per_mtile_x: tile_info.tiles_per_mtile_x as u16,
+                    #[ver(G != G15)]
                     unk_50: U64(0),
+                    #[ver(G != G15)]
                     unk_58: U64(0),
+                    #[ver(G != G15)]
                     isp_merge_upper_x: F32::from_bits(cmdbuf.isp_merge_upper_x),
+                    #[ver(G != G15)]
                     isp_merge_upper_y: F32::from_bits(cmdbuf.isp_merge_upper_y),
+                    #[ver(G != G15)]
                     unk_68: U64(0),
+                    #[ver(G != G15)]
                     tile_count: U64(tile_info.tiles as u64),
+                    #[ver(G == G15)]
+                    g15_rtm_298_addr_40: U64(0),
+                    #[ver(G == G15)]
+                    g15_rtm_b0_48: U64(0),
+                    #[ver(G == G15)]
+                    g15_rtm_b8_50: 0,
+                    #[ver(G == G15)]
+                    g15_rtm_bc_54: 0,
+                    #[ver(G == G15)]
+                    g15_rtm_20_low_58: 0,
+                    #[ver(G == G15)]
+                    g15_pad_5c: 0,
+                    #[ver(G == G15)]
+                    g15_rtm_c0_cc_60: Default::default(),
+                    #[ver(G == G15)]
+                    g15_rtm_d0_d4_70: Default::default(),
+                    #[ver(G == G15)]
+                    g15_rtm_118_78: 0,
+                    #[ver(G == G15)]
+                    g15_pad_7c: 0,
+                    #[ver(G == G15)]
+                    _g15_lifetime: core::marker::PhantomData,
                     #[ver(G < G14X && G != G15)]
                     job_params1 <- try_init!(fw::fragment::raw::JobParameters1::ver {
                         utile_config,
@@ -885,6 +918,7 @@ impl super::QueueInner::ver {
                                 frg_unk_158,
                                 utile_config,
                                 load_bgobjvals,
+                                inner.scene.tvb_tilemap_pointer(),
                                 inner.scene.tvb_heapmeta_pointer(),
                                 inner.scene.tvb_layermeta_pointer(),
                             );

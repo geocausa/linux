@@ -323,17 +323,56 @@ pub(crate) mod raw {
         pub(crate) g15_pm_table_fwva_30: U64,
         #[ver(G == G15)]
         pub(crate) g15_pm_state_fwva_38: U64,
+        #[ver(G != G15)]
         pub(crate) tvb_tilemap: GpuPointer<'a, &'a [u8]>,
+        #[ver(G != G15)]
         pub(crate) ppp_multisamplectl: U64,
+        #[ver(G != G15)]
         pub(crate) samples: u32,
+        #[ver(G != G15)]
         pub(crate) tiles_per_mtile_y: u16,
+        #[ver(G != G15)]
         pub(crate) tiles_per_mtile_x: u16,
+        #[ver(G != G15)]
         pub(crate) unk_50: U64,
+        #[ver(G != G15)]
         pub(crate) unk_58: U64,
+        #[ver(G != G15)]
         pub(crate) isp_merge_upper_x: F32,
+        #[ver(G != G15)]
         pub(crate) isp_merge_upper_y: F32,
+        #[ver(G != G15)]
         pub(crate) unk_68: U64,
+        #[ver(G != G15)]
         pub(crate) tile_count: U64,
+        // G15 +0x40..+0x7f is RTM-derived state, not the legacy tile and
+        // multisample header. loadRenderTargetMemoryData() sources these from
+        // RTM +0x298/+0xb0/+0xb8/+0xbc/+0x20/+0xc0..+0xd4/+0x118.
+        // Normal submit leaves +0x5c..+0x5f and +0x7c..+0x7f unwritten.
+        #[ver(G == G15)]
+        pub(crate) g15_rtm_298_addr_40: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_rtm_b0_48: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_rtm_b8_50: u32,
+        #[ver(G == G15)]
+        pub(crate) g15_rtm_bc_54: u32,
+        #[ver(G == G15)]
+        pub(crate) g15_rtm_20_low_58: u32,
+        #[ver(G == G15)]
+        pub(crate) g15_pad_5c: u32,
+        #[ver(G == G15)]
+        pub(crate) g15_rtm_c0_cc_60: Array<4, u32>,
+        #[ver(G == G15)]
+        pub(crate) g15_rtm_d0_d4_70: Array<2, u32>,
+        #[ver(G == G15)]
+        pub(crate) g15_rtm_118_78: u32,
+        #[ver(G == G15)]
+        pub(crate) g15_pad_7c: u32,
+        // All G15 command pointers in this header are raw firmware addresses,
+        // so retain the generated type lifetime without consuming ABI space.
+        #[ver(G == G15)]
+        pub(crate) _g15_lifetime: core::marker::PhantomData<&'a ()>,
 
         #[ver(G < G14X && G != G15)]
         pub(crate) job_params1: JobParameters1::ver<'a>,
@@ -504,6 +543,16 @@ pub(crate) mod raw {
     const _: [(); 0x28] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_desc_758_fwva_28)];
     const _: [(); 0x30] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_pm_table_fwva_30)];
     const _: [(); 0x38] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_pm_state_fwva_38)];
+    const _: [(); 0x40] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_rtm_298_addr_40)];
+    const _: [(); 0x48] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_rtm_b0_48)];
+    const _: [(); 0x50] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_rtm_b8_50)];
+    const _: [(); 0x54] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_rtm_bc_54)];
+    const _: [(); 0x58] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_rtm_20_low_58)];
+    const _: [(); 0x5c] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_pad_5c)];
+    const _: [(); 0x60] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_rtm_c0_cc_60)];
+    const _: [(); 0x70] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_rtm_d0_d4_70)];
+    const _: [(); 0x78] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_rtm_118_78)];
+    const _: [(); 0x7c] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_pad_7c)];
     const _: [(); 0x80] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, registers)];
     const _: [(); 0x790] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_job_params3)];
     const _: [(); 0xa48] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_zero_a48)];
