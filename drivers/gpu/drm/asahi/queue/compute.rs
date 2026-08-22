@@ -280,7 +280,7 @@ impl super::QueueInner::ver {
                         iogpu_unk_40: 0, // 0x1c if internal program used
                         __pad: Default::default(),
                     }),
-                    #[ver(G >= G14X || G == G15)]
+                    #[ver(G >= G14X)]
                     registers: fw::job::raw::RegisterArray::new(
                         inner_weak_ptr!(_ptr, registers.registers),
                         |r| {
@@ -302,6 +302,25 @@ impl super::QueueInner::ver {
                             r.add(0x10428, 0x100); // Some kind of counter?? Does this matter?
                             */
                         }
+                    ),
+                    #[ver(G == G15)]
+                    registers: fw::job::raw::RegisterArray::new(
+                        inner_weak_ptr!(_ptr, registers.registers),
+                        |_r| {
+                            // Apple G15 generateRegisterList() is not the G14X list:
+                            // 0x1a440 is dynamically synthesized, 0x1a458 and a
+                            // G15-only tail are added, and the old USC/helper entries
+                            // are absent. Keep the exact array geometry but emit no
+                            // unverified register programming while G15 stays fail-closed.
+                            let _ = (
+                                inner.preempt_buf.gpu_pointer(),
+                                cmdbuf.cdm_ctrl_stream_base,
+                                cmdbuf.helper.binary,
+                                cmdbuf.helper.data,
+                                cmdbuf.helper.cfg,
+                                self.usc_exec_base,
+                            );
+                        },
                     ),
                     #[ver(G != G15)]
                     __pad1: Default::default(),
