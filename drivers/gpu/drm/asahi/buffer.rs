@@ -93,9 +93,16 @@ const G15_PM_DEVICE_CONFIG: G15PmDeviceConfig = G15PmDeviceConfig {
 };
 
 /// J615 has one MGPU, so Apple's multi-MGPU extra-entry term is absent from
-/// `AGXParameterManagementVirtual::setupSceneState()`.  This helper models only
-/// the per-slice stride; the independent PM scene `group_count` source remains
-/// unresolved and must be closed before allocating/emitting those scene slices.
+/// `AGXParameterManagementVirtual::setupSceneState()`.
+///
+/// Base `AGXAccelerator::configureDevice()` writes the packed dword pair
+/// `{0x24, 0x24}` at accelerator +0x678/+0x67c. G15 overwrites only +0x678
+/// with 0x50, so the normal J615 PM record count is 80 and scene group count
+/// remains 36. The optional +0x2420/+0x2424 overrides stay zero in the
+/// analyzed normal path.
+const G15_J615_PM_RECORD_COUNT: usize = 0x50;
+const G15_J615_PM_SCENE_GROUP_COUNT: usize = 0x24;
+
 const fn g15_j615_pm_scene_stride(pb_max_size: usize) -> usize {
     let pages = (pb_max_size + PAGE_SIZE - 1) / PAGE_SIZE;
     let entries = (pages + G15_PM_DEVICE_CONFIG.scene_pages_per_entry - 1)
@@ -110,7 +117,11 @@ const fn g15_j615_pm_scene_stride(pb_max_size: usize) -> usize {
 // 16-GiB-class PB maximum is exactly Apple's 0x33660000 default, giving five
 // 0x1800-page groups and therefore a 0x30-byte per-scene PM slice.
 const _: [(); 4] = [(); G15_PM_DEVICE_CONFIG.usage_page_granule];
+const _: [(); 0x50] = [(); G15_J615_PM_RECORD_COUNT];
+const _: [(); 0x24] = [(); G15_J615_PM_SCENE_GROUP_COUNT];
 const _: [(); 0x30] = [(); g15_j615_pm_scene_stride(0x3366_0000)];
+const _: [(); 0x6c0] = [(); G15_J615_PM_SCENE_GROUP_COUNT
+    * g15_j615_pm_scene_stride(0x3366_0000)];
 
 /// Metadata about the tiling configuration for a scene. This is computed in the `render` module.
 /// based on dimensions, tile size, and other info.
