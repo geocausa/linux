@@ -971,17 +971,17 @@ impl super::QueueInner::ver {
                     #[ver(G == G15)]
                     g15_tail_c18: Default::default(),
                     #[ver(G == G15)]
-                    g15_resource_ptr_c1e: U64(0),
+                    g15_uma_flist_aux_fwva_c1e: U64(0),
                     #[ver(G == G15)]
-                    g15_tail_c26: 0,
+                    g15_uma_prepared_c26: 0,
                     #[ver(G == G15)]
-                    g15_tail_c27: U64(0),
+                    g15_uma_min_pool_size_c27: U64(0),
                     #[ver(G == G15)]
-                    g15_tail_c2f: U64(0),
+                    g15_uma_ideal_pool_size_c2f: U64(0),
                     #[ver(G == G15)]
-                    g15_tail_c37: U64(0),
+                    g15_uma_metrics_fwva_c37: U64(0),
                     #[ver(G == G15)]
-                    g15_tail_c3f: 0,
+                    g15_context_id_generation_c3f: 0,
                     #[ver(G == G15)]
                     g15_sku_pointee_c40: Default::default(),
                 })

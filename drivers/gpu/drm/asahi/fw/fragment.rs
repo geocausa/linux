@@ -284,18 +284,25 @@ pub(crate) mod raw {
         // and the paired RTKit-2419 firmware consumers.
         #[ver(G == G15)]
         pub(crate) g15_tail_c18: Array<0x06, u8>,
+        // Apple AGXUMAPool::prepareLocked() populates the embedded AGXUMAData
+        // record at descriptor +0x960. AGX3DChannelSKU::submitBuffer() then
+        // translates AGXUMAData +0x18 to command +0xc1e, copies the prepared
+        // byte at +0x44 to +0xc26, the minimum/ideal pool sizes at +0x48/+0x50
+        // to +0xc27/+0xc2f, and translates AGXUMAHWMetrics::gpu_base + the
+        // current 0x40-byte ring offset to +0xc37. +0xc3f is the generation
+        // byte returned by AGXContextIDManager::alloc() for the 3D context ID.
         #[ver(G == G15)]
-        pub(crate) g15_resource_ptr_c1e: U64,
+        pub(crate) g15_uma_flist_aux_fwva_c1e: U64,
         #[ver(G == G15)]
-        pub(crate) g15_tail_c26: u8,
+        pub(crate) g15_uma_prepared_c26: u8,
         #[ver(G == G15)]
-        pub(crate) g15_tail_c27: U64,
+        pub(crate) g15_uma_min_pool_size_c27: U64,
         #[ver(G == G15)]
-        pub(crate) g15_tail_c2f: U64,
+        pub(crate) g15_uma_ideal_pool_size_c2f: U64,
         #[ver(G == G15)]
-        pub(crate) g15_tail_c37: U64,
+        pub(crate) g15_uma_metrics_fwva_c37: U64,
         #[ver(G == G15)]
-        pub(crate) g15_tail_c3f: u8,
+        pub(crate) g15_context_id_generation_c3f: u8,
         // The G15 3D SKU encoder embeds command_fwva + 0xc40 as one
         // opaque 0x20-byte pointee. Host submission explicitly zeroes the
         // qwords at +0xc40 and +0xc50; no command-local firmware consumer
@@ -326,10 +333,12 @@ pub(crate) mod raw {
     const _: [(); 0xbf8] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, timestamp_pointers)];
     const _: [(); 0xc08] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, user_timestamp_pointers)];
     const _: [(); 0xc18] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_tail_c18)];
-    const _: [(); 0xc1e] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_resource_ptr_c1e)];
-    const _: [(); 0xc27] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_tail_c27)];
-    const _: [(); 0xc2f] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_tail_c2f)];
-    const _: [(); 0xc37] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_tail_c37)];
+    const _: [(); 0xc1e] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_uma_flist_aux_fwva_c1e)];
+    const _: [(); 0xc26] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_uma_prepared_c26)];
+    const _: [(); 0xc27] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_uma_min_pool_size_c27)];
+    const _: [(); 0xc2f] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_uma_ideal_pool_size_c2f)];
+    const _: [(); 0xc37] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_uma_metrics_fwva_c37)];
+    const _: [(); 0xc3f] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_context_id_generation_c3f)];
     const _: [(); 0xc40] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_sku_pointee_c40)];
 }
 
