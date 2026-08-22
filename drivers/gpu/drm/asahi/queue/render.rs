@@ -1424,11 +1424,39 @@ impl super::QueueInner::ver {
                         & uapi::drm_asahi_render_flags_DRM_ASAHI_RENDER_VERTEX_SCRATCH as u32
                         != 0) as u32,
                     #[ver(G == G15)]
-                    g15_mid_788: Default::default(),
+                    g15_state_788: U64(0),
+                    #[ver(G == G15)]
+                    g15_state_790: U64(0),
+                    #[ver(G == G15)]
+                    g15_state_798: U64(0),
+                    #[ver(G == G15)]
+                    g15_state_7a0: U64(0),
+                    #[ver(G == G15)]
+                    g15_state_7a8: U64(0),
+                    #[ver(G == G15)]
+                    g15_zero_7b0: U64(0),
+                    #[ver(G == G15)]
+                    g15_zero_7b8: U64(0),
+                    #[ver(G == G15)]
+                    g15_zero_7c0: U64(0),
+                    #[ver(G == G15)]
+                    g15_mid_7c8: Default::default(),
+                    #[ver(G == G15)]
+                    g15_state_83c: U32(0),
+                    #[ver(G == G15)]
+                    g15_state_840: U64(0),
+                    #[ver(G == G15)]
+                    g15_state_848: U32(0),
                     #[ver(G == G15)]
                     g15_sku_state_84c: U32(0),
                     #[ver(G == G15)]
-                    g15_mid_850: Default::default(),
+                    g15_state_850: U32(0),
+                    #[ver(G == G15)]
+                    g15_state_854: U32(0),
+                    #[ver(G == G15)]
+                    g15_state_858: U32(0),
+                    #[ver(G == G15)]
+                    g15_state_85c: U32(0),
                     meta <- try_init!(fw::job::raw::JobMeta {
                         unk_0: 0,
                         unk_2: 0,
