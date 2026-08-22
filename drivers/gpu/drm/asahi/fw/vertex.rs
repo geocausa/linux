@@ -237,12 +237,41 @@ pub(crate) mod raw {
         #[ver(G == G15)]
         pub(crate) g15_barrier_state_890: U64,
         #[ver(G == G15)]
-        pub(crate) g15_tail_898: Array<0x60, u8>,
+        pub(crate) g15_tail_898: Array<0x10, u8>,
+        #[ver(G == G15)]
+        pub(crate) g15_zero_8a8: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_state_8b0: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_state_8b8: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_state_8c0: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_state_8c8: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_tail_8d0: Array<0x06, u8>,
+        #[ver(G == G15)]
+        pub(crate) g15_fwva_8d6: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_byte_8de: u8,
+        #[ver(G == G15)]
+        pub(crate) g15_state_8df: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_state_8e7: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_fwva_8ef: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_byte_8f7: u8,
         // The G15 TA encoder embeds command_fwva +0x8f8 into the SKU stream.
+        // Generic TA submission initializes the pointed-to qword to zero.
         #[ver(G == G15)]
         pub(crate) g15_sku_state_8f8: U64,
         #[ver(G == G15)]
-        pub(crate) g15_tail_900: Array<0x20, u8>,
+        pub(crate) g15_tail_900: Array<0x08, u8>,
+        #[ver(G == G15)]
+        pub(crate) g15_zero_908: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_tail_910: Array<0x10, u8>,
     }
 
     const _: [(); 0x920] = [(); core::mem::size_of::<RunVertexG15V14_7<'static>>()];
@@ -274,7 +303,23 @@ pub(crate) mod raw {
     const _: [(); 0x860] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, meta)];
     const _: [(); 0x88c] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, unk_after_meta)];
     const _: [(); 0x890] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_barrier_state_890)];
+    const _: [(); 0x898] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_tail_898)];
+    const _: [(); 0x8a8] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_zero_8a8)];
+    const _: [(); 0x8b0] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_state_8b0)];
+    const _: [(); 0x8b8] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_state_8b8)];
+    const _: [(); 0x8c0] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_state_8c0)];
+    const _: [(); 0x8c8] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_state_8c8)];
+    const _: [(); 0x8d0] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_tail_8d0)];
+    const _: [(); 0x8d6] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_fwva_8d6)];
+    const _: [(); 0x8de] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_byte_8de)];
+    const _: [(); 0x8df] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_state_8df)];
+    const _: [(); 0x8e7] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_state_8e7)];
+    const _: [(); 0x8ef] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_fwva_8ef)];
+    const _: [(); 0x8f7] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_byte_8f7)];
     const _: [(); 0x8f8] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_sku_state_8f8)];
+    const _: [(); 0x900] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_tail_900)];
+    const _: [(); 0x908] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_zero_908)];
+    const _: [(); 0x910] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_tail_910)];
 }
 
 #[versions(AGX)]

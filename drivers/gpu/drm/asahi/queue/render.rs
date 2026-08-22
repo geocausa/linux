@@ -1503,9 +1503,37 @@ impl super::QueueInner::ver {
                     #[ver(G == G15)]
                     g15_tail_898: Default::default(),
                     #[ver(G == G15)]
+                    g15_zero_8a8: U64(0),
+                    #[ver(G == G15)]
+                    g15_state_8b0: U64(0),
+                    #[ver(G == G15)]
+                    g15_state_8b8: U64(0),
+                    #[ver(G == G15)]
+                    g15_state_8c0: U64(0),
+                    #[ver(G == G15)]
+                    g15_state_8c8: U64(0),
+                    #[ver(G == G15)]
+                    g15_tail_8d0: Default::default(),
+                    #[ver(G == G15)]
+                    g15_fwva_8d6: U64(0),
+                    #[ver(G == G15)]
+                    g15_byte_8de: 0,
+                    #[ver(G == G15)]
+                    g15_state_8df: U64(0),
+                    #[ver(G == G15)]
+                    g15_state_8e7: U64(0),
+                    #[ver(G == G15)]
+                    g15_fwva_8ef: U64(0),
+                    #[ver(G == G15)]
+                    g15_byte_8f7: 0,
+                    #[ver(G == G15)]
                     g15_sku_state_8f8: U64(0),
                     #[ver(G == G15)]
                     g15_tail_900: Default::default(),
+                    #[ver(G == G15)]
+                    g15_zero_908: U64(0),
+                    #[ver(G == G15)]
+                    g15_tail_910: Default::default(),
                 })
             },
         )?;
