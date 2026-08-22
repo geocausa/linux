@@ -905,7 +905,12 @@ impl super::QueueInner::ver {
                     }),
                     unk_758_flag: 0,
                     unk_75c_flag: 0,
+                    #[ver(G != G15)]
                     unk_buf: Default::default(),
+                    #[ver(G == G15)]
+                    g15_raw_render_2d8_a50: U64(0),
+                    #[ver(G == G15)]
+                    g15_zero_a58: Default::default(),
                     busy_flag: 0,
                     tvb_overflow_count: 0,
                     unk_878: 0,

@@ -243,7 +243,14 @@ pub(crate) mod raw {
         pub(crate) job_params3: JobParameters3::ver,
         pub(crate) unk_758_flag: u32,
         pub(crate) unk_75c_flag: u32,
+        #[ver(G != G15)]
         pub(crate) unk_buf: Array<0x110, u8>,
+        // G15 3D submit copies descriptor +0x530 (= raw Render +0x2d8)
+        // to +0xa50, then explicitly zeroes the remaining +0xa58..+0xb5f.
+        #[ver(G == G15)]
+        pub(crate) g15_raw_render_2d8_a50: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_zero_a58: Array<0x108, u8>,
         pub(crate) busy_flag: u32,
         pub(crate) tvb_overflow_count: u32,
         pub(crate) unk_878: u32,
@@ -334,6 +341,8 @@ pub(crate) mod raw {
     const _: [(); 0x80] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, registers)];
     const _: [(); 0x790] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, job_params3)];
     const _: [(); 0xa48] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, unk_758_flag)];
+    const _: [(); 0xa50] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_raw_render_2d8_a50)];
+    const _: [(); 0xa58] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_zero_a58)];
     const _: [(); 0xb60] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, busy_flag)];
     const _: [(); 0xb64] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, tvb_overflow_count)];
     const _: [(); 0xb6c] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, encoder_params)];
