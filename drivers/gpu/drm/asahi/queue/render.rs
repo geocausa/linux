@@ -509,7 +509,10 @@ impl super::QueueInner::ver {
                             stats,
                             busy_flag: inner_weak_ptr!(ptr, busy_flag),
                             tvb_overflow_count: inner_weak_ptr!(ptr, tvb_overflow_count),
+                            #[ver(G != G15)]
                             unk_pointer: inner_weak_ptr!(ptr, unk_pointee),
+                            #[ver(G == G15)]
+                            unk_pointer: inner_weak_ptr!(ptr, g15_raw_render_4b6_nonzero_ba0),
                             work_queue: ev_frag.info_ptr,
                             work_item: ptr,
                             vm_slot: vm_bind.slot(),
@@ -588,7 +591,10 @@ impl super::QueueInner::ver {
                             buffer: scene.weak_buffer_pointer(),
                             unk_2c: U64(1),
                             stats,
+                            #[ver(G != G15)]
                             unk_pointer: inner_weak_ptr!(ptr, unk_pointee),
+                            #[ver(G == G15)]
+                            unk_pointer: inner_weak_ptr!(ptr, g15_raw_render_4b6_nonzero_ba0),
                             busy_flag: inner_weak_ptr!(ptr, busy_flag),
                             work_queue: ev_frag.info_ptr,
                             work_item: ptr,
@@ -940,14 +946,26 @@ impl super::QueueInner::ver {
                         raw_render_608_610_b88: U64(0),
                         raw_render_614_b90: 0,
                     }),
+                    #[ver(G != G15)]
                     process_empty_tiles: (cmdbuf.flags
                         & uapi::drm_asahi_render_flags_DRM_ASAHI_RENDER_PROCESS_EMPTY_TILES as u32
                         != 0) as u32,
+                    #[ver(G != G15)]
                     // TODO: needs to be investigated
                     no_clear_pipeline_textures: 1,
+                    #[ver(G != G15)]
                     // TODO: needs to be investigated
                     msaa_zs: 0,
+                    #[ver(G != G15)]
                     unk_pointee: 0,
+                    #[ver(G == G15)]
+                    g15_raw_render_618_b94: 0,
+                    #[ver(G == G15)]
+                    g15_raw_render_5d8_b98: 0,
+                    #[ver(G == G15)]
+                    g15_raw_render_5d9_b9c: 0,
+                    #[ver(G == G15)]
+                    g15_raw_render_4b6_nonzero_ba0: 0,
                     #[ver(V >= V13_3 && G != G15)]
                     unk_v13_3: 0,
                     #[ver(G == G15)]

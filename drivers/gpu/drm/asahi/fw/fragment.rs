@@ -280,10 +280,24 @@ pub(crate) mod raw {
         pub(crate) encoder_params: job::raw::EncoderParams,
         #[ver(G == G15)]
         pub(crate) g15_encoder_state: G15EncoderState,
+        #[ver(G != G15)]
         pub(crate) process_empty_tiles: u32,
+        #[ver(G != G15)]
         pub(crate) no_clear_pipeline_textures: u32,
+        #[ver(G != G15)]
         pub(crate) msaa_zs: u32,
+        #[ver(G != G15)]
         pub(crate) unk_pointee: u32,
+        // G15 submit loads descriptor bytes +0x6e5..+0x6e8, widens each byte
+        // to its own u32 lane, and stores them at +0xb94..+0xba0.
+        #[ver(G == G15)]
+        pub(crate) g15_raw_render_618_b94: u32,
+        #[ver(G == G15)]
+        pub(crate) g15_raw_render_5d8_b98: u32,
+        #[ver(G == G15)]
+        pub(crate) g15_raw_render_5d9_b9c: u32,
+        #[ver(G == G15)]
+        pub(crate) g15_raw_render_4b6_nonzero_ba0: u32,
         #[ver(V >= V13_3 && G != G15)]
         pub(crate) unk_v13_3: u32,
         // copy3DCommonPassthroughData() copies raw Render byte +0x4b8 to
@@ -371,7 +385,10 @@ pub(crate) mod raw {
     const _: [(); 0xb60] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, busy_flag)];
     const _: [(); 0xb64] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, tvb_overflow_count)];
     const _: [(); 0xb6c] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_encoder_state)];
-    const _: [(); 0xba0] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, unk_pointee)];
+    const _: [(); 0xb94] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_raw_render_618_b94)];
+    const _: [(); 0xb98] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_raw_render_5d8_b98)];
+    const _: [(); 0xb9c] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_raw_render_5d9_b9c)];
+    const _: [(); 0xba0] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_raw_render_4b6_nonzero_ba0)];
     const _: [(); 0xba4] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_raw_render_4b8_ba4)];
     const _: [(); 0xba8] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, meta)];
     // Apple AGX3DChannelSKU::submitBuffer copies the queue-local
