@@ -233,11 +233,11 @@ pub(crate) mod raw {
         pub(crate) unk_68: U64,
         pub(crate) tile_count: U64,
 
-        #[ver(G < G14X)]
+        #[ver(G < G14X && G != G15)]
         pub(crate) job_params1: JobParameters1::ver<'a>,
-        #[ver(G < G14X)]
+        #[ver(G < G14X && G != G15)]
         pub(crate) job_params2: JobParameters2,
-        #[ver(G >= G14X)]
+        #[ver(G >= G14X || G == G15)]
         pub(crate) registers: job::raw::RegisterArray,
 
         pub(crate) job_params3: JobParameters3::ver,
@@ -262,17 +262,76 @@ pub(crate) mod raw {
         pub(crate) command_time: U64,
         pub(crate) timestamp_pointers: job::raw::TimestampPointers<'a>,
         pub(crate) user_timestamp_pointers: job::raw::TimestampPointers<'a>,
+
+        #[ver(G != G15)]
         pub(crate) client_sequence: u8,
+        #[ver(G != G15)]
         pub(crate) pad_925: Array<3, u8>,
+        #[ver(G != G15)]
         pub(crate) unk_928: u32,
+        #[ver(G != G15)]
         pub(crate) unk_92c: u8,
 
-        #[ver(V >= V13_0B4)]
+        #[ver(V >= V13_0B4 && G != G15)]
         pub(crate) unk_ts: U64,
 
-        #[ver(V >= V13_0B4)]
+        #[ver(V >= V13_0B4 && G != G15)]
         pub(crate) unk_92d_8: Array<0x1b, u8>,
+
+        // G15 keeps the common command body through the timestamp pointer
+        // triplet at +0xbf0..+0xc17, then replaces the legacy late tail.
+        // These offsets are taken directly from AGX3DChannelSKU::submitBuffer
+        // and the paired RTKit-2419 firmware consumers.
+        #[ver(G == G15)]
+        pub(crate) g15_tail_c18: Array<0x06, u8>,
+        #[ver(G == G15)]
+        pub(crate) g15_resource_ptr_c1e: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_tail_c26: u8,
+        #[ver(G == G15)]
+        pub(crate) g15_tail_c27: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_tail_c2f: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_tail_c37: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_tail_c3f: u8,
+        // The G15 3D SKU encoder embeds command_fwva + 0xc40.
+        #[ver(G == G15)]
+        pub(crate) g15_state_c40: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_tail_c48: Array<0x08, u8>,
+        #[ver(G == G15)]
+        pub(crate) g15_state_c50: U64,
+        // Firmware explicitly checks the dword at +0xc58 as live state.
+        #[ver(G == G15)]
+        pub(crate) g15_state_c58: U32,
+        #[ver(G == G15)]
+        pub(crate) g15_tail_c5c: U32,
     }
+
+    const _: [(); 0xc60] = [(); core::mem::size_of::<RunFragmentG15V14_7<'static>>()];
+    const _: [(); 0x80] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, registers)];
+    const _: [(); 0x790] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, job_params3)];
+    const _: [(); 0xa48] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, unk_758_flag)];
+    const _: [(); 0xb60] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, busy_flag)];
+    const _: [(); 0xb64] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, tvb_overflow_count)];
+    const _: [(); 0xb6c] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, encoder_params)];
+    const _: [(); 0xba0] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, unk_pointee)];
+    const _: [(); 0xba8] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, meta)];
+    const _: [(); 0xbd4] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, unk_after_meta)];
+    const _: [(); 0xbd8] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, unk_buf_0)];
+    const _: [(); 0xbf0] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, command_time)];
+    const _: [(); 0xbf8] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, timestamp_pointers)];
+    const _: [(); 0xc08] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, user_timestamp_pointers)];
+    const _: [(); 0xc18] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_tail_c18)];
+    const _: [(); 0xc1e] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_resource_ptr_c1e)];
+    const _: [(); 0xc27] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_tail_c27)];
+    const _: [(); 0xc2f] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_tail_c2f)];
+    const _: [(); 0xc37] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_tail_c37)];
+    const _: [(); 0xc40] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_state_c40)];
+    const _: [(); 0xc50] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_state_c50)];
+    const _: [(); 0xc58] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_state_c58)];
 }
 
 #[versions(AGX)]

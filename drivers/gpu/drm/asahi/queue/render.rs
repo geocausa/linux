@@ -270,6 +270,8 @@ impl super::QueueInner::ver {
         // This sequence number increases per new client/VM? assigned to some slot,
         // but it's unclear *which* slot...
         let slot_client_seq: u8 = (self.id & 0xff) as u8;
+        #[ver(G == G15)]
+        let _ = slot_client_seq;
 
         let tile_info = Self::get_tiling_params(&cmdbuf, if clustering { nclusters } else { 1 })?;
 
@@ -437,7 +439,7 @@ impl super::QueueInner::ver {
         let g14_unk = 0x4040404;
         #[ver(G < G14)]
         let g14_unk = 0;
-        #[ver(G < G14X)]
+        #[ver(G < G14X && G != G15)]
         let frg_unk_140 = 0x8c60;
         let frg_unk_158 = 0x1c;
         #[ver(G >= G14)]
@@ -484,13 +486,13 @@ impl super::QueueInner::ver {
 
                         let start_frag = builder.add(microseq::StartFragment::ver {
                             header: microseq::op::StartFragment::HEADER,
-                            #[ver(G < G14X)]
+                            #[ver(G < G14X && G != G15)]
                             job_params2: Some(inner_weak_ptr!(ptr, job_params2)),
-                            #[ver(G < G14X)]
+                            #[ver(G < G14X && G != G15)]
                             job_params1: Some(inner_weak_ptr!(ptr, job_params1)),
-                            #[ver(G >= G14X)]
+                            #[ver(G >= G14X || G == G15)]
                             job_params1: None,
-                            #[ver(G >= G14X)]
+                            #[ver(G >= G14X || G == G15)]
                             job_params2: None,
                             #[ver(G >= G14X)]
                             registers: inner_weak_ptr!(ptr, registers),
@@ -524,6 +526,7 @@ impl super::QueueInner::ver {
                             notifier_buf: inner_weak_ptr!(notifier.weak_pointer(), state.unk_buf),
                         })?;
 
+                        #[ver(G != G15)]
                         if frg_user_timestamps.any() {
                             builder.add(microseq::Timestamp::ver {
                                 header: microseq::op::Timestamp::new(true),
@@ -548,6 +551,7 @@ impl super::QueueInner::ver {
                             header: microseq::op::WaitForIdle2::HEADER,
                         })?;
 
+                        #[ver(G != G15)]
                         if frg_user_timestamps.any() {
                             builder.add(microseq::Timestamp::ver {
                                 header: microseq::op::Timestamp::new(false),
@@ -645,7 +649,7 @@ impl super::QueueInner::ver {
                     isp_merge_upper_y: F32::from_bits(cmdbuf.isp_merge_upper_y),
                     unk_68: U64(0),
                     tile_count: U64(tile_info.tiles as u64),
-                    #[ver(G < G14X)]
+                    #[ver(G < G14X && G != G15)]
                     job_params1 <- try_init!(fw::fragment::raw::JobParameters1::ver {
                         utile_config,
                         unk_4: 0,
@@ -700,7 +704,7 @@ impl super::QueueInner::ver {
                         #[ver(V < V13_0B4)]
                         __pad1: Default::default(),
                     }),
-                    #[ver(G < G14X)]
+                    #[ver(G < G14X && G != G15)]
                     job_params2 <- try_init!(fw::fragment::raw::JobParameters2 {
                         eot_rsrc_spec: cmdbuf.eot.rsrc_spec,
                         eot_usc: cmdbuf.eot.usc,
@@ -811,6 +815,23 @@ impl super::QueueInner::ver {
                             */
                         }
                     ),
+                    #[ver(G == G15)]
+                    registers: fw::job::raw::RegisterArray::new(
+                        inner_weak_ptr!(_ptr, registers.registers),
+                        |_r| {
+                            // Exact G15 command geometry uses the register-list body,
+                            // but individual 3D register entries are not yet imported.
+                            // Keep the proven/common inputs type-checked without emitting
+                            // unverified register programming.
+                            let _ = (
+                                frg_unk_158,
+                                utile_config,
+                                load_bgobjvals,
+                                inner.scene.tvb_heapmeta_pointer(),
+                                inner.scene.tvb_layermeta_pointer(),
+                            );
+                        },
+                    ),
                     job_params3 <- try_init!(fw::fragment::raw::JobParameters3::ver {
                         isp_dbias_base: fw::fragment::raw::ArrayAddr {
                             ptr: U64(cmdbuf.isp_dbias_base),
@@ -917,9 +938,9 @@ impl super::QueueInner::ver {
                     unk_after_meta: unk1.into(),
                     unk_buf_0: U64(0),
                     unk_buf_8: U64(0),
-                    #[ver(G < G14X)]
+                    #[ver(G < G14X && G != G15)]
                     unk_buf_10: U64(1),
-                    #[ver(G >= G14X)]
+                    #[ver(G >= G14X || G == G15)]
                     unk_buf_10: U64(0),
                     command_time: U64(0),
                     timestamp_pointers <- try_init!(fw::job::raw::TimestampPointers {
@@ -927,14 +948,42 @@ impl super::QueueInner::ver {
                         end_addr: Some(inner_ptr!(inner.timestamps.gpu_pointer(), frag.end)),
                     }),
                     user_timestamp_pointers: inner.user_timestamps.pointers()?,
+                    #[ver(G != G15)]
                     client_sequence: slot_client_seq,
+                    #[ver(G != G15)]
                     pad_925: Default::default(),
+                    #[ver(G != G15)]
                     unk_928: 0,
+                    #[ver(G != G15)]
                     unk_92c: 0,
-                    #[ver(V >= V13_0B4)]
+                    #[ver(V >= V13_0B4 && G != G15)]
                     unk_ts: U64(0),
-                    #[ver(V >= V13_0B4)]
+                    #[ver(V >= V13_0B4 && G != G15)]
                     unk_92d_8: Default::default(),
+                    #[ver(G == G15)]
+                    g15_tail_c18: Default::default(),
+                    #[ver(G == G15)]
+                    g15_resource_ptr_c1e: U64(0),
+                    #[ver(G == G15)]
+                    g15_tail_c26: 0,
+                    #[ver(G == G15)]
+                    g15_tail_c27: U64(0),
+                    #[ver(G == G15)]
+                    g15_tail_c2f: U64(0),
+                    #[ver(G == G15)]
+                    g15_tail_c37: U64(0),
+                    #[ver(G == G15)]
+                    g15_tail_c3f: 0,
+                    #[ver(G == G15)]
+                    g15_state_c40: U64(0),
+                    #[ver(G == G15)]
+                    g15_tail_c48: Default::default(),
+                    #[ver(G == G15)]
+                    g15_state_c50: U64(0),
+                    #[ver(G == G15)]
+                    g15_state_c58: U32(0),
+                    #[ver(G == G15)]
+                    g15_tail_c5c: U32(0),
                 })
             },
         )?;
