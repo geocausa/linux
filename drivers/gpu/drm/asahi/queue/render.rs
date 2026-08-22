@@ -933,8 +933,22 @@ impl super::QueueInner::ver {
                                 | (tile_info.utiles_per_mtile_x << 16))
                                 .into();
                             let g15_te_screen: u64 = tile_info.params.te_screen.into();
+                            // Stable hardware-register semantics independently match the
+                            // pre-G15 m1n1 map, while Apple G15 emits these sources unchanged.
+                            let g15_fb_dimensions: u64 =
+                                ((cmdbuf.height_px as u64) << 32) | cmdbuf.width_px as u64;
+                            let g15_pixels_per_utile = (cmdbuf.utile_width_px as u32)
+                                * (cmdbuf.utile_height_px as u32);
+                            let g15_samples_per_utile = g15_pixels_per_utile << samples_log2;
+                            let g15_blocks_per_utile =
+                                ((cmdbuf.sample_size_B as u32) * g15_samples_per_utile)
+                                    .div_ceil(2048);
+                            let g15_aux_fb = inner.aux_fb.gpu_pointer();
                             let g15_rgn_stride: u64 = (tile_info.params.rgn_size as u64) << 26;
                             let _ = (
+                                g15_fb_dimensions,
+                                g15_blocks_per_utile,
+                                g15_aux_fb,
                                 frg_unk_158,
                                 utile_config,
                                 g15_isp_mtile_size,
