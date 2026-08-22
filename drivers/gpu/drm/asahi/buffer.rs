@@ -70,6 +70,48 @@ pub(crate) const PAGES_PER_BLOCK: usize = 4;
 /// Size of a buffer block.
 pub(crate) const BLOCK_SIZE: usize = PAGE_SIZE * PAGES_PER_BLOCK;
 
+/// Apple G15 parameter-management device configuration recovered from
+/// `AGXAcceleratorG15::halGetPMConfig()`.
+///
+/// This is deliberately kept separate from the firmware-visible parameter-buffer
+/// ABI above.  The values control host-side PM bookkeeping/allocation geometry;
+/// they do not justify enabling G15 PM register emission by themselves.
+struct G15PmDeviceConfig {
+    usage_page_granule: usize,
+    scene_pages_per_entry: usize,
+    scene_header_bytes: usize,
+    scene_entry_bytes: usize,
+    scene_alignment: usize,
+}
+
+const G15_PM_DEVICE_CONFIG: G15PmDeviceConfig = G15PmDeviceConfig {
+    usage_page_granule: 4,
+    scene_pages_per_entry: 0x1800,
+    scene_header_bytes: 8,
+    scene_entry_bytes: 8,
+    scene_alignment: 0x10,
+};
+
+/// J615 has one MGPU, so Apple's multi-MGPU extra-entry term is absent from
+/// `AGXParameterManagementVirtual::setupSceneState()`.  This helper models only
+/// the per-slice stride; the independent PM scene `group_count` source remains
+/// unresolved and must be closed before allocating/emitting those scene slices.
+const fn g15_j615_pm_scene_stride(pb_max_size: usize) -> usize {
+    let pages = (pb_max_size + PAGE_SIZE - 1) / PAGE_SIZE;
+    let entries = (pages + G15_PM_DEVICE_CONFIG.scene_pages_per_entry - 1)
+        / G15_PM_DEVICE_CONFIG.scene_pages_per_entry;
+    let bytes = G15_PM_DEVICE_CONFIG.scene_header_bytes
+        + entries * G15_PM_DEVICE_CONFIG.scene_entry_bytes;
+    (bytes + G15_PM_DEVICE_CONFIG.scene_alignment - 1)
+        & !(G15_PM_DEVICE_CONFIG.scene_alignment - 1)
+}
+
+// Apple G15's device config is {4, 0x1800, 8, 8, 0x10}.  Linux's existing
+// 16-GiB-class PB maximum is exactly Apple's 0x33660000 default, giving five
+// 0x1800-page groups and therefore a 0x30-byte per-scene PM slice.
+const _: [(); 4] = [(); G15_PM_DEVICE_CONFIG.usage_page_granule];
+const _: [(); 0x30] = [(); g15_j615_pm_scene_stride(0x3366_0000)];
+
 /// Metadata about the tiling configuration for a scene. This is computed in the `render` module.
 /// based on dimensions, tile size, and other info.
 pub(crate) struct TileInfo {
