@@ -909,6 +909,7 @@ impl super::QueueInner::ver {
                     busy_flag: 0,
                     tvb_overflow_count: 0,
                     unk_878: 0,
+                    #[ver(G != G15)]
                     encoder_params <- try_init!(fw::job::raw::EncoderParams {
                         // Maybe set when reloading z/s?
                         unk_8: 0,
@@ -917,6 +918,21 @@ impl super::QueueInner::ver {
                         encoder_id: 0,
                         unk_18: 0x0, // fixed
                         unk_mask: 0xffffffffu32,
+                        sampler_array: U64(cmdbuf.sampler_heap),
+                        sampler_count: cmdbuf.sampler_count as u32,
+                        sampler_max: (cmdbuf.sampler_count as u32) + 1,
+                    }),
+                    #[ver(G == G15)]
+                    encoder_params <- try_init!(fw::job::raw::EncoderParams {
+                        unk_8: 0,
+                        sync_grow: 0,
+                        unk_10: 0,
+                        // AGX3DChannelSKU::submitBuffer() fixes command +0xb78 to zero.
+                        encoder_id: 0,
+                        unk_18: 0,
+                        // Apple G15 writes (raw Render byte +0x1c0 != 0) to +0xb80.
+                        // Linux has no G15 raw producer yet, so keep it fail-closed.
+                        unk_mask: 0,
                         sampler_array: U64(cmdbuf.sampler_heap),
                         sampler_count: cmdbuf.sampler_count as u32,
                         sampler_max: (cmdbuf.sampler_count as u32) + 1,
