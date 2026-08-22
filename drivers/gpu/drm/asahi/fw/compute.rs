@@ -209,10 +209,12 @@ pub(crate) mod raw {
         pub(crate) context_store_compl: U64,
         #[ver(V >= V13_0B4 && G != G15)]
         pub(crate) unk_2e9: Array<0x14, u8>,
-        // G15's encoder explicitly forms command_fwva + 0x878 and generic
-        // submission zeroes that dword, matching the old command flag role.
-        #[ver(V >= V13_0B4)]
+        #[ver(V >= V13_0B4 && G != G15)]
         pub(crate) unk_flag: U32,
+        // RTKit's engine-2 Interrupt Post recovery callback sets this to 1
+        // before reconciling this command's UMA Page Pool State.
+        #[ver(G == G15)]
+        pub(crate) g15_recovery_marker_878: U32,
         #[ver(V >= V13_0B4 && G != G15)]
         pub(crate) unk_pad: Array<0x10, u8>,
         #[ver(G == G15)]
@@ -254,7 +256,7 @@ pub(crate) mod raw {
     const _: [(); 0x85f] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_context_id_generation_85f)];
     const _: [(); 0x860] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, context_store_req)];
     const _: [(); 0x870] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, context_store_compl)];
-    const _: [(); 0x878] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, unk_flag)];
+    const _: [(); 0x878] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_recovery_marker_878)];
 }
 
 #[versions(AGX)]

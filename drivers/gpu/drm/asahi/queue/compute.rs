@@ -158,8 +158,10 @@ impl super::QueueInner::ver {
                             uuid,
                             attachments: *attachments,
                             padding: Default::default(),
-                            #[ver(V >= V13_0B4)]
+                            #[ver(V >= V13_0B4 && G != G15)]
                             unk_flag: inner_weak_ptr!(ptr, unk_flag),
+                            #[ver(G == G15)]
+                            unk_flag: inner_weak_ptr!(ptr, g15_recovery_marker_878),
                             #[ver(V >= V13_0B4)]
                             counter: U64(count),
                             #[ver(V >= V13_0B4)]
@@ -233,8 +235,10 @@ impl super::QueueInner::ver {
                             has_attachments: (attachments.count > 0) as u32,
                             #[ver(V >= V13_0B4)]
                             unk_64: Default::default(),
-                            #[ver(V >= V13_0B4)]
+                            #[ver(V >= V13_0B4 && G != G15)]
                             unk_flag: inner_weak_ptr!(ptr, unk_flag),
+                            #[ver(G == G15)]
+                            unk_flag: inner_weak_ptr!(ptr, g15_recovery_marker_878),
                             #[ver(V >= V13_0B4)]
                             unk_79: Default::default(),
                         })?;
@@ -469,8 +473,10 @@ impl super::QueueInner::ver {
                     context_store_compl: U64(0),
                     #[ver(V >= V13_0B4 && G != G15)]
                     unk_2e9: Default::default(),
-                    #[ver(V >= V13_0B4)]
+                    #[ver(V >= V13_0B4 && G != G15)]
                     unk_flag: U32(0),
+                    #[ver(G == G15)]
+                    g15_recovery_marker_878: U32(0),
                     #[ver(V >= V13_0B4 && G != G15)]
                     unk_pad: Default::default(),
                     #[ver(G == G15)]
