@@ -253,7 +253,7 @@ impl super::QueueInner::ver {
             clustering = false;
         }
 
-        #[ver(G != G14)]
+        #[ver(G != G14 && G != G15)]
         let tiling_control = {
             let render_cfg = gpu.get_cfg().render;
             let mut tiling_control = render_cfg.tiling_control;
@@ -391,18 +391,23 @@ impl super::QueueInner::ver {
 
         let unk1 = false;
 
-        let mut tile_config: u64 = 0;
-        if !unk1 {
-            tile_config |= 0x280;
-        }
-        if cmdbuf.layers > 1 {
-            tile_config |= 1;
-        }
-        if cmdbuf.flags & uapi::drm_asahi_render_flags_DRM_ASAHI_RENDER_PROCESS_EMPTY_TILES as u32
-            != 0
-        {
-            tile_config |= 0x10000;
-        }
+        #[ver(G != G15)]
+        let tile_config: u64 = {
+            let mut tile_config = 0;
+            if !unk1 {
+                tile_config |= 0x280;
+            }
+            if cmdbuf.layers > 1 {
+                tile_config |= 1;
+            }
+            if cmdbuf.flags
+                & uapi::drm_asahi_render_flags_DRM_ASAHI_RENDER_PROCESS_EMPTY_TILES as u32
+                != 0
+            {
+                tile_config |= 0x10000;
+            }
+            tile_config
+        };
 
         let samples_log2 = match cmdbuf.samples {
             1 => 0,
@@ -420,11 +425,16 @@ impl super::QueueInner::ver {
 
         // Calculate the number of 2KiB blocks to allocate per utile. This is
         // just a bit of dimensional analysis.
+        #[ver(G != G15)]
         let pixels_per_utile: u32 =
             (cmdbuf.utile_width_px as u32) * (cmdbuf.utile_height_px as u32);
+        #[ver(G != G15)]
         let samples_per_utile: u32 = pixels_per_utile << samples_log2;
+        #[ver(G != G15)]
         let utile_size_bytes: u32 = (cmdbuf.sample_size_B as u32) * samples_per_utile;
+        #[ver(G != G15)]
         let block_size_bytes: u32 = 2048;
+        #[ver(G != G15)]
         let blocks_per_utile: u32 = utile_size_bytes.div_ceil(block_size_bytes);
 
         #[ver(G >= G14X)]
@@ -443,7 +453,7 @@ impl super::QueueInner::ver {
 
         // Unknowns handling
 
-        #[ver(G >= G14)]
+        #[ver(G >= G14 && G != G15)]
         let g14_unk = 0x4040404;
         #[ver(G < G14)]
         let g14_unk = 0;
@@ -454,6 +464,7 @@ impl super::QueueInner::ver {
         let load_bgobjvals = cmdbuf.isp_bgobjvals as u64;
         #[ver(G < G14)]
         let load_bgobjvals = cmdbuf.isp_bgobjvals as u64 | 0x400;
+        #[ver(G != G15)]
         let reload_zlsctrl = cmdbuf.zls_ctrl;
         let iogpu_unk54: u64 = 0x3a0012006b0003;
         let iogpu_unk56: u64 = 1;
@@ -468,6 +479,7 @@ impl super::QueueInner::ver {
         let vtx_unk_118: u64 = 0x1c;
 
         // DRM_ASAHI_RENDER_DBIAS_IS_INT chosen to match hardware bit.
+        #[ver(G != G15)]
         let isp_ctl = 0xc000u32
             | (cmdbuf.flags & uapi::drm_asahi_render_flags_DRM_ASAHI_RENDER_DBIAS_IS_INT as u32);
 
@@ -641,6 +653,7 @@ impl super::QueueInner::ver {
             },
             |inner, _ptr| {
                 let vm_slot = vm_bind.slot();
+                #[ver(G != G15)]
                 let aux_fb_info = fw::fragment::raw::AuxFBInfo::ver {
                     isp_ctl: isp_ctl,
                     unk2: 0,
@@ -856,6 +869,7 @@ impl super::QueueInner::ver {
                             );
                         },
                     ),
+                    #[ver(G != G15)]
                     job_params3 <- try_init!(fw::fragment::raw::JobParameters3::ver {
                         isp_dbias_base: fw::fragment::raw::ArrayAddr {
                             ptr: U64(cmdbuf.isp_dbias_base),
@@ -918,6 +932,8 @@ impl super::QueueInner::ver {
                         unk_390_0: U64(0x0),
                         isp_zls_pixels: U64(cmdbuf.isp_zls_pixels as u64),
                     }),
+                    #[ver(G == G15)]
+                    g15_job_params3: Default::default(),
                     #[ver(G != G15)]
                     unk_758_flag: 0,
                     #[ver(G != G15)]

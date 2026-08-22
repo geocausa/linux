@@ -204,6 +204,61 @@ pub(crate) mod raw {
         pub(crate) isp_zls_pixels: U64,
     }
 
+    // G15 does not use the legacy JobParameters3 semantic layout. Normal
+    // AGX3DChannelSKU::submitBuffer() copies source-oriented slices from the
+    // 3D descriptor into +0x790..+0xa47, with precise unwritten gaps.
+    #[derive(Debug, Default)]
+    #[repr(C)]
+    pub(crate) struct G15JobParameters3 {
+        pub(crate) pad_790: Array<0x10, u8>,
+        pub(crate) desc_380_7a0: U64,
+        pub(crate) pad_7a8: U64,
+        pub(crate) desc_388_7b0: U64,
+        pub(crate) pad_7b8: U64,
+        pub(crate) desc_390_7c0: U64,
+        pub(crate) pad_7c8: U64,
+        pub(crate) desc_3b0_7d0: U64,
+        pub(crate) desc_3b8_4b0_7d8: Array<0x20, U64>,
+        pub(crate) desc_4b8_527_8d8: Array<0x0e, U64>,
+        pub(crate) desc_538_948: U64,
+        pub(crate) desc_598_950: U64,
+        pub(crate) desc_5d0_958: U64,
+        pub(crate) desc_540_548_960: Array<2, U64>,
+        pub(crate) desc_5c8_970: U64,
+        pub(crate) desc_550_978: U64,
+        pub(crate) desc_5a8_980: U64,
+        pub(crate) desc_5f8_988: U64,
+        pub(crate) desc_558_560_990: Array<2, U64>,
+        pub(crate) desc_5f0_9a0: U64,
+        pub(crate) desc_578_9a8: U64,
+        pub(crate) desc_590_9b0: U64,
+        pub(crate) desc_610_9b8: U64,
+        pub(crate) desc_618_620_9c0: Array<2, U64>,
+        pub(crate) desc_628_9d0: U64,
+        pub(crate) pad_9d8: Array<0x10, u8>,
+        pub(crate) desc_650_9e8: U64,
+        pub(crate) desc_658_9f0: u32,
+        pub(crate) desc_630_638_9f4: Array<2, U64>,
+        pub(crate) pad_a04: u32,
+        pub(crate) desc_65c_a08: U64,
+        pub(crate) desc_664_a10: u32,
+        pub(crate) desc_640_648_a14: Array<2, U64>,
+        pub(crate) pad_a24: u32,
+        pub(crate) desc_668_a28: U64,
+        pub(crate) desc_370_a30: u32,
+        pub(crate) pad_a34: Array<0x0c, u8>,
+        pub(crate) desc_670_a40: U64,
+    }
+
+    const _: [(); 0x2b8] = [(); core::mem::size_of::<G15JobParameters3>()];
+    const _: [(); 0x010] = [(); core::mem::offset_of!(G15JobParameters3, desc_380_7a0)];
+    const _: [(); 0x040] = [(); core::mem::offset_of!(G15JobParameters3, desc_3b0_7d0)];
+    const _: [(); 0x048] = [(); core::mem::offset_of!(G15JobParameters3, desc_3b8_4b0_7d8)];
+    const _: [(); 0x148] = [(); core::mem::offset_of!(G15JobParameters3, desc_4b8_527_8d8)];
+    const _: [(); 0x248] = [(); core::mem::offset_of!(G15JobParameters3, pad_9d8)];
+    const _: [(); 0x264] = [(); core::mem::offset_of!(G15JobParameters3, desc_630_638_9f4)];
+    const _: [(); 0x2b0] = [(); core::mem::offset_of!(G15JobParameters3, desc_670_a40)];
+
     #[derive(Debug)]
     #[repr(C)]
     pub(crate) struct G15EncoderState {
@@ -262,7 +317,10 @@ pub(crate) mod raw {
         #[ver(G >= G14X || G == G15)]
         pub(crate) registers: job::raw::RegisterArray,
 
+        #[ver(G != G15)]
         pub(crate) job_params3: JobParameters3::ver,
+        #[ver(G == G15)]
+        pub(crate) g15_job_params3: G15JobParameters3,
         #[ver(G != G15)]
         pub(crate) unk_758_flag: u32,
         #[ver(G != G15)]
@@ -416,7 +474,7 @@ pub(crate) mod raw {
 
     const _: [(); 0xc60] = [(); core::mem::size_of::<RunFragmentG15V14_7<'static>>()];
     const _: [(); 0x80] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, registers)];
-    const _: [(); 0x790] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, job_params3)];
+    const _: [(); 0x790] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_job_params3)];
     const _: [(); 0xa48] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_zero_a48)];
     const _: [(); 0xa4c] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_pad_a4c)];
     const _: [(); 0xa50] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_raw_render_2d8_a50)];
