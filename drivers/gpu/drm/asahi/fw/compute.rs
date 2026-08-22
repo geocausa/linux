@@ -189,8 +189,11 @@ pub(crate) mod raw {
         pub(crate) g15_state_84f: U64,
         #[ver(G == G15)]
         pub(crate) g15_fwva_857: U64,
+        // Low byte of AGXContextIDManager::alloc()'s generation out-parameter.
+        // Apple increments this byte whenever the context-ID slot is newly
+        // allocated, keeping stale/reused IDs distinguishable.
         #[ver(G == G15)]
-        pub(crate) g15_byte_85f: u8,
+        pub(crate) g15_context_id_generation_85f: u8,
         // Firmware explicitly treats these as CDM context-store request and
         // completion timestamps and checks their latency.
         #[ver(V >= V13_0B4)]
@@ -238,7 +241,7 @@ pub(crate) mod raw {
     const _: [(); 0x847] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_state_847)];
     const _: [(); 0x84f] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_state_84f)];
     const _: [(); 0x857] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_fwva_857)];
-    const _: [(); 0x85f] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_byte_85f)];
+    const _: [(); 0x85f] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_context_id_generation_85f)];
     const _: [(); 0x860] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, context_store_req)];
     const _: [(); 0x870] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, context_store_compl)];
     const _: [(); 0x878] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, unk_flag)];
