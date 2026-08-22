@@ -446,6 +446,9 @@ impl super::QueueInner::ver {
             | ((utile_config as u64 & 0xf000) << 28);
 
         // TODO: check
+        // Normal Apple G15 AGX3DWorkQueue::submitCommand() invokes the 3D
+        // channel submitBuffer() first and the TA channel submitBuffer() second.
+        // Both consume AGXCommandQueue +0x5c8, so reserve Fragment n then TA n+1.
         #[ver(V >= V13_0B4)]
         let count_frag = self.counter.fetch_add(2, Ordering::Relaxed);
         #[ver(V >= V13_0B4)]

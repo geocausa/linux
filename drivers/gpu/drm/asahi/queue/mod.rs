@@ -140,6 +140,8 @@ pub(crate) struct QueueInner {
     notifier: Arc<GpuObject<fw::event::Notifier::ver>>,
     usc_exec_base: u64,
     id: u64,
+    // Apple G15 stores this sequence per AGXCommandQueue (+0x5c8) and every
+    // submitted channel command consumes one value from it across engines.
     #[ver(V >= V13_0B4)]
     counter: AtomicU64,
 }

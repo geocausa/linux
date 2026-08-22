@@ -123,6 +123,8 @@ impl super::QueueInner::ver {
 
         // TODO: check
         #[ver(V >= V13_0B4)]
+        // G15 mirrors AGXCLChannelSKU::submitBuffer(): consume one value from
+        // the command-queue-wide sequence used at command +0x04.
         let count = self.counter.fetch_add(1, Ordering::Relaxed);
 
         let comp = GpuObject::new_init_prealloc(
