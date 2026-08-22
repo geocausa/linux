@@ -251,8 +251,11 @@ pub(crate) mod raw {
         // it through AGXArmFirmware::convertGPUVAToFWVA() into command +0x8b0.
         #[ver(G == G15)]
         pub(crate) g15_segment_resource_list_fwva_8b0: U64,
+        // Apple copies IOGPUBlockFence +0x108 (the first shared time slot
+        // consumed by AGXBlockFence::getHostTime()) into the TA descriptor,
+        // then ChinookV9 convertGPUVAToFWVA() exports it here.
         #[ver(G == G15)]
-        pub(crate) g15_state_8b8: U64,
+        pub(crate) g15_block_fence_time0_fwva_8b8: U64,
         #[ver(G == G15)]
         pub(crate) g15_state_8c0: U64,
         #[ver(G == G15)]
@@ -320,7 +323,7 @@ pub(crate) mod raw {
     const _: [(); 0x898] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_tail_898)];
     const _: [(); 0x8a8] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_zero_8a8)];
     const _: [(); 0x8b0] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_segment_resource_list_fwva_8b0)];
-    const _: [(); 0x8b8] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_state_8b8)];
+    const _: [(); 0x8b8] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_block_fence_time0_fwva_8b8)];
     const _: [(); 0x8c0] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_state_8c0)];
     const _: [(); 0x8c8] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_state_8c8)];
     const _: [(); 0x8d0] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_pad_8d0)];
