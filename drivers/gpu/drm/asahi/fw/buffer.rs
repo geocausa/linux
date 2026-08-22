@@ -36,6 +36,46 @@ pub(crate) mod raw {
     #[versions(AGX)]
     default_zeroed!(Counter::ver);
 
+    /// G15 UMA Page Pool State. Apple allocates this as an exact 0x70-byte
+    /// GPU-mapped object (AGXUMAFList +0x1c0) and passes its FWVA in the late
+    /// Compute/TA/3D command tails. The deliberately unaligned U64 fields are
+    /// part of the Apple ABI, so this structure must remain packed.
+    #[derive(Clone, Copy)]
+    #[repr(C, packed)]
+    pub(crate) struct G15UMAPagePoolState {
+        pub(crate) pool_id: U64,                    // +0x00: AGXUMAPool global ID
+        pub(crate) descriptor_index: U32,           // +0x08: host initializes 0xffffffff; RTKit accepts 0..255
+        pub(crate) config_flag_0c: U32,             // +0x0c: AGXUMAPool::init() final bool
+        pub(crate) priority: U32,                   // +0x10: _AGFIUMAPoolPriorityType
+        pub(crate) page_pool_list_fwva: U64,        // +0x14: Apple "UMA Page Pool List"
+        pub(crate) page_pool_list_capacity: U32,    // +0x1c: backing allocation size / 8
+        pub(crate) dynamic_20: U32,                 // +0x20: FW/table mirrored, semantics pending
+        pub(crate) dynamic_24: U32,                 // +0x24: FW/table mirrored, semantics pending
+        pub(crate) dynamic_28: U32,                 // +0x28: FW/table mirrored single-bit field
+        pub(crate) page_count: U32,                 // +0x2c: current allocated bytes >> 12; 22-bit in table
+        pub(crate) mode_30: U32,                    // +0x30: host zero; FW also tests value 2
+        pub(crate) backup_page_list_fwva: U64,      // +0x34: Apple "UMA Backup Page List"
+        pub(crate) unk_3c: Pad<0x08>,               // +0x3c..+0x43: not written by host helper
+        pub(crate) backup_page_list_count: U32,     // +0x44: compact-list count, rounded to 8
+        pub(crate) fw_uncached_state_fwva: U64,     // +0x48: Apple "UMA FW Uncached State"
+        pub(crate) fw_uncached_state_mirror: U64,   // +0x50: cached qword compared by FW
+        pub(crate) shared_pool_mode: U32,           // +0x58: zero for normal non-shared channels
+        pub(crate) fw_state_5c: U32,                // +0x5c: FW mutates low byte while active
+        pub(crate) zero_60: U64,                    // +0x60
+        pub(crate) zero_68: U64,                    // +0x68
+    }
+    default_zeroed!(G15UMAPagePoolState);
+    const _: [(); 0x70] = [(); core::mem::size_of::<G15UMAPagePoolState>()];
+    const _: [(); 0x08] = [(); core::mem::offset_of!(G15UMAPagePoolState, descriptor_index)];
+    const _: [(); 0x14] = [(); core::mem::offset_of!(G15UMAPagePoolState, page_pool_list_fwva)];
+    const _: [(); 0x1c] = [(); core::mem::offset_of!(G15UMAPagePoolState, page_pool_list_capacity)];
+    const _: [(); 0x20] = [(); core::mem::offset_of!(G15UMAPagePoolState, dynamic_20)];
+    const _: [(); 0x34] = [(); core::mem::offset_of!(G15UMAPagePoolState, backup_page_list_fwva)];
+    const _: [(); 0x44] = [(); core::mem::offset_of!(G15UMAPagePoolState, backup_page_list_count)];
+    const _: [(); 0x48] = [(); core::mem::offset_of!(G15UMAPagePoolState, fw_uncached_state_fwva)];
+    const _: [(); 0x50] = [(); core::mem::offset_of!(G15UMAPagePoolState, fw_uncached_state_mirror)];
+    const _: [(); 0x58] = [(); core::mem::offset_of!(G15UMAPagePoolState, shared_pool_mode)];
+
     #[derive(Debug, Default)]
     #[repr(C)]
     pub(crate) struct Stats {

@@ -1307,9 +1307,22 @@ pub(crate) mod raw {
     #[derive(Debug, Default, Clone, Copy)]
     #[repr(C)]
     pub(crate) struct G15UMAPagePoolDescriptor {
-        pub(crate) words: Array<4, U64>,
+        // RTKit FUN_fffffc0000037b48 packs Page Pool State into this record:
+        //   q0 = (state[+0x1c] << 41) | (state[+0x14] >> 7)
+        //   q1 = (state[+0x24] << 33) | (state[+0x20] << 5)
+        //        | (state[+0x28] << 61)
+        //   q2 = state[+0x2c]
+        // FUN_fffffc0000038884 performs the inverse extraction.
+        pub(crate) page_pool_list: U64, // +0x00: FWVA>>7 plus capacity<<41
+        pub(crate) dynamic_state: U64,  // +0x08: three packed state fields
+        pub(crate) page_count: U64,      // +0x10: low 22 bits mirror Page Pool State page_count
+        pub(crate) unk_18: U64,         // +0x18: not touched by recovered RTKit table users
     }
     const _: [(); 0x20] = [(); core::mem::size_of::<G15UMAPagePoolDescriptor>()];
+    const _: [(); 0x00] = [(); core::mem::offset_of!(G15UMAPagePoolDescriptor, page_pool_list)];
+    const _: [(); 0x08] = [(); core::mem::offset_of!(G15UMAPagePoolDescriptor, dynamic_state)];
+    const _: [(); 0x10] = [(); core::mem::offset_of!(G15UMAPagePoolDescriptor, page_count)];
+    const _: [(); 0x18] = [(); core::mem::offset_of!(G15UMAPagePoolDescriptor, unk_18)];
 
     /// One AGFA firmware-init sequence record. The firmware parser advances
     /// in exact 0x18-byte steps and terminates when `kind == 0`.
