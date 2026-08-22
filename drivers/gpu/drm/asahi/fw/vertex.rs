@@ -248,8 +248,11 @@ pub(crate) mod raw {
         pub(crate) g15_state_8c0: U64,
         #[ver(G == G15)]
         pub(crate) g15_state_8c8: U64,
+        // Apple G15 submission leaves +0x8d0..+0x8d5 unwritten; the first explicit
+        // late-tail store begins at +0x8d6. The same six-byte packed-ABI gap
+        // appears in Compute, TA, and 3D immediately before an unaligned U64.
         #[ver(G == G15)]
-        pub(crate) g15_tail_8d0: Array<0x06, u8>,
+        pub(crate) g15_pad_8d0: Array<0x06, u8>,
         #[ver(G == G15)]
         pub(crate) g15_fwva_8d6: U64,
         #[ver(G == G15)]
@@ -313,7 +316,7 @@ pub(crate) mod raw {
     const _: [(); 0x8b8] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_state_8b8)];
     const _: [(); 0x8c0] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_state_8c0)];
     const _: [(); 0x8c8] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_state_8c8)];
-    const _: [(); 0x8d0] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_tail_8d0)];
+    const _: [(); 0x8d0] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_pad_8d0)];
     const _: [(); 0x8d6] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_fwva_8d6)];
     const _: [(); 0x8de] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_byte_8de)];
     const _: [(); 0x8df] = [(); core::mem::offset_of!(RunVertexG15V14_7<'static>, g15_state_8df)];

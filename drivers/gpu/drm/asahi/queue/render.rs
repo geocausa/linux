@@ -969,7 +969,7 @@ impl super::QueueInner::ver {
                     #[ver(V >= V13_0B4 && G != G15)]
                     unk_92d_8: Default::default(),
                     #[ver(G == G15)]
-                    g15_tail_c18: Default::default(),
+                    g15_pad_c18: Default::default(),
                     #[ver(G == G15)]
                     g15_uma_flist_aux_fwva_c1e: U64(0),
                     #[ver(G == G15)]
@@ -1513,7 +1513,7 @@ impl super::QueueInner::ver {
                     #[ver(G == G15)]
                     g15_state_8c8: U64(0),
                     #[ver(G == G15)]
-                    g15_tail_8d0: Default::default(),
+                    g15_pad_8d0: Default::default(),
                     #[ver(G == G15)]
                     g15_fwva_8d6: U64(0),
                     #[ver(G == G15)]

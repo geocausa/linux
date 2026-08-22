@@ -282,8 +282,11 @@ pub(crate) mod raw {
         // triplet at +0xbf0..+0xc17, then replaces the legacy late tail.
         // These offsets are taken directly from AGX3DChannelSKU::submitBuffer
         // and the paired RTKit-2419 firmware consumers.
+        // Apple G15 submission leaves +0xc18..+0xc1d unwritten; the first explicit
+        // late-tail store begins at +0xc1e. The same six-byte packed-ABI gap
+        // appears in Compute, TA, and 3D immediately before an unaligned U64.
         #[ver(G == G15)]
-        pub(crate) g15_tail_c18: Array<0x06, u8>,
+        pub(crate) g15_pad_c18: Array<0x06, u8>,
         // Apple AGXUMAPool::prepareLocked() populates the embedded AGXUMAData
         // record at descriptor +0x960. AGX3DChannelSKU::submitBuffer() then
         // translates AGXUMAData +0x18 to command +0xc1e, copies the prepared
@@ -332,7 +335,7 @@ pub(crate) mod raw {
     const _: [(); 0xbf0] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, command_time)];
     const _: [(); 0xbf8] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, timestamp_pointers)];
     const _: [(); 0xc08] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, user_timestamp_pointers)];
-    const _: [(); 0xc18] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_tail_c18)];
+    const _: [(); 0xc18] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_pad_c18)];
     const _: [(); 0xc1e] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_uma_flist_aux_fwva_c1e)];
     const _: [(); 0xc26] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_uma_prepared_c26)];
     const _: [(); 0xc27] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_uma_min_pool_size_c27)];

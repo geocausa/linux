@@ -177,8 +177,11 @@ pub(crate) mod raw {
         // command geometry. Two translated FWVA values and three raw state
         // fields are deliberately unaligned; semantics remain source-oriented
         // while runtime submission stays fail-closed.
+        // Apple G15 submission leaves +0x838..+0x83d unwritten; the first explicit
+        // late-tail store begins at +0x83e. The same six-byte packed-ABI gap
+        // appears in Compute, TA, and 3D immediately before an unaligned U64.
         #[ver(G == G15)]
-        pub(crate) g15_tail_838: Array<0x06, u8>,
+        pub(crate) g15_pad_838: Array<0x06, u8>,
         #[ver(G == G15)]
         pub(crate) g15_fwva_83e: U64,
         #[ver(G == G15)]
@@ -240,7 +243,7 @@ pub(crate) mod raw {
     const _: [(); 0x810] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, command_time)];
     const _: [(); 0x818] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, timestamp_pointers)];
     const _: [(); 0x828] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, user_timestamp_pointers)];
-    const _: [(); 0x838] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_tail_838)];
+    const _: [(); 0x838] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_pad_838)];
     const _: [(); 0x83e] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_fwva_83e)];
     const _: [(); 0x846] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_byte_846)];
     const _: [(); 0x847] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_state_847)];

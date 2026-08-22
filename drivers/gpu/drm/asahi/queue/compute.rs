@@ -435,7 +435,7 @@ impl super::QueueInner::ver {
                     #[ver(G != G15)]
                     unk_2d8: 0,
                     #[ver(G == G15)]
-                    g15_tail_838: Default::default(),
+                    g15_pad_838: Default::default(),
                     #[ver(G == G15)]
                     g15_fwva_83e: U64(0),
                     #[ver(G == G15)]
