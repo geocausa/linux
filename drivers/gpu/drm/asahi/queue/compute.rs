@@ -73,7 +73,7 @@ impl super::QueueInner::ver {
         // but it's unclear *which* slot...
         let slot_client_seq: u8 = (self.id & 0xff) as u8;
         #[ver(G == G15)]
-        let _ = slot_client_seq; // exact G15 destination inside +0x83e..+0x85f not yet named
+        let _ = slot_client_seq; // G15 +0x85f source is known; semantic mapping is not yet proven
 
         let vm_bind = job.vm_bind.clone();
 
@@ -386,6 +386,18 @@ impl super::QueueInner::ver {
                     unk_2d8: 0,
                     #[ver(G == G15)]
                     g15_tail_838: Default::default(),
+                    #[ver(G == G15)]
+                    g15_fwva_83e: U64(0),
+                    #[ver(G == G15)]
+                    g15_byte_846: 0,
+                    #[ver(G == G15)]
+                    g15_state_847: U64(0),
+                    #[ver(G == G15)]
+                    g15_state_84f: U64(0),
+                    #[ver(G == G15)]
+                    g15_fwva_857: U64(0),
+                    #[ver(G == G15)]
+                    g15_byte_85f: 0,
                     #[ver(V >= V13_0B4)]
                     context_store_req: U64(0),
                     #[ver(G == G15)]

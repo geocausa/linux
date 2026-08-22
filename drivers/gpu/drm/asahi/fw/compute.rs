@@ -104,11 +104,24 @@ pub(crate) mod raw {
         pub(crate) unk_2d4: u32,
         #[ver(G != G15)]
         pub(crate) unk_2d8: u8,
-        // G15 has active unaligned state/pointers in +0x838..+0x85f. Their
-        // exact individual meanings are still under reconstruction; preserve
-        // the proven geometry and keep runtime submission disabled.
+        // Apple AGXCLChannelSKU::submitBuffer() exposes the exact late G15
+        // command geometry. Two translated FWVA values and three raw state
+        // fields are deliberately unaligned; semantics remain source-oriented
+        // while runtime submission stays fail-closed.
         #[ver(G == G15)]
-        pub(crate) g15_tail_838: Array<0x28, u8>,
+        pub(crate) g15_tail_838: Array<0x06, u8>,
+        #[ver(G == G15)]
+        pub(crate) g15_fwva_83e: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_byte_846: u8,
+        #[ver(G == G15)]
+        pub(crate) g15_state_847: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_state_84f: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_fwva_857: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_byte_85f: u8,
         // Firmware explicitly treats these as CDM context-store request and
         // completion timestamps and checks their latency.
         #[ver(V >= V13_0B4)]
@@ -138,6 +151,13 @@ pub(crate) mod raw {
     const _: [(); 0x810] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, command_time)];
     const _: [(); 0x818] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, timestamp_pointers)];
     const _: [(); 0x828] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, user_timestamp_pointers)];
+    const _: [(); 0x838] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_tail_838)];
+    const _: [(); 0x83e] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_fwva_83e)];
+    const _: [(); 0x846] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_byte_846)];
+    const _: [(); 0x847] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_state_847)];
+    const _: [(); 0x84f] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_state_84f)];
+    const _: [(); 0x857] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_fwva_857)];
+    const _: [(); 0x85f] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_byte_85f)];
     const _: [(); 0x860] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, context_store_req)];
     const _: [(); 0x870] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, context_store_compl)];
     const _: [(); 0x878] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, unk_flag)];
