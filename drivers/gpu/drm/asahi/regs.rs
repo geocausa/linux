@@ -46,6 +46,18 @@ const CORE_MASKS_G14X: usize = 0xe01500;
 const FAULT_INFO_G14X: usize = 0xd8c0;
 const FAULT_ADDR_G14X: usize = 0xd8c8;
 
+// Apple G15 readChipInfo() derives its normal topology count from the same
+// ID_COUNTS_1 fields used for the G14X clusters-per-die * dies calculation.
+// Apple exposes this G15 value as AGXGPUCoreConfig +0x30 and labels it MGPUs.
+// Keep this compile-only until the rest of generation-7 GPU-ID/core-mask
+// decoding is independently closed; the live get_gpu_id() match still rejects 7.
+const fn g15_mgpu_count_from_id_counts_1(id_counts_1: u32) -> u32 {
+    ((id_counts_1 >> 8) & 0xff) * ((id_counts_1 >> 16) & 0xf)
+}
+
+// Exact J615 ID_COUNTS_1 captured from the target: 0x0011010a.
+const _: [(); 1] = [(); g15_mgpu_count_from_id_counts_1(0x0011_010a) as usize];
+
 /// Enum representing the unit that caused an MMU fault.
 #[allow(non_camel_case_types)]
 #[allow(clippy::upper_case_acronyms)]
