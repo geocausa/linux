@@ -1942,6 +1942,18 @@ impl super::QueueInner::ver {
                                 .scene
                                 .tvb_heapmeta_pointer()
                                 .or(0x8000_0000_0000_0000);
+                            // G15 no longer inherits the legacy iogpu_unk54/56 register
+                            // pair verbatim. The raw Render command is bzeroed at pass start
+                            // and no normal G15 writer touches +0xa0, so TA 0x1c051 is zero.
+                            // endRenderPassCommon() writes the literal qword
+                            // 0x003a0012006b0003 to raw +0xa8; processRenderSetup exports
+                            // its low word at desc +0xdc8, making TA 0x1c061 exactly 3.
+                            let g15_ta_iogpu_reg_1c051: u64 = 0;
+                            let g15_ta_iogpu_reg_1c061: u64 = 3;
+                            // The version-expanded G15 build does not instantiate the legacy
+                            // RegisterArray branch below, so explicitly consume its shared
+                            // locals here without using them as G15 producers.
+                            let _g15_legacy_iogpu_pair = (iogpu_unk54, iogpu_unk56);
                             // Apple endRenderPassCommon() explicitly zeros raw Render
                             // +0x1b8 on the current command before submission. The G15 TA
                             // generator masks its low five bits into both 0x12099 and the
@@ -2110,8 +2122,8 @@ impl super::QueueInner::ver {
                                 g15_pm_scene_slice_offset,
                                 g15_pm_scene_slice_gpuva,
                                 g15_pm_page_metrics_gpuva,
-                                iogpu_unk54,
-                                iogpu_unk56,
+                                g15_ta_iogpu_reg_1c051,
+                                g15_ta_iogpu_reg_1c061,
                                 vtx_unk_118,
                                 inner.scene.preempt_buf_1_pointer(),
                                 inner.scene.preempt_buf_2_pointer(),
