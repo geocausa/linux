@@ -1972,6 +1972,15 @@ impl super::QueueInner::ver {
                                     g15_ta_object_payload_gpuva,
                                     buffer::G15_J615_TA_OBJECT_PAYLOAD_UNITS,
                                 );
+                            // Apple accelerator +0x29c0 is literally named
+                            // "ParamBuffer" and is initialized with 0x7f slots. Its owner is
+                            // the active AGXHWParamBufferManager (PM +0x20), whose inherited
+                            // AGXHardwareBufferBase ID starts at -1. The manager assigns fresh
+                            // IDs 0,1,2,... and retains them opportunistically across idle
+                            // periods. Linux's existing 127-slot BufferManager implements the
+                            // same persistent-Buffer/sticky-slot contract, so the exact G15 TA
+                            // 0x1c830 producer is the scene's already-assigned buffer slot.
+                            let g15_ta_param_buffer_id_1c830 = inner.scene.slot() as u64;
                             // The optional 0x1ca10/0x14a1/0xa349 group is gated by the same
                             // AGXPerfCtrSampler state as the already-proven Fragment perf tail.
                             // Fresh/default sampler +0x34/+0x54 are zero, so ordinary Linux
@@ -2029,6 +2038,7 @@ impl super::QueueInner::ver {
                                 g15_ta_stencil_level_reg_d471,
                                 g15_ta_depth_level_low_present,
                                 g15_ta_object_payload_reg_1ca48,
+                                g15_ta_param_buffer_id_1c830,
                                 g15_ta_perf_feature_value,
                                 g15_ta_clear_reg_1a099,
                                 g15_ta_pm_scene,
