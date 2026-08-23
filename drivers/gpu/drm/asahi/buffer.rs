@@ -179,14 +179,22 @@ impl Default for G15PmRecord {
 }
 
 impl G15PmRecord {
-    /// Construct the GPU-facing portion of one J615 PM record before the
-    /// range-7 page-metrics and separate scene-statistics resources exist.
-    /// Apple initializes the remaining fields to zero, then wires +0x00/+0x08
-    /// and +0x40 from those independent resources.
-    pub(crate) fn new_scene_only(scene_slice_gpuva: u64, shared_scene_slice_gpuva: u64) -> Self {
+    /// Construct one J615 GPU-facing PM record from the mechanically proven
+    /// range-5 scene pointers and range-7 PM resources. Apple initializes the
+    /// remaining completion/tail fields to zero here; their later producers
+    /// remain independently unresolved.
+    pub(crate) fn new_with_resources(
+        scene_slice_gpuva: u64,
+        shared_scene_slice_gpuva: u64,
+        page_metrics_gpuva: u64,
+        scene_stats_fwva: u64,
+    ) -> Self {
         Self {
+            page_metrics_gpuva,
+            page_metrics_fwva: page_metrics_gpuva,
             scene_slice_gpuva,
             shared_scene_slice_gpuva,
+            scene_stats_fwva,
             ..Default::default()
         }
     }
@@ -224,7 +232,7 @@ pub(crate) const G15_J615_PM_GPU_RECORD_BYTES: usize =
     G15_J615_PM_RECORD_COUNT * G15_PM_RECORD_BYTES;
 const G15_PM_STATE_BYTES: usize = 0x40;
 const G15_PM_FW_PAGE_LIST_ENTRY_BYTES: usize = 8;
-const G15_PM_PAGE_LIST_STATS_BYTES: usize = 0x80;
+pub(crate) const G15_PM_PAGE_LIST_STATS_BYTES: usize = 0x80;
 const G15_PM_SCENE_STATS_OFFSET: usize = 0x40;
 
 const fn g15_pm_state_offset(record_count: usize) -> usize {
@@ -274,7 +282,8 @@ pub(crate) const fn g15_j615_pm_record_offset(record_index: u32) -> usize {
 /// `AGXArmFirmware::allocFirmwareData()` sizes one PMPageMetricsBuffer resource
 /// element as `align(record_count * 4, 0x40)`. Each PM record then receives a
 /// distinct four-byte slot within that element at `base + 4 * record_index`.
-/// Keep this as geometry only until the G15 firmware-resource lifecycle exists.
+/// Linux now models one requested element directly in shared bank 1; Apple's
+/// resource-stack backing/growth policy remains a separate pooling detail.
 const G15_PM_PAGE_METRICS_SLOT_BYTES: usize = 4;
 const G15_PM_PAGE_METRICS_ALIGNMENT: usize = 0x40;
 
@@ -283,10 +292,15 @@ const fn g15_pm_page_metrics_bytes(record_count: usize) -> usize {
     (bytes + G15_PM_PAGE_METRICS_ALIGNMENT - 1) & !(G15_PM_PAGE_METRICS_ALIGNMENT - 1)
 }
 
+/// Exact J615 PMPageMetricsBuffer resource element size.
+pub(crate) const G15_J615_PM_PAGE_METRICS_BYTES: usize =
+    g15_pm_page_metrics_bytes(G15_J615_PM_RECORD_COUNT);
+
 /// Exact G15 TA register 0x1c910 encoding of a selected PMPageMetricsBuffer
 /// slot GPUVA. Apple places this resource in eGartRange 7. The transform folds
 /// source address bit 42 into result bit 39 and sets bit 0 as the enable bit.
-/// Keep this compile-only until Linux implements the G15 range-7 VA class.
+/// Keep the register emission fail-closed until the G15 bank-1 root is actually
+/// published in client TTB slots and the runtime path is enabled.
 const fn g15_pm_page_metrics_reg_1c910(gpuva: u64) -> u64 {
     let prefix = if gpuva & 0x400_0000_0000 != 0 {
         0
@@ -319,7 +333,7 @@ const _: [(); 0x2840] = [(); g15_pm_record_pool_bytes(G15_J615_PM_RECORD_COUNT)]
 const _: [(); 0x280] = [(); g15_pm_fw_page_list_bytes(G15_J615_PM_RECORD_COUNT)];
 const _: [(); 0x80] = [(); G15_PM_PAGE_LIST_STATS_BYTES];
 const _: [(); 0x40] = [(); G15_PM_SCENE_STATS_OFFSET];
-const _: [(); 0x140] = [(); g15_pm_page_metrics_bytes(G15_J615_PM_RECORD_COUNT)];
+const _: [(); 0x140] = [(); G15_J615_PM_PAGE_METRICS_BYTES];
 const _: [(); 0xa0] = [(); (g15_pm_page_metrics_reg_1c910(0xffff_fc20_0000_0000) >> 32) as usize];
 const _: [(); 0x4001] = [(); (g15_pm_page_metrics_reg_1c910(0xffff_fc20_0000_4000) & 0xffff) as usize];
 const _: [(); 0x30] = [(); g15_j615_pm_scene_stride(0x3366_0000)];

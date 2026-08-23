@@ -997,6 +997,160 @@ impl Drop for KernelMapping {
     }
 }
 
+
+/// Address-space bookkeeping for the accelerator-shared G15 UAT bank 1.
+/// Canonical G15 range-7 VAs are retained in the allocator; UatPageTable masks
+/// them to the low 42 bank-local bits when walking the actual page tables.
+struct G15SharedBank1State {
+    page_table: UatPageTable,
+    mm: mm::Allocator<(), G15SharedBank1MappingInner>,
+}
+
+impl G15SharedBank1State {
+    fn new(cfg: &'static hw::HwConfig) -> Result<Self> {
+        Ok(Self {
+            page_table: UatPageTable::new_global(G15_HW_UAT_IAS, cfg.uat_oas)?,
+            mm: mm::Allocator::new(G15_GART_RANGE7.start, G15_GART_RANGE7.range(), ())?,
+        })
+    }
+
+    fn ttb(&self) -> PhysicalAddr {
+        self.page_table.ttb()
+    }
+}
+
+struct G15SharedBank1MappingInner {
+    _gem: ARef<gem::Object>,
+    mapped_size: usize,
+}
+
+/// One object mapping in the accelerator-shared G15 bank 1.
+pub(crate) struct G15SharedBank1Mapping {
+    node: Option<mm::Node<(), G15SharedBank1MappingInner>>,
+    inner: Arc<UatInner>,
+}
+
+impl G15SharedBank1Mapping {
+    pub(crate) fn iova(&self) -> u64 {
+        self.node.as_ref().unwrap().start()
+    }
+
+}
+
+impl Drop for G15SharedBank1Mapping {
+    fn drop(&mut self) {
+        let node = self.node.take().unwrap();
+        let iova = node.start();
+        let size = node.mapped_size;
+        {
+            let mut shared = self.inner.lock();
+            if let Some(bank1) = shared.g15_shared_bank1.as_mut() {
+                if bank1
+                    .page_table
+                    .unmap_pages(iova..(iova + size as u64))
+                    .is_err()
+                {
+                    pr_err!(
+                        "MMU: failed to unmap G15 shared bank-1 range {:#x}:{:#x}\n",
+                        iova,
+                        size
+                    );
+                }
+            }
+        }
+        // Bank 1 is shared by every G15 client context. A full invalidate is
+        // conservative until the exact G15 bank-scoped invalidation command is
+        // wired into the runtime path.
+        fence(Ordering::SeqCst);
+        mem::tlbi_all();
+        mem::sync();
+        core::mem::drop(node);
+    }
+}
+
+/// Cloneable mapping handle for the accelerator-shared G15 UAT bank 1.
+#[derive(Clone)]
+pub(crate) struct G15SharedBank1 {
+    dev: driver::AsahiDevRef,
+    inner: Arc<UatInner>,
+}
+
+impl G15SharedBank1 {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn map(
+        &self,
+        gem: &gem::Object,
+        size: usize,
+        alignment: u64,
+        prot: Prot,
+        guard: bool,
+    ) -> Result<G15SharedBank1Mapping> {
+        let sgt = gem.owned_sg_table()?;
+        let reserve_size = size + if guard { UAT_PGSZ } else { 0 };
+        let mut shared = self.inner.lock();
+        let bank1 = shared.g15_shared_bank1.as_mut().ok_or(EINVAL)?;
+        let node = bank1.mm.insert_node_in_range(
+            G15SharedBank1MappingInner {
+                _gem: gem.into(),
+                mapped_size: size,
+            },
+            reserve_size as u64,
+            alignment,
+            0,
+            G15_GART_RANGE7.start,
+            G15_GART_RANGE7.end,
+            mm::InsertMode::Best,
+        )?;
+
+        let base = node.start();
+        bank1
+            .page_table
+            .alloc_pages(base..(base + size as u64))?;
+
+        let mut iova = base;
+        let mut left = size;
+        for range in sgt.iter() {
+            if left == 0 {
+                break;
+            }
+            let addr = range.dma_address() as usize;
+            let len = (range.dma_len() as usize).min(left);
+            if (addr | len | iova as usize) & UAT_PGMSK != 0 {
+                dev_err!(
+                    self.dev.as_ref(),
+                    "MMU: G15 shared bank-1 mapping is not page-aligned\n"
+                );
+                return Err(EINVAL);
+            }
+            bank1.page_table.map_pages(
+                iova..(iova + len as u64),
+                addr as PhysicalAddr,
+                prot,
+                false,
+            )?;
+            iova += len as u64;
+            left -= len;
+        }
+        if left != 0 {
+            dev_err!(
+                self.dev.as_ref(),
+                "MMU: G15 shared bank-1 SG table is shorter than mapping\n"
+            );
+            return Err(EINVAL);
+        }
+        core::mem::drop(shared);
+
+        fence(Ordering::SeqCst);
+        mem::tlbi_all();
+        mem::sync();
+
+        Ok(G15SharedBank1Mapping {
+            node: Some(node),
+            inner: self.inner.clone(),
+        })
+    }
+}
+
 /// Shared UAT global data structures
 struct UatShared {
     kernel_ttb1: u64,
@@ -1004,7 +1158,7 @@ struct UatShared {
     // G15 client contexts import accelerator-owned bank 1 while allocating
     // bank 0 privately. This root is driver-owned but its leaf PTEs are global.
     // It is not published into SlotTTBS yet.
-    g15_shared_bank1: Option<UatPageTable>,
+    g15_shared_bank1: Option<G15SharedBank1State>,
     handoff_rgn: UatRegion,
     ttbs_rgn: UatRegion,
 }
@@ -1639,6 +1793,20 @@ impl Uat {
         inner.ttbs_rgn.base
     }
 
+    /// Returns a mapping handle for G15's accelerator-shared bank 1 when the
+    /// hardware configuration provides the 42-bit banked UAT. The root is
+    /// deliberately not published to client SlotTTBS yet.
+    pub(crate) fn g15_shared_bank1(&self) -> Option<G15SharedBank1> {
+        if self.inner.lock().g15_shared_bank1.is_some() {
+            Some(G15SharedBank1 {
+                dev: self.dev.clone(),
+                inner: self.inner.clone(),
+            })
+        } else {
+            None
+        }
+    }
+
     /// Binds a `Vm` to a slot, preferring the last used one.
     pub(crate) fn bind(&self, vm: &Vm) -> Result<VmBind> {
         let mut binding = vm.binding.lock();
@@ -1713,7 +1881,7 @@ impl Uat {
     #[inline(never)]
     fn make_inner(
         dev: &driver::AsahiDevice,
-        g15_shared_bank1: Option<UatPageTable>,
+        g15_shared_bank1: Option<G15SharedBank1State>,
     ) -> Result<Arc<UatInner>> {
         let handoff_rgn = Self::map_region(dev.as_ref(), c_str!("handoff"), HANDOFF_SIZE, true)?;
         let ttbs_rgn = Self::map_region(dev.as_ref(), c_str!("ttbs"), SLOTS_SIZE, true)?;
@@ -1757,7 +1925,7 @@ impl Uat {
         // privately and import accelerator-shared bank 1. Current G13/G14
         // configs are all 39-bit, so this allocation is unreachable there.
         let g15_shared_bank1 = if cfg.uat_ias >= G15_HW_UAT_IAS {
-            Some(UatPageTable::new_global(G15_HW_UAT_IAS, cfg.uat_oas)?)
+            Some(G15SharedBank1State::new(cfg)?)
         } else {
             None
         };

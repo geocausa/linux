@@ -415,6 +415,90 @@ pub(crate) trait Allocator {
     }
 }
 
+/// Raw allocation mapped through G15's accelerator-shared UAT bank 1.
+pub(crate) struct G15SharedBank1Allocation {
+    dev: AsahiDevRef,
+    ptr: Option<NonNull<u8>>,
+    gpu_ptr: u64,
+    _mapping: mmu::G15SharedBank1Mapping,
+    obj: crate::gem::ObjectRef,
+}
+
+unsafe impl Send for G15SharedBank1Allocation {}
+unsafe impl Sync for G15SharedBank1Allocation {}
+
+impl Drop for G15SharedBank1Allocation {
+    fn drop(&mut self) {
+        if debug_enabled(DebugFlags::FillAllocations) {
+            if let Ok(mut vmap) = self.obj.vmap() {
+                vmap.memset(0x42);
+            }
+        }
+    }
+}
+
+impl RawAllocation for G15SharedBank1Allocation {
+    fn ptr(&self) -> Option<NonNull<u8>> { self.ptr }
+    fn gpu_ptr(&self) -> u64 { self.gpu_ptr }
+    fn device(&self) -> &AsahiDevice { &self.dev }
+}
+
+pub(crate) type G15SharedGpuArray<T> =
+    GpuArray<T, GenericAlloc<T, G15SharedBank1Allocation>>;
+
+/// Small-object allocator for the firmware-owned/shared G15 bank-1 aperture.
+pub(crate) struct G15SharedBank1Allocator {
+    dev: AsahiDevRef,
+    bank1: mmu::G15SharedBank1,
+    prot: mmu::Prot,
+    min_align: usize,
+    cpu_maps: bool,
+}
+
+impl G15SharedBank1Allocator {
+    pub(crate) fn new(
+        dev: &AsahiDevice,
+        bank1: mmu::G15SharedBank1,
+        min_align: usize,
+        prot: mmu::Prot,
+        mut cpu_maps: bool,
+    ) -> Self {
+        if debug_enabled(DebugFlags::ForceCPUMaps) { cpu_maps = true; }
+        Self { dev: dev.into(), bank1, prot, min_align, cpu_maps }
+    }
+}
+
+impl Allocator for G15SharedBank1Allocator {
+    type Raw = G15SharedBank1Allocation;
+    fn cpu_maps(&self) -> bool { self.cpu_maps }
+    fn min_align(&self) -> usize { self.min_align }
+
+    fn alloc(&mut self, size: usize, align: usize) -> Result<Self::Raw> {
+        let size_aligned = (size + mmu::UAT_PGSZ - 1) & !mmu::UAT_PGMSK;
+        let align = self.min_align.max(align);
+        let offset = (size_aligned - size) & !(align - 1);
+        let mut obj = crate::gem::new_kernel_object(&self.dev, size_aligned)?;
+        let p = obj.vmap()?.as_mut_ptr() as *mut u8;
+        if debug_enabled(DebugFlags::FillAllocations) { obj.vmap()?.memset(0xde); }
+        let mapping = self.bank1.map(
+            &obj.gem,
+            size_aligned,
+            self.min_align.max(mmu::UAT_PGSZ) as u64,
+            self.prot,
+            true,
+        )?;
+        let iova = mapping.iova();
+        let ptr = unsafe { p.add(offset) };
+        Ok(G15SharedBank1Allocation {
+            dev: self.dev.clone(),
+            ptr: NonNull::new(ptr),
+            gpu_ptr: iova + offset as u64,
+            _mapping: mapping,
+            obj,
+        })
+    }
+}
+
 /// A simple allocation backed by a separate GEM object.
 ///
 /// # Invariants

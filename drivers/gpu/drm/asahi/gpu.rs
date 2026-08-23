@@ -1415,6 +1415,7 @@ impl GpuManager for GpuManager::ver {
                 ualloc_priv,
                 g15_ualloc_range5_uncached,
                 g15_ualloc_range5_cached,
+                self.uat.g15_shared_bank1(),
                 self.event_manager.clone(),
                 &self.buffer_mgr,
                 id,

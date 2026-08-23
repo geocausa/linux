@@ -155,9 +155,17 @@ pub(crate) struct QueueInner {
     #[ver(G == G15)]
     g15_pm_scene_alloc: GpuArray<u8>,
     // Exact 0x2800 GPU-facing PM record backing. Apple uses range 5 with
-    // compact PTE class 0x303; the separate 0x40 tail is intentionally absent.
+    // compact PTE class 0x300; the separate 0x40 tail is intentionally absent.
     #[ver(G == G15)]
     g15_pm_records: GpuArray<buffer::G15PmRecord>,
+    // Exact range-7 resources referenced by every PM record. Apple obtains the
+    // 0x140 metrics element from a firmware-owned resource stack and allocates
+    // the 0x80 page-list/statistics object separately; both map through shared
+    // UAT bank 1 with option word 0x700000007.
+    #[ver(G == G15)]
+    _g15_pm_page_metrics: alloc::G15SharedGpuArray<u8>,
+    #[ver(G == G15)]
+    _g15_pm_scene_stats: alloc::G15SharedGpuArray<u8>,
 }
 
 #[versions(AGX)]
@@ -457,6 +465,7 @@ impl Queue::ver {
         ualloc_priv: Arc<Mutex<alloc::DefaultAllocator>>,
         _g15_ualloc_range5_uncached: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
         _g15_ualloc_range5_cached: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
+        _g15_shared_bank1: Option<mmu::G15SharedBank1>,
         event_manager: Arc<event::EventManager>,
         mgr: &buffer::BufferManager::ver,
         id: u64,
@@ -507,6 +516,24 @@ impl Queue::ver {
             .lock()
             .array_empty_tagged(buffer::G15_J615_PM_SCENE_ALLOC_BYTES, b"PMSC")?;
         #[ver(G == G15)]
+        let mut g15_bank1_alloc = alloc::G15SharedBank1Allocator::new(
+            dev,
+            _g15_shared_bank1.ok_or(EINVAL)?,
+            buffer::PAGE_SIZE,
+            mmu::PROT_G15_RANGE7_PM,
+            true,
+        );
+        #[ver(G == G15)]
+        let g15_pm_page_metrics = g15_bank1_alloc.array_empty_tagged(
+            buffer::G15_J615_PM_PAGE_METRICS_BYTES,
+            b"PMET",
+        )?;
+        #[ver(G == G15)]
+        let g15_pm_scene_stats = g15_bank1_alloc.array_empty_tagged(
+            buffer::G15_PM_PAGE_LIST_STATS_BYTES,
+            b"PSTS",
+        )?;
+        #[ver(G == G15)]
         let mut g15_pm_records = _g15_ualloc_range5_cached
             .as_ref()
             .ok_or(EINVAL)?
@@ -517,9 +544,17 @@ impl Queue::ver {
             let scene_base: u64 = g15_pm_scene_alloc.gpu_pointer().into();
             let shared_scene =
                 scene_base + buffer::g15_j615_pm_shared_scene_slice_offset() as u64;
+            let metrics_base: u64 = g15_pm_page_metrics.gpu_pointer().into();
+            let scene_stats_fwva: u64 = g15_pm_scene_stats.gpu_offset_pointer(0x40).into();
             for (i, record) in g15_pm_records.as_mut_slice().iter_mut().enumerate() {
                 let scene = scene_base + buffer::g15_j615_pm_scene_slice_offset(i as u32) as u64;
-                *record = buffer::G15PmRecord::new_scene_only(scene, shared_scene);
+                let metrics_slot = metrics_base + (i * 4) as u64;
+                *record = buffer::G15PmRecord::new_with_resources(
+                    scene,
+                    shared_scene,
+                    metrics_slot,
+                    scene_stats_fwva,
+                );
             }
         }
 
@@ -553,6 +588,10 @@ impl Queue::ver {
                 g15_pm_scene_alloc,
                 #[ver(G == G15)]
                 g15_pm_records,
+                #[ver(G == G15)]
+                _g15_pm_page_metrics: g15_pm_page_metrics,
+                #[ver(G == G15)]
+                _g15_pm_scene_stats: g15_pm_scene_stats,
             },
         };
 
