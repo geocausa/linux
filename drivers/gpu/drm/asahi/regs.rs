@@ -92,16 +92,28 @@ const fn g15_cores_per_mgpu_from_ids(id_version: u32, id_counts_1: u32) -> u32 {
     }
 }
 
-// Exact J615 ID_COUNTS_1 captured from the target: 0x0011010a.
-const _: [(); 1] = [(); g15_mgpu_count_from_id_counts_1(0x0011_010a) as usize];
-const _: [(); 10] = [(); g15_cores_per_mgpu_from_ids(0x0702_0000, 0x0011_010a) as usize];
+// Exact J615 identification registers captured by the guarded E009 read-only
+// probe. The gfx domain was restored fully off before the probe returned.
+const J615_G15_ID_VERSION: u32 = 0x0702_2000;
+const J615_G15_ID_COUNTS_1: u32 = 0x0011_010a;
+const J615_G15_ID_COUNTS_2: u32 = 0x0004_0404;
+const J615_G15_CORE_MASK_0: u32 = 0x0000_03ff;
+
+const _: [(); 7] = [(); (J615_G15_ID_VERSION >> 24) as usize];
+const _: [(); 2] = [(); ((J615_G15_ID_VERSION >> 16) & 0xff) as usize];
+const _: [(); 0x20] = [(); ((J615_G15_ID_VERSION >> 8) & 0xff) as usize];
+const _: [(); 1] = [(); g15_mgpu_count_from_id_counts_1(J615_G15_ID_COUNTS_1) as usize];
+const _: [(); 10] = [(); g15_cores_per_mgpu_from_ids(J615_G15_ID_VERSION, J615_G15_ID_COUNTS_1) as usize];
+const _: [(); 4] = [(); ((J615_G15_ID_COUNTS_2 >> 16) & 0xff) as usize];
+const _: [(); 10] = [(); J615_G15_CORE_MASK_0.count_ones() as usize];
+const _: [(); 0x3ff] = [(); (J615_G15_CORE_MASK_0 & ((1u32 << 10) - 1)) as usize];
 // Pin Apple's G15S override independently of the low byte supplied here.
 const _: [(); 10] = [(); g15_cores_per_mgpu_from_ids(0x0703_0000, 0x0011_0114) as usize];
 // Pin Apple's generation-7 switch and exact kAGXGPUCoreName[] IDs without
 // making get_gpu_id() accept generation 7 yet. The low 16 revision bits are
 // immaterial to this decoder, hence zero in these compile-time probes.
 const _: [(); 21] = [(); g15_core_id_or_zero(0x0700_0000, 0x0011_010a) as usize];
-const _: [(); 22] = [(); g15_core_id_or_zero(0x0702_0000, 0x0011_010a) as usize];
+const _: [(); 22] = [(); g15_core_id_or_zero(J615_G15_ID_VERSION, J615_G15_ID_COUNTS_1) as usize];
 const _: [(); 23] = [(); g15_core_id_or_zero(0x0703_0000, 0x0011_010a) as usize];
 const _: [(); 24] = [(); g15_core_id_or_zero(0x0704_0000, 0x0011_010a) as usize];
 const _: [(); 0] = [(); g15_core_id_or_zero(0x0701_0000, 0x0011_010a) as usize];
