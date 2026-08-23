@@ -235,6 +235,12 @@ const fn g15_gptbat_bank1(bank0_root: u64, bank1_root: u64, context_id: u8) -> u
         | TTBR_VALID
 }
 
+/// setClientContextID() rejects either bank root when physical address bits
+/// above the 42-bit G15 UAT output-address limit are set.
+const fn g15_gptbat_roots_fit(bank0_root: u64, bank1_root: u64) -> bool {
+    ((bank0_root | bank1_root) >> G15_HW_UAT_IAS) == 0
+}
+
 // Range 5 (PM scene / GTP) is bank 0; range 7 (PM page metrics) is bank 1.
 const _: [(); 0] = [(); g15_uat_bank(G15_GART_RANGE5.start)];
 const _: [(); 0x10] = [(); g15_uat_top_index(G15_GART_RANGE5.start)];
@@ -258,6 +264,11 @@ const _: [(); 1] = [(); ((G15_GPTBAT_SAMPLE1 & G15_GPTBAT_PHYS_ROOT_MASK)
     == G15_GPTBAT_SAMPLE_BANK1_ROOT) as usize];
 const _: [(); 0x3f] = [(); ((G15_GPTBAT_SAMPLE0 >> 48) & 0xff) as usize];
 const _: [(); 0x3f] = [(); ((G15_GPTBAT_SAMPLE1 >> 48) & 0xff) as usize];
+const _: [(); 1] = [(); g15_gptbat_roots_fit(
+    G15_GPTBAT_SAMPLE_BANK0_ROOT,
+    G15_GPTBAT_SAMPLE_BANK1_ROOT,
+) as usize];
+const _: [(); 0] = [(); g15_gptbat_roots_fit(1u64 << 42, G15_GPTBAT_SAMPLE_BANK1_ROOT) as usize];
 /// Lower/user top VA.
 pub(crate) const IOVA_USER_TOP: u64 = 1 << UAT_USER_IAS;
 /// Lower/user VA range
@@ -1157,7 +1168,8 @@ struct UatShared {
     map_kernel_to_user: bool,
     // G15 client contexts import accelerator-owned bank 1 while allocating
     // bank 0 privately. This root is driver-owned but its leaf PTEs are global.
-    // It is not published into SlotTTBS yet.
+    // User-slot publication is latent behind this root existing; no current
+    // G13/G14 configuration creates it and G15 runtime remains fail-closed.
     g15_shared_bank1: Option<G15SharedBank1State>,
     handoff_rgn: UatRegion,
     ttbs_rgn: UatRegion,
@@ -1694,13 +1706,35 @@ impl Drop for VmInner {
         // Make sure this VM is not mapped to a TTB if it was
         if let Some(token) = binding.bind_token.take() {
             let idx = (token.last_slot() as usize) + UAT_USER_CTX_START;
-            let ttb = self.ttb() | TTBR_VALID | (idx as u64) << TTBR_ASID_SHIFT;
 
             let uat_inner = self.uat_inner.lock();
             uat_inner.handoff().lock();
             let handoff_cur = uat_inner.handoff().current_slot();
             let ttb_cur = uat_inner.ttbs()[idx].ttb0.load(Ordering::SeqCst);
-            let inval = ttb_cur == ttb;
+            let ttb1_cur = uat_inner.ttbs()[idx].ttb1.load(Ordering::SeqCst);
+            let (expected_ttb, expected_ttb1, g15_banked) =
+                if let Some(bank1) = uat_inner.g15_shared_bank1.as_ref() {
+                    (
+                        g15_gptbat_bank0(self.ttb(), idx as u8),
+                        g15_gptbat_bank1(self.ttb(), bank1.ttb(), idx as u8),
+                        true,
+                    )
+                } else {
+                    (
+                        self.ttb() | TTBR_VALID | (idx as u64) << TTBR_ASID_SHIFT,
+                        if uat_inner.map_kernel_to_user {
+                            uat_inner.kernel_ttb1 | TTBR_VALID | (idx as u64) << TTBR_ASID_SHIFT
+                        } else {
+                            0
+                        },
+                        false,
+                    )
+                };
+            let inval = if g15_banked {
+                ttb_cur == expected_ttb && ttb1_cur == expected_ttb1
+            } else {
+                ttb_cur == expected_ttb
+            };
             if inval {
                 if handoff_cur == Some(idx as u32) {
                     pr_err!(
@@ -1708,8 +1742,19 @@ impl Drop for VmInner {
                         idx
                     );
                 }
-                uat_inner.ttbs()[idx].ttb0.store(0, Ordering::SeqCst);
-                uat_inner.ttbs()[idx].ttb1.store(0, Ordering::SeqCst);
+                if g15_banked {
+                    // Apple invalidateGPTBATEntry() preserves both roots/context IDs
+                    // and clears only the valid bit in both adjacent qwords.
+                    uat_inner.ttbs()[idx]
+                        .ttb0
+                        .store(ttb_cur & !TTBR_VALID, Ordering::SeqCst);
+                    uat_inner.ttbs()[idx]
+                        .ttb1
+                        .store(ttb1_cur & !TTBR_VALID, Ordering::SeqCst);
+                } else {
+                    uat_inner.ttbs()[idx].ttb0.store(0, Ordering::SeqCst);
+                    uat_inner.ttbs()[idx].ttb1.store(0, Ordering::SeqCst);
+                }
             }
             uat_inner.handoff().unlock();
             core::mem::drop(uat_inner);
@@ -1794,8 +1839,7 @@ impl Uat {
     }
 
     /// Returns a mapping handle for G15's accelerator-shared bank 1 when the
-    /// hardware configuration provides the 42-bit banked UAT. The root is
-    /// deliberately not published to client SlotTTBS yet.
+    /// hardware configuration provides the 42-bit banked UAT.
     pub(crate) fn g15_shared_bank1(&self) -> Option<G15SharedBank1> {
         if self.inner.lock().g15_shared_bank1.is_some() {
             Some(G15SharedBank1 {
@@ -1826,14 +1870,31 @@ impl Uat {
             if slot.changed() {
                 mod_pr_debug!("Vm Bind [{}]: bind_token={:?}\n", vm.id, slot.token(),);
                 let idx = (slot.slot() as usize) + UAT_USER_CTX_START;
-                let ttb = binding.ttb | TTBR_VALID | (idx as u64) << TTBR_ASID_SHIFT;
-
                 let uat_inner = self.inner.lock();
 
-                let ttb1 = if uat_inner.map_kernel_to_user {
-                    uat_inner.kernel_ttb1 | TTBR_VALID | (idx as u64) << TTBR_ASID_SHIFT
+                let (ttb, ttb1) = if let Some(bank1) = uat_inner.g15_shared_bank1.as_ref() {
+                    let bank1_root = bank1.ttb();
+                    if !g15_gptbat_roots_fit(binding.ttb, bank1_root) {
+                        dev_err!(
+                            self.dev.as_ref(),
+                            "MMU: G15 GPTBAT roots exceed 42-bit OAS ({:#x}, {:#x})\n",
+                            binding.ttb,
+                            bank1_root
+                        );
+                        return Err(EINVAL);
+                    }
+                    (
+                        g15_gptbat_bank0(binding.ttb, idx as u8),
+                        g15_gptbat_bank1(binding.ttb, bank1_root, idx as u8),
+                    )
                 } else {
-                    0
+                    let ttb0 = binding.ttb | TTBR_VALID | (idx as u64) << TTBR_ASID_SHIFT;
+                    let ttb1 = if uat_inner.map_kernel_to_user {
+                        uat_inner.kernel_ttb1 | TTBR_VALID | (idx as u64) << TTBR_ASID_SHIFT
+                    } else {
+                        0
+                    };
+                    (ttb0, ttb1)
                 };
 
                 let ttbs = uat_inner.ttbs();
@@ -1972,7 +2033,7 @@ impl Uat {
         if let Some(bank1) = inner.g15_shared_bank1.as_ref() {
             dev_info!(
                 dev.as_ref(),
-                "MMU: G15 shared bank-1 root prepared at {:#x} (not published)\n",
+                "MMU: G15 shared bank-1 root prepared at {:#x}\n",
                 bank1.ttb()
             );
         }
