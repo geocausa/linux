@@ -1954,9 +1954,18 @@ impl super::QueueInner::ver {
                                 g15_ta_stencil_level_reg(cmdbuf.stencil_level_offset);
                             // Dynamic G15G/C0 0x10799 gates on descriptor +0x1178, i.e.
                             // the low dword of the same depth level state. Its nonzero branch
-                            // still depends on unresolved raw +0x670 GPU-gather state.
+                            // consumes raw +0x670 low32, which Apple sources from the render
+                            // encoder/context globalTraceObjectID. That userspace trace ID is
+                            // distinct from JobMeta.uuid; do not substitute the kernel UUID.
                             let g15_ta_depth_level_low_present =
                                 (cmdbuf.depth_level_offset & 0xffff_ffff) != 0;
+                            // The optional 0x1ca10/0x14a1/0xa349 group is gated by the same
+                            // AGXPerfCtrSampler state as the already-proven Fragment perf tail.
+                            // Fresh/default sampler +0x34/+0x54 are zero, so ordinary Linux
+                            // rendering must omit these entries entirely. If G15 performance
+                            // sampling is implemented later, Apple packs
+                            // (u64(raw_render_u32[+0x608]) << 32) | JobMeta.uuid into all three.
+                            let g15_ta_perf_feature_value: Option<u64> = None;
                             // TA 0x1a099 shares the exact raw +0x638 initial-clear source
                             // with Fragment 0x1a0a9. The explicit UAPI flag deliberately
                             // does not alias PROCESS_EMPTY_TILES.
@@ -2006,6 +2015,7 @@ impl super::QueueInner::ver {
                                 g15_ta_depth_level_reg_101c9,
                                 g15_ta_stencil_level_reg_d471,
                                 g15_ta_depth_level_low_present,
+                                g15_ta_perf_feature_value,
                                 g15_ta_clear_reg_1a099,
                                 g15_ta_pm_scene,
                                 g15_ta_pm_metrics_1c910,
