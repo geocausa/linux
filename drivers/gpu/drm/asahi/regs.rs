@@ -55,8 +55,57 @@ const fn g15_mgpu_count_from_id_counts_1(id_counts_1: u32) -> u32 {
     ((id_counts_1 >> 8) & 0xff) * ((id_counts_1 >> 16) & 0xf)
 }
 
+// Apple G15 readChipInfo() has an explicit generation-7 core-ID switch.
+// Core IDs are independently named by Apple's kAGXGPUCoreName[] table.
+// Variant 1 deliberately remains unresolved here: the G15 subclass leaves
+// the pre-existing CoreConfig value untouched for that case. Variant 4 is
+// assigned G15C only when ID_COUNTS_1[19:16] == 1, exactly as Apple gates it.
+const fn g15_core_from_ids(id_version: u32, id_counts_1: u32) -> Option<hw::GpuCore> {
+    if (id_version >> 24) != 7 {
+        return None;
+    }
+
+    match (id_version >> 16) & 0xff {
+        0 => Some(hw::GpuCore::G15P),
+        2 => Some(hw::GpuCore::G15G),
+        3 => Some(hw::GpuCore::G15S),
+        4 if ((id_counts_1 >> 16) & 0xf) == 1 => Some(hw::GpuCore::G15C),
+        _ => None,
+    }
+}
+
+const fn g15_core_id_or_zero(id_version: u32, id_counts_1: u32) -> u32 {
+    match g15_core_from_ids(id_version, id_counts_1) {
+        Some(core) => core as u32,
+        None => 0,
+    }
+}
+
+// CoreConfig +0x44 is the width of one MGPU's entry in Apple's exported
+// `core_mask_list`. G15 normally takes ID_COUNTS_1[7:0]; the G15S case
+// explicitly forces that width to 10 before publishing the topology.
+const fn g15_cores_per_mgpu_from_ids(id_version: u32, id_counts_1: u32) -> u32 {
+    if (id_version >> 24) == 7 && ((id_version >> 16) & 0xff) == 3 {
+        10
+    } else {
+        id_counts_1 & 0xff
+    }
+}
+
 // Exact J615 ID_COUNTS_1 captured from the target: 0x0011010a.
 const _: [(); 1] = [(); g15_mgpu_count_from_id_counts_1(0x0011_010a) as usize];
+const _: [(); 10] = [(); g15_cores_per_mgpu_from_ids(0x0702_0000, 0x0011_010a) as usize];
+// Pin Apple's G15S override independently of the low byte supplied here.
+const _: [(); 10] = [(); g15_cores_per_mgpu_from_ids(0x0703_0000, 0x0011_0114) as usize];
+// Pin Apple's generation-7 switch and exact kAGXGPUCoreName[] IDs without
+// making get_gpu_id() accept generation 7 yet. The low 16 revision bits are
+// immaterial to this decoder, hence zero in these compile-time probes.
+const _: [(); 21] = [(); g15_core_id_or_zero(0x0700_0000, 0x0011_010a) as usize];
+const _: [(); 22] = [(); g15_core_id_or_zero(0x0702_0000, 0x0011_010a) as usize];
+const _: [(); 23] = [(); g15_core_id_or_zero(0x0703_0000, 0x0011_010a) as usize];
+const _: [(); 24] = [(); g15_core_id_or_zero(0x0704_0000, 0x0011_010a) as usize];
+const _: [(); 0] = [(); g15_core_id_or_zero(0x0701_0000, 0x0011_010a) as usize];
+const _: [(); 0] = [(); g15_core_id_or_zero(0x0704_0000, 0x0012_010a) as usize];
 
 /// Enum representing the unit that caused an MMU fault.
 #[allow(non_camel_case_types)]

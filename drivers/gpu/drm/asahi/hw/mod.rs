@@ -70,6 +70,17 @@ pub(crate) enum GpuCore {
     G14S = 16,
     G14C = 17,
     G14D = 18, // Split out, unlike G13D
+    // Exact Apple kAGXGPUCoreName[] indices from the G15 host driver.
+    // These are firmware/core ABI IDs only; adding them does not enable
+    // generation-7 runtime matching or extend the public GpuGen UABI.
+    #[allow(dead_code)]
+    G15M = 19,
+    #[allow(dead_code)]
+    G15PAgx2 = 20, // Apple string: G15P_AGX2
+    G15P = 21,
+    G15G = 22,
+    G15S = 23,
+    G15C = 24,
 }
 
 /// GPU revision ID. Note: Part of the firmware ABI.
