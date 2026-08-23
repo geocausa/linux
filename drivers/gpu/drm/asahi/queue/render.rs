@@ -171,11 +171,19 @@ const fn g15_ta_dynamic_reg_10799(level_offset: u64, encoder_id: u32) -> u32 {
     }
 }
 
+// G15 duplicates the stencil CompressionMetadata base/stride into raw Render
+// +0x1a8/+0x1b0. The TA generator folds that pair into one 64-bit register.
+const fn g15_ta_stencil_comp_packed_reg(comp_base: u64, comp_stride: u32) -> u64 {
+    (comp_base & !0x1f) | ((comp_stride as u64) << 32)
+}
+
 const _: [(); 0x10000] = [(); g15_ta_depth_level_reg(0x1_0000_0000) as usize];
 const _: [(); 0x80] = [(); g15_ta_depth_level_reg(0x10_0080) as usize];
 const _: [(); 0x42] = [(); g15_ta_stencil_level_reg(0x1_0000_0042) as usize];
 const _: [(); 0x00ff_0000] = [(); g15_ta_dynamic_reg_10799(0, 0x1234) as usize];
 const _: [(); 0x0142_0000] = [(); g15_ta_dynamic_reg_10799(0x80, 0x42) as usize];
+const _: [(); 0x1234_0000_6780] =
+    [(); g15_ta_stencil_comp_packed_reg(0x0000_0000_0000_6780, 0x1234) as usize];
 
 // Default/zero raw mode reduces 0x10039 to Linux's historical tile_config
 // composition. These constants also pin the non-default selector branches.
@@ -1954,6 +1962,9 @@ impl super::QueueInner::ver {
                             // RegisterArray branch below, so explicitly consume its shared
                             // locals here without using them as G15 producers.
                             let _g15_legacy_iogpu_pair = (iogpu_unk54, iogpu_unk56);
+                            // Likewise keep the legacy third-preempt accessor compiled for
+                            // shared Scene layout coverage, but do not use it as G15 TA 0x1c950.
+                            let _g15_legacy_preempt3 = inner.scene.preempt_buf_3_pointer();
                             // Apple endRenderPassCommon() explicitly zeros raw Render
                             // +0x1b8 on the current command before submission. The G15 TA
                             // generator masks its low five bits into both 0x12099 and the
@@ -1982,6 +1993,17 @@ impl super::QueueInner::ver {
                                 (cmdbuf.stencil.comp_stride as u64) & !0xff;
                             let g15_ta_stencil_base_reg_1c1b9 =
                                 cmdbuf.stencil.base & !0xff;
+                            // Framebuffer construction stores the same stencil
+                            // CompressionMetadata base at +0xff0/+0xff8 and the same metadata
+                            // stride at +0x1008/+0x1018. assignRenderRegisters publishes the
+                            // latter duplicate pair at raw +0x1a8/+0x1b0; G15 TA packs it into
+                            // 0x1c950. This register is therefore not the legacy third preempt
+                            // buffer on G15.
+                            let g15_ta_stencil_comp_packed_reg_1c950 =
+                                g15_ta_stencil_comp_packed_reg(
+                                    cmdbuf.stencil.comp_base,
+                                    cmdbuf.stencil.comp_stride,
+                                );
                             // TA 0x10151 is gated by descriptor +0xd10, the
                             // 128-byte-aligned selected stencil mip-level offset. Descriptor
                             // +0xd38 is zero-initialized and has no TA-path writer, reducing
@@ -2101,6 +2123,7 @@ impl super::QueueInner::ver {
                                 g15_ta_stencil_comp_base_reg_1c1a9,
                                 g15_ta_stencil_comp_stride_reg_1c1b1,
                                 g15_ta_stencil_base_reg_1c1b9,
+                                g15_ta_stencil_comp_packed_reg_1c950,
                                 g15_ta_stencil_level_enable_10151,
                                 g15_ta_mode_reg_1c8f8,
                                 g15_ta_memoryless_reg_1a0a1,
@@ -2127,7 +2150,6 @@ impl super::QueueInner::ver {
                                 vtx_unk_118,
                                 inner.scene.preempt_buf_1_pointer(),
                                 inner.scene.preempt_buf_2_pointer(),
-                                inner.scene.preempt_buf_3_pointer(),
                             );
                         },
                     ),
