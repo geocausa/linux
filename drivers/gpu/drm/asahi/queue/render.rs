@@ -1934,6 +1934,17 @@ impl super::QueueInner::ver {
                             // 0x1c031/0x1c9c0 tag is controlled by accelerator +0x650
                             // bit 21. Base configureDevice() clears that bit and G15/G15G
                             // never set it, so exact J615 keeps the high-bit tag set.
+                            // Apple seeds every G15 TA list with encoded register 0x1748 = 1.
+                            // It adds encoded 0x17e1 = 1 exactly when descriptor +0x1178,
+                            // the zero-extended low dword of the selected depth mip-level
+                            // offset, is nonzero. Keep both list-header producers explicit.
+                            let g15_ta_seed_1748: u64 = 1;
+                            let g15_ta_seed_17e1: Option<u64> =
+                                if (cmdbuf.depth_level_offset as u32) != 0 {
+                                    Some(1)
+                                } else {
+                                    None
+                                };
                             let g15_ta_tiler_mode_10141 = G15_LINUX_TILER_MODE_10141;
                             let g15_ta_tilemap = inner.scene.tvb_tilemap_pointer();
                             let g15_ta_layermeta = inner.scene.tvb_layermeta_pointer();
@@ -2140,6 +2151,8 @@ impl super::QueueInner::ver {
                             let g15_ta_pm_metrics_1c910 =
                                 buffer::g15_pm_page_metrics_reg_1c910(g15_pm_page_metrics_gpuva);
                             let _ = (
+                                g15_ta_seed_1748,
+                                g15_ta_seed_17e1,
                                 g15_ta_tiler_mode_10141,
                                 // RTM-backed G15 TA producer pairs:
                                 // 0x1c039/0x1c9c8 = tilemap;
