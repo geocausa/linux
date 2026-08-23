@@ -1951,6 +1951,19 @@ impl super::QueueInner::ver {
                                 (cmdbuf.stencil.comp_stride as u64) & !0xff;
                             let g15_ta_stencil_base_reg_1c1b9 =
                                 cmdbuf.stencil.base & !0xff;
+                            // TA 0x10151 is gated by descriptor +0xd10, the
+                            // 128-byte-aligned selected stencil mip-level offset. Descriptor
+                            // +0xd38 is zero-initialized and has no TA-path writer, reducing
+                            // Apple's `(d38 << 8) | 1` branch to a boolean enable.
+                            let g15_ta_stencil_level_enable_10151: u64 =
+                                if (cmdbuf.stencil_level_offset & !0x7f) != 0 { 1 } else { 0 };
+                            // Normal beginRenderPass() zeroes the entire 0x870-byte raw body.
+                            // Raw +0x1c4 has no Render-command writer afterwards; the only
+                            // userspace stores at displacement 0x1c4 belong to unrelated
+                            // ProgramVariant objects. processRenderSetup copies this zero byte
+                            // to descriptor +0xf49. J615 has one MGPU, so G15's alternate
+                            // `| 0x1c` multi-GPU term is absent and 0x1c8f8 is exactly 0x8860.
+                            let g15_ta_mode_reg_1c8f8: u64 = 0x8860;
                             // The direct raw +0x640..+0x660 extension is shared with
                             // Fragment. +0x640 is Apple's memoryless-render bit, unsupported
                             // by current Linux; +0x648/+0x650/+0x658 are VRS/rasterization-
@@ -2055,6 +2068,8 @@ impl super::QueueInner::ver {
                                 g15_ta_stencil_comp_base_reg_1c1a9,
                                 g15_ta_stencil_comp_stride_reg_1c1b1,
                                 g15_ta_stencil_base_reg_1c1b9,
+                                g15_ta_stencil_level_enable_10151,
+                                g15_ta_mode_reg_1c8f8,
                                 g15_ta_memoryless_reg_1a0a1,
                                 g15_ta_vrs_reg_1a069,
                                 g15_ta_vrs_reg_1a071,
