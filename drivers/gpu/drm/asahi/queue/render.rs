@@ -411,8 +411,8 @@ impl super::QueueInner::ver {
         // Apple AGXCommandQueue::processRenderSetup() advances the selected
         // AGXParameterManagement +0x2c record index after command validation and
         // before descriptor loading. The PM object is AGX3DWorkQueue-owned, which
-        // matches this QueueInner lifetime. Keep only the proven ring/offset state
-        // here; PM backing resources and RegisterArray emission remain disabled.
+        // matches this QueueInner lifetime. The range-5/range-7 PM resources are
+        // now reconstructed; only G15 RegisterArray emission remains disabled.
         #[ver(G == G15)]
         let g15_pm_record_index = {
             let current = self
@@ -435,6 +435,13 @@ impl super::QueueInner::ver {
         let g15_pm_record_gpuva: u64 = self
             .g15_pm_records
             .gpu_offset_pointer(g15_pm_record_index as usize)
+            .into();
+        #[ver(G == G15)]
+        let g15_pm_page_metrics_gpuva: u64 = self
+            ._g15_pm_page_metrics
+            .gpu_offset_pointer(buffer::g15_j615_pm_page_metrics_slot_offset(
+                g15_pm_record_index,
+            ))
             .into();
 
         let vm_bind = job.vm_bind.clone();
@@ -826,7 +833,7 @@ impl super::QueueInner::ver {
                     #[ver(G == G15)]
                     g15_buffer_fwva_28: U64(inner.scene.buffer_pointer().into()),
                     #[ver(G == G15)]
-                    g15_pm_record_fwva_30: U64(0),
+                    g15_pm_record_fwva_30: U64(g15_pm_record_gpuva),
                     #[ver(G == G15)]
                     g15_pm_state_fwva_38: U64(0),
                     #[ver(G != G15)]
@@ -1051,11 +1058,10 @@ impl super::QueueInner::ver {
                             // sampler state makes that outer gate false, so they are not part
                             // of the base render list and stay absent until G15 perf sampling
                             // has its own independently correct lifecycle.
-                            // PM registers 0x1ca28 (3D) and 0x1ca30/0x16c39/0x1c910 (TA)
-                            // are also source-closed: Apple G15 uses per-slot slices of its
-                            // Parameter Scene Allocations resource plus a separate PM page-metrics
-                            // array. Linux does not implement those G15 PM lifecycles yet, so do
-                            // not emit them from legacy scene/buffer pointers.
+                            // PM register 0x1ca28 is now fully constructible from the
+                            // reconstructed per-slot Parameter Scene Allocations resource. Keep
+                            // it non-emitting with the rest of the G15 RegisterArray until the
+                            // complete base list crosses the runtime-enablement boundary.
                             // RTM/common formulas independently matched to the existing
                             // kernel-owned geometry producers. Keep these typed here so later
                             // list import cannot silently drift while G15 emission is disabled.
@@ -1092,6 +1098,7 @@ impl super::QueueInner::ver {
                                 cmdbuf.layers as u32,
                                 tile_info.params.te_screen,
                             );
+                            let g15_pm_scene_reg_1ca28 = g15_pm_scene_slice_gpuva & !0xf;
                             let _ = (
                                 g15_fb_dimensions,
                                 g15_blocks_per_utile,
@@ -1106,7 +1113,9 @@ impl super::QueueInner::ver {
                                 g15_pm_record_index,
                                 g15_pm_scene_slice_offset,
                                 g15_pm_scene_slice_gpuva,
+                                g15_pm_scene_reg_1ca28,
                                 g15_pm_record_gpuva,
+                                g15_pm_page_metrics_gpuva,
                                 load_bgobjvals,
                                 inner.scene.tvb_tilemap_pointer(),
                                 inner.scene.tvb_heapmeta_pointer(),
@@ -1776,6 +1785,14 @@ impl super::QueueInner::ver {
                                 .scene
                                 .tvb_heapmeta_pointer()
                                 .or(0x8000_0000_0000_0000);
+                            // Exact Apple PM tail of the normal TA list:
+                            // 0x1ca30 = record+0x28 & ~0xf;
+                            // encoded 32-bit 0x16c39 carries the same source value;
+                            // 0x1c910 is synthesized from record+0x00 (the selected
+                            // four-byte PMPageMetricsBuffer slot in shared range 7).
+                            let g15_ta_pm_scene = g15_pm_scene_slice_gpuva & !0xf;
+                            let g15_ta_pm_metrics_1c910 =
+                                buffer::g15_pm_page_metrics_reg_1c910(g15_pm_page_metrics_gpuva);
                             let _ = (
                                 g15_ta_tiler_mode_10141,
                                 // RTM-backed G15 TA producer pairs:
@@ -1801,9 +1818,12 @@ impl super::QueueInner::ver {
                                 g15_ta_render_target_max,
                                 g15_ta_render_target_max_masked,
                                 g15_ta_heapmeta_tagged,
+                                g15_ta_pm_scene,
+                                g15_ta_pm_metrics_1c910,
                                 g15_pm_record_index,
                                 g15_pm_scene_slice_offset,
                                 g15_pm_scene_slice_gpuva,
+                                g15_pm_page_metrics_gpuva,
                                 iogpu_unk54,
                                 iogpu_unk56,
                                 vtx_unk_118,

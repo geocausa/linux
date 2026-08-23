@@ -296,12 +296,17 @@ const fn g15_pm_page_metrics_bytes(record_count: usize) -> usize {
 pub(crate) const G15_J615_PM_PAGE_METRICS_BYTES: usize =
     g15_pm_page_metrics_bytes(G15_J615_PM_RECORD_COUNT);
 
+/// Offset of one record's four-byte PMPageMetricsBuffer slot.
+pub(crate) const fn g15_j615_pm_page_metrics_slot_offset(record_index: u32) -> usize {
+    (record_index as usize % G15_J615_PM_RECORD_COUNT) * G15_PM_PAGE_METRICS_SLOT_BYTES
+}
+
 /// Exact G15 TA register 0x1c910 encoding of a selected PMPageMetricsBuffer
 /// slot GPUVA. Apple places this resource in eGartRange 7. The transform folds
 /// source address bit 42 into result bit 39 and sets bit 0 as the enable bit.
-/// Keep the register emission fail-closed until the G15 bank-1 root is actually
-/// published in client TTB slots and the runtime path is enabled.
-const fn g15_pm_page_metrics_reg_1c910(gpuva: u64) -> u64 {
+/// RegisterArray emission remains fail-closed with the rest of the G15 list,
+/// but the value is now fully constructible from the compile-only resource.
+pub(crate) const fn g15_pm_page_metrics_reg_1c910(gpuva: u64) -> u64 {
     let prefix = if gpuva & 0x400_0000_0000 != 0 {
         0
     } else {
@@ -334,6 +339,9 @@ const _: [(); 0x280] = [(); g15_pm_fw_page_list_bytes(G15_J615_PM_RECORD_COUNT)]
 const _: [(); 0x80] = [(); G15_PM_PAGE_LIST_STATS_BYTES];
 const _: [(); 0x40] = [(); G15_PM_SCENE_STATS_OFFSET];
 const _: [(); 0x140] = [(); G15_J615_PM_PAGE_METRICS_BYTES];
+const _: [(); 0] = [(); g15_j615_pm_page_metrics_slot_offset(0)];
+const _: [(); 0x13c] = [(); g15_j615_pm_page_metrics_slot_offset(79)];
+const _: [(); 0] = [(); g15_j615_pm_page_metrics_slot_offset(80)];
 const _: [(); 0xa0] = [(); (g15_pm_page_metrics_reg_1c910(0xffff_fc20_0000_0000) >> 32) as usize];
 const _: [(); 0x4001] = [(); (g15_pm_page_metrics_reg_1c910(0xffff_fc20_0000_4000) & 0xffff) as usize];
 const _: [(); 0x30] = [(); g15_j615_pm_scene_stride(0x3366_0000)];
