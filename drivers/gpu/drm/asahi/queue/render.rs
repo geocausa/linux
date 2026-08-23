@@ -1648,7 +1648,17 @@ impl super::QueueInner::ver {
                             // Keep the existing helper inputs type-checked for the
                             // later G15 register reconstruction without emitting
                             // unproven register entries into this compile-only shell.
+                            // Apple TA descriptor +0xe58 is RTM +0x2a8, the same TVB
+                            // heap-metadata address used by Fragment 0x16098. Its
+                            // 0x1c031/0x1c9c0 tag is controlled by accelerator +0x650
+                            // bit 21. Base configureDevice() clears that bit and G15/G15G
+                            // never set it, so exact J615 keeps the high-bit tag set.
+                            let g15_ta_heapmeta_tagged = inner
+                                .scene
+                                .tvb_heapmeta_pointer()
+                                .or(0x8000_0000_0000_0000);
                             let _ = (
+                                g15_ta_heapmeta_tagged,
                                 iogpu_unk54,
                                 iogpu_unk56,
                                 vtx_unk_118,
