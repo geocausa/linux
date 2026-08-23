@@ -154,9 +154,28 @@ const fn g15_ta_stencil_level_reg(level_offset: u64) -> u64 {
     level_offset & 0xffff_ffff
 }
 
+// G15G/C0 obtains this 32-bit register number from accelerator vslot +0x1088
+// (base 0x10798). The register is constant 0xff0000 when the low dword of the
+// depth mip-level offset is zero. Otherwise Apple folds RenderContext +0x5e4
+// into bits 16..31 and forces bit 24. +0x5e4 is the render encoder's
+// globalTraceObjectID; shader-sampling code explicitly exposes the same value
+// as the GRC_ENCODER_ID counter and may replace it with a local monotonic
+// sampling ID. This is an encoder/correlation tag, not JobMeta.uuid. Linux's
+// global submission ID provides the same independent monotonically increasing
+// identity without coupling it to the command-descriptor UUID namespace.
+const fn g15_ta_dynamic_reg_10799(level_offset: u64, encoder_id: u32) -> u32 {
+    if (level_offset as u32) == 0 {
+        0x00ff_0000
+    } else {
+        encoder_id.wrapping_shl(16) | 0x0100_0000
+    }
+}
+
 const _: [(); 0x10000] = [(); g15_ta_depth_level_reg(0x1_0000_0000) as usize];
 const _: [(); 0x80] = [(); g15_ta_depth_level_reg(0x10_0080) as usize];
 const _: [(); 0x42] = [(); g15_ta_stencil_level_reg(0x1_0000_0042) as usize];
+const _: [(); 0x00ff_0000] = [(); g15_ta_dynamic_reg_10799(0, 0x1234) as usize];
+const _: [(); 0x0142_0000] = [(); g15_ta_dynamic_reg_10799(0x80, 0x42) as usize];
 
 // Default/zero raw mode reduces 0x10039 to Linux's historical tile_config
 // composition. These constants also pin the non-default selector branches.
@@ -1991,11 +2010,13 @@ impl super::QueueInner::ver {
                                 g15_ta_stencil_level_reg(cmdbuf.stencil_level_offset);
                             // Dynamic G15G/C0 0x10799 gates on descriptor +0x1178, i.e.
                             // the low dword of the same depth level state. Its nonzero branch
-                            // consumes raw +0x670 low32, which Apple sources from the render
-                            // encoder/context globalTraceObjectID. That userspace trace ID is
-                            // distinct from JobMeta.uuid; do not substitute the kernel UUID.
-                            let g15_ta_depth_level_low_present =
-                                (cmdbuf.depth_level_offset & 0xffff_ffff) != 0;
+                            // consumes raw +0x670 low32, Apple's render encoder correlation ID.
+                            // Keep this namespace independent from JobMeta.uuid just as Apple
+                            // does; the driver-global submission ID is the Linux encoder tag.
+                            let g15_ta_dynamic_reg_10799 = g15_ta_dynamic_reg_10799(
+                                cmdbuf.depth_level_offset,
+                                id as u32,
+                            );
                             // Normal Apple G15 beginRenderPass() sets raw +0x1c8, so TA
                             // 0x1ca48 is part of the ordinary list. AGXTAChannel owns one
                             // option-0x3 range-5 payload resource; J615 topology yields an
@@ -2078,7 +2099,7 @@ impl super::QueueInner::ver {
                                 g15_ta_sampled_reg_1a0f1,
                                 g15_ta_depth_level_reg_101c9,
                                 g15_ta_stencil_level_reg_d471,
-                                g15_ta_depth_level_low_present,
+                                g15_ta_dynamic_reg_10799,
                                 g15_ta_object_payload_reg_1ca48,
                                 g15_ta_param_buffer_id_1c830,
                                 g15_ta_perf_feature_value,
