@@ -1685,6 +1685,13 @@ impl super::QueueInner::ver {
                             let g15_ta_tiles_per_mtile: u64 =
                                 tile_info.params.tiles_per_mtile.into();
                             let g15_ta_tpc_stride: u64 = tile_info.params.tpc_stride.into();
+                            // Apple G15 desc +0xe18 is the first GTP-only RTM subregion.
+                            // Its size is 0x80 * utiles_per_mtile * layers * MGPUs,
+                            // algebraically matching Linux TPC storage, and the established
+                            // G14X RegisterArray maps the same 0x1c0a1 register to TE_TPC_ADDR.
+                            // Keep this producer type-checked only until the G15 array is
+                            // enabled as a whole.
+                            let g15_ta_tpc_pointer = inner.scene.tpc_pointer();
                             let g15_ta_geom_const_88: u64 = 0x88;
                             let g15_ta_geom_const_100: u64 = 0x100;
                             let g15_ta_process_empty_tiles = cmdbuf.flags
@@ -1718,6 +1725,7 @@ impl super::QueueInner::ver {
                                 g15_ta_te_mtile2,
                                 g15_ta_tiles_per_mtile,
                                 g15_ta_tpc_stride,
+                                g15_ta_tpc_pointer,
                                 g15_ta_geom_const_88,
                                 g15_ta_geom_const_100,
                                 g15_ta_render_target_max,
