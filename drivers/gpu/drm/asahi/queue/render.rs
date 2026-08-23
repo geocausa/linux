@@ -696,7 +696,7 @@ impl super::QueueInner::ver {
                     #[ver(G == G15)]
                     g15_zero_28: U64(0),
                     #[ver(G == G15)]
-                    g15_pm_table_fwva_30: U64(0),
+                    g15_pm_record_fwva_30: U64(0),
                     #[ver(G == G15)]
                     g15_pm_state_fwva_38: U64(0),
                     #[ver(G != G15)]

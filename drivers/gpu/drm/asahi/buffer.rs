@@ -138,20 +138,26 @@ const _: [(); 0x40] = [(); core::mem::offset_of!(G15PmRecord, scene_stats_fwva)]
 
 /// `AGXParameterManagement::init()` allocates the record pool as
 /// `(record_count * 0x80) | 0x40`. Since every record starts on a 0x80
-/// boundary, the final OR reserves one trailing 0x40-byte region. J615 also
+/// boundary, the final OR reserves one trailing 0x40-byte state region. The
+/// GPUVA immediately after the records is retained at PM +0xb8 and exported
+/// through the G15 3D work-command header at +0x38. J615 also
 /// allocates a separate eight-byte-per-record "Firmware Page List Entries"
 /// resource and an exact 0x80-byte
 /// "Firmware Page List Entries, Parameter Scene statistics" resource.
 /// Record +0x40 is the FWVA of the latter resource at offset +0x40, i.e. the
 /// Parameter Scene statistics half. These remain allocation geometry only.
 const G15_PM_RECORD_BYTES: usize = 0x80;
-const G15_PM_RECORD_POOL_TAIL_BYTES: usize = 0x40;
+const G15_PM_STATE_BYTES: usize = 0x40;
 const G15_PM_FW_PAGE_LIST_ENTRY_BYTES: usize = 8;
 const G15_PM_PAGE_LIST_STATS_BYTES: usize = 0x80;
 const G15_PM_SCENE_STATS_OFFSET: usize = 0x40;
 
+const fn g15_pm_state_offset(record_count: usize) -> usize {
+    record_count * G15_PM_RECORD_BYTES
+}
+
 const fn g15_pm_record_pool_bytes(record_count: usize) -> usize {
-    (record_count * G15_PM_RECORD_BYTES) | G15_PM_RECORD_POOL_TAIL_BYTES
+    g15_pm_state_offset(record_count) | G15_PM_STATE_BYTES
 }
 
 const fn g15_pm_fw_page_list_bytes(record_count: usize) -> usize {
@@ -186,6 +192,7 @@ const fn g15_j615_pm_scene_stride(pb_max_size: usize) -> usize {
 const _: [(); 4] = [(); G15_PM_DEVICE_CONFIG.usage_page_granule];
 const _: [(); 0x50] = [(); G15_J615_PM_RECORD_COUNT];
 const _: [(); 0x24] = [(); G15_J615_PM_SCENE_GROUP_COUNT];
+const _: [(); 0x2800] = [(); g15_pm_state_offset(G15_J615_PM_RECORD_COUNT)];
 const _: [(); 0x2840] = [(); g15_pm_record_pool_bytes(G15_J615_PM_RECORD_COUNT)];
 const _: [(); 0x280] = [(); g15_pm_fw_page_list_bytes(G15_J615_PM_RECORD_COUNT)];
 const _: [(); 0x80] = [(); G15_PM_PAGE_LIST_STATS_BYTES];

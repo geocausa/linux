@@ -324,8 +324,13 @@ pub(crate) mod raw {
         // rewrites +0x758, so the identity FWVA conversion exports zero here.
         #[ver(G == G15)]
         pub(crate) g15_zero_28: U64,
+        // loadParameterManagementData() selects one of the 80 PM records.
+        // PM +0xa8 is a host array of record GPUVAs, so descriptor +0x760
+        // (and therefore command +0x30) is the selected 0x80-byte record FWVA.
         #[ver(G == G15)]
-        pub(crate) g15_pm_table_fwva_30: U64,
+        pub(crate) g15_pm_record_fwva_30: U64,
+        // PM +0xb8 is the GPUVA immediately after the 80 records, i.e. the
+        // trailing 0x40-byte state at record-pool offset 0x2800.
         #[ver(G == G15)]
         pub(crate) g15_pm_state_fwva_38: U64,
         #[ver(G != G15)]
@@ -546,7 +551,7 @@ pub(crate) mod raw {
     const _: [(); 0x10] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_pad_10)];
     const _: [(); 0x20] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_cmd_buffer_state_398_20)];
     const _: [(); 0x28] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_zero_28)];
-    const _: [(); 0x30] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_pm_table_fwva_30)];
+    const _: [(); 0x30] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_pm_record_fwva_30)];
     const _: [(); 0x38] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_pm_state_fwva_38)];
     const _: [(); 0x40] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_rtm_298_addr_40)];
     const _: [(); 0x48] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_rtm_b0_48)];
