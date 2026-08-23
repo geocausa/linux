@@ -170,6 +170,13 @@ const _: [(); 0] = [(); g15_apple_gart_range(0x300_0000_0000) as usize];
 const _: [(); 7] = [(); g15_apple_gart_range(0xffff_fc20_0000_0000) as usize];
 const _: [(); 7] = [(); g15_apple_gart_range(0xffff_fc20_0bff_ffff) as usize];
 const _: [(); 8] = [(); g15_apple_gart_range(0xffff_fc20_0c00_0000) as usize];
+
+/// Apple G15 eGartRange 5. Parameter Scene Allocations and GTP/TPC use this
+/// per-client lower-address-space aperture. It is intentionally outside the
+/// current 39-bit DRM userspace ABI while remaining inside the 42-bit G15 UAT.
+pub(crate) const G15_GART_RANGE5: Range<u64> = 0x100_0000_0000..0x300_0000_0000;
+const _: [(); 1] = [(); (G15_GART_RANGE5.start >= (1u64 << UAT_USER_IAS)) as usize];
+const _: [(); 1] = [(); (G15_GART_RANGE5.end <= (1u64 << G15_HW_UAT_IAS)) as usize];
 /// Lower/user top VA.
 pub(crate) const IOVA_USER_TOP: u64 = 1 << UAT_USER_IAS;
 /// Lower/user VA range
@@ -1097,7 +1104,15 @@ impl Vm {
         let (va_range, gpuvm_range) = if is_kernel {
             (IOVA_KERN_RANGE, kernel_range.clone())
         } else {
-            (IOVA_USER_RANGE, IOVA_USER_USABLE_RANGE)
+            // Keep DRM GPUVM constrained to the stable 39-bit userspace ABI,
+            // but let driver-owned KernelMappings use the full hardware TTBR0
+            // input range. This is behavior-identical on current G13/G14
+            // configs (uat_ias=39) and permits G15's hidden range-5 mappings
+            // once a generation-7 HwConfig (uat_ias=42) exists.
+            (
+                IOVA_USER_BASE..(1u64 << cfg.uat_ias),
+                IOVA_USER_USABLE_RANGE,
+            )
         };
 
         let mm = mm::Allocator::new(va_range.start, va_range.range(), ())?;
