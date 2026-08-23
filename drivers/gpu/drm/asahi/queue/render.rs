@@ -1653,11 +1653,22 @@ impl super::QueueInner::ver {
                             // 0x1c031/0x1c9c0 tag is controlled by accelerator +0x650
                             // bit 21. Base configureDevice() clears that bit and G15/G15G
                             // never set it, so exact J615 keeps the high-bit tag set.
+                            let g15_ta_tilemap = inner.scene.tvb_tilemap_pointer();
+                            let g15_ta_layermeta = inner.scene.tvb_layermeta_pointer();
+                            let g15_ta_rgn_size: u64 = tile_info.params.rgn_size.into();
                             let g15_ta_heapmeta_tagged = inner
                                 .scene
                                 .tvb_heapmeta_pointer()
                                 .or(0x8000_0000_0000_0000);
                             let _ = (
+                                // RTM-backed G15 TA producer pairs:
+                                // 0x1c039/0x1c9c8 = tilemap;
+                                // 0x1c079/0x1c9d8 = layer metadata;
+                                // 0x1c0b1/0x1c850 = region-size dword;
+                                // 0x1c031/0x1c9c0 = tagged heap metadata.
+                                g15_ta_tilemap,
+                                g15_ta_layermeta,
+                                g15_ta_rgn_size,
                                 g15_ta_heapmeta_tagged,
                                 iogpu_unk54,
                                 iogpu_unk56,
