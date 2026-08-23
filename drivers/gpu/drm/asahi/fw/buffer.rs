@@ -149,7 +149,9 @@ pub(crate) mod raw {
         #[ver(G == G15)]
         pub(crate) g15_unk_4c: u32,
         #[ver(G == G15)]
-        pub(crate) g15_unk_50: U64,
+        // Normal Fragment completion reads the low dword and max-tracks it in
+        // Parameter Scene statistics +0x04. Producer semantics remain unknown.
+        pub(crate) g15_completion_stat_50: U64,
         #[ver(G == G15)]
         pub(crate) counter: GpuPointer<'a, super::Counter::ver>,
         #[ver(G == G15)]

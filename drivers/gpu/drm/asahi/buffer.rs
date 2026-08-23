@@ -116,25 +116,54 @@ const G15_J615_PM_EXTRA_SCENE_SLICES: usize = 1;
 struct G15PmRecord {
     page_metrics_gpuva: u64,
     page_metrics_fwva: u64,
-    zero_10: u64,
-    zero_18: u64,
+    // setupSceneState() initially zeroes these qwords, but normal Fragment
+    // completion later consumes the low dwords at +0x10 and +0x18. Keep the
+    // names direction-neutral until their producer is recovered.
+    completion_stat_10: u32,
+    opaque_14: u32,
+    completion_stat_18: u32,
+    opaque_1c: u32,
     zero_20: u64,
     scene_slice_gpuva: u64,
     shared_scene_slice_gpuva: u64,
     opaque_38: u64,
     scene_stats_fwva: u64,
-    opaque_48: [u8; 0x38],
+    // RTKit adds +0x10 + +0x18 into this persistent low-dword accumulator on
+    // every normal Fragment completion, then max-tracks it in scene statistics.
+    completion_accumulator_48: u32,
+    opaque_4c: [u8; 0x34],
+}
+
+/// The upper 0x40-byte half of Apple's exact 0x80-byte
+/// "Firmware Page List Entries, Parameter Scene statistics" resource.
+/// Normal Fragment completion accesses it through G15PmRecord +0x40.
+#[repr(C)]
+struct G15PmSceneStats {
+    max_record_accumulator_00: u32,
+    max_info_completion_stat_04: u32,
+    reset_cleared_08: u32,
+    reset_cleared_0c: u32,
+    opaque_10: [u8; 0x10],
+    // A nonzero value causes RTKit to clear +0/+4/+8/+0xc and this field
+    // before applying the current completion update.
+    reset_request_20: u32,
+    opaque_24: [u8; 0x1c],
 }
 
 const _: [(); 0x80] = [(); core::mem::size_of::<G15PmRecord>()];
 const _: [(); 0x00] = [(); core::mem::offset_of!(G15PmRecord, page_metrics_gpuva)];
 const _: [(); 0x08] = [(); core::mem::offset_of!(G15PmRecord, page_metrics_fwva)];
-const _: [(); 0x10] = [(); core::mem::offset_of!(G15PmRecord, zero_10)];
-const _: [(); 0x18] = [(); core::mem::offset_of!(G15PmRecord, zero_18)];
+const _: [(); 0x10] = [(); core::mem::offset_of!(G15PmRecord, completion_stat_10)];
+const _: [(); 0x18] = [(); core::mem::offset_of!(G15PmRecord, completion_stat_18)];
 const _: [(); 0x20] = [(); core::mem::offset_of!(G15PmRecord, zero_20)];
 const _: [(); 0x28] = [(); core::mem::offset_of!(G15PmRecord, scene_slice_gpuva)];
 const _: [(); 0x30] = [(); core::mem::offset_of!(G15PmRecord, shared_scene_slice_gpuva)];
 const _: [(); 0x40] = [(); core::mem::offset_of!(G15PmRecord, scene_stats_fwva)];
+const _: [(); 0x48] = [(); core::mem::offset_of!(G15PmRecord, completion_accumulator_48)];
+const _: [(); 0x40] = [(); core::mem::size_of::<G15PmSceneStats>()];
+const _: [(); 0x00] = [(); core::mem::offset_of!(G15PmSceneStats, max_record_accumulator_00)];
+const _: [(); 0x04] = [(); core::mem::offset_of!(G15PmSceneStats, max_info_completion_stat_04)];
+const _: [(); 0x20] = [(); core::mem::offset_of!(G15PmSceneStats, reset_request_20)];
 
 /// `AGXParameterManagement::init()` allocates the record pool as
 /// `(record_count * 0x80) | 0x40`. Since every record starts on a 0x80
@@ -521,7 +550,7 @@ impl Buffer::ver {
                     #[ver(G == G15)]
                     g15_unk_4c: 0,
                     #[ver(G == G15)]
-                    g15_unk_50: U64(0),
+                    g15_completion_stat_50: U64(0),
                     #[ver(G == G15)]
                     counter: inner.counter.gpu_pointer(),
                     #[ver(G == G15)]
