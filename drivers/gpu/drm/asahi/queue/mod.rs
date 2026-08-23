@@ -154,6 +154,12 @@ pub(crate) struct QueueInner {
     // still disabled; this only establishes the correct hidden-VA resource.
     #[ver(G == G15)]
     g15_pm_scene_alloc: GpuArray<u8>,
+    // Exact G15 TA-channel object-payload backing. Apple allocates one normal
+    // option-0x3 eGartRange-5 resource at channel initialization. J615's
+    // topology fixes its size at 0x80000 bytes. Register emission remains
+    // disabled; retaining the allocation here only reconstructs channel state.
+    #[ver(G == G15)]
+    g15_ta_object_payload: GpuArray<u8>,
     // Exact 0x2800 GPU-facing PM record backing. Apple uses range 5 with
     // compact PTE class 0x300; the separate 0x40 tail is intentionally absent.
     #[ver(G == G15)]
@@ -516,6 +522,12 @@ impl Queue::ver {
             .lock()
             .array_empty_tagged(buffer::G15_J615_PM_SCENE_ALLOC_BYTES, b"PMSC")?;
         #[ver(G == G15)]
+        let g15_ta_object_payload = _g15_ualloc_range5_uncached
+            .as_ref()
+            .ok_or(EINVAL)?
+            .lock()
+            .array_empty_tagged(buffer::G15_J615_TA_OBJECT_PAYLOAD_BYTES, b"TAOP")?;
+        #[ver(G == G15)]
         let mut g15_bank1_alloc = alloc::G15SharedBank1Allocator::new(
             dev,
             _g15_shared_bank1.ok_or(EINVAL)?,
@@ -586,6 +598,8 @@ impl Queue::ver {
                 g15_pm_record_index: AtomicU32::new(0),
                 #[ver(G == G15)]
                 g15_pm_scene_alloc,
+                #[ver(G == G15)]
+                g15_ta_object_payload,
                 #[ver(G == G15)]
                 g15_pm_records,
                 #[ver(G == G15)]

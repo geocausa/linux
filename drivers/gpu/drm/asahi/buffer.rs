@@ -114,6 +114,36 @@ const G15_J615_PM_EXTRA_SCENE_SLICES: usize = 1;
 pub(crate) const G15_J615_PM_SCENE_ALLOC_BYTES: usize =
     (G15_J615_PM_SCENE_GROUP_COUNT + G15_J615_PM_EXTRA_SCENE_SLICES) * 0x30;
 
+/// G15 TA-channel object-payload resource geometry. Apple's
+/// `AGXTAChannelG15::getObjectPayloadBufferSize()` computes
+/// `q = (num_gps << 17) / num_mgpus`, returns `num_mgpus * q` bytes, and
+/// stores `q >> 10` in the channel for register 0x1ca48. J615 has four GPS
+/// and one MGPU, so the exact allocation is 0x80000 bytes and the packed
+/// high field is 0x200. The resource is a normal eGartRange-5, option-0x3
+/// kernel resource and therefore uses the uncached G15 range-5 PTE class.
+const fn g15_ta_object_payload_bytes(num_gps: usize, num_mgpus: usize) -> usize {
+    let q = (num_gps << 17) / num_mgpus;
+    num_mgpus * q
+}
+
+const fn g15_ta_object_payload_units(num_gps: u64, num_mgpus: u64) -> u64 {
+    ((num_gps << 17) / num_mgpus) >> 10
+}
+
+pub(crate) const G15_J615_TA_OBJECT_PAYLOAD_BYTES: usize =
+    g15_ta_object_payload_bytes(4, 1);
+pub(crate) const G15_J615_TA_OBJECT_PAYLOAD_UNITS: u64 =
+    g15_ta_object_payload_units(4, 1);
+
+/// Exact G15 TA 0x1ca48 value. `bindAndRetainMeshRenderingBuffers()` uses the
+/// mapped kernel-resource base plus AGXResource +0x48. For `newKernelResource`
+/// the inherited placement wrapper forces that field to zero, so J615 uses the
+/// allocation GPUVA directly. The low 10 bits are discarded and the channel's
+/// payload-unit field is inserted at bit 48.
+pub(crate) const fn g15_ta_object_payload_reg_1ca48(gpuva: u64, units: u64) -> u64 {
+    (gpuva & !0x3ff) | (units << 48)
+}
+
 /// Host-side G15 parameter-management record layout. Apple allocates these at
 /// an exact 0x80-byte stride and publishes one record pointer per PM slot.
 ///
@@ -330,6 +360,11 @@ const fn g15_j615_pm_scene_stride(pb_max_size: usize) -> usize {
 // 16-GiB-class PB maximum is exactly Apple's 0x33660000 default, giving five
 // 0x1800-page groups and therefore a 0x30-byte per-scene PM slice.
 const _: [(); 4] = [(); G15_PM_DEVICE_CONFIG.usage_page_granule];
+const _: [(); 0x80000] = [(); G15_J615_TA_OBJECT_PAYLOAD_BYTES];
+const _: [(); 0x200] = [(); G15_J615_TA_OBJECT_PAYLOAD_UNITS as usize];
+const _: [(); 0x0200] = [();
+    (g15_ta_object_payload_reg_1ca48(0, G15_J615_TA_OBJECT_PAYLOAD_UNITS) >> 48) as usize
+];
 const _: [(); 0x50] = [(); G15_J615_PM_RECORD_COUNT];
 const _: [(); 0x24] = [(); G15_J615_PM_SCENE_GROUP_COUNT];
 const _: [(); 0x2800] = [(); g15_pm_state_offset(G15_J615_PM_RECORD_COUNT)];

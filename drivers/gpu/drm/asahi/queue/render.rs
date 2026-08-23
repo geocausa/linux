@@ -472,6 +472,8 @@ impl super::QueueInner::ver {
             .gpu_offset_pointer(g15_pm_scene_slice_offset)
             .into();
         #[ver(G == G15)]
+        let g15_ta_object_payload_gpuva: u64 = self.g15_ta_object_payload.gpu_pointer().into();
+        #[ver(G == G15)]
         let g15_pm_record_gpuva: u64 = self
             .g15_pm_records
             .gpu_offset_pointer(g15_pm_record_index as usize)
@@ -1959,6 +1961,17 @@ impl super::QueueInner::ver {
                             // distinct from JobMeta.uuid; do not substitute the kernel UUID.
                             let g15_ta_depth_level_low_present =
                                 (cmdbuf.depth_level_offset & 0xffff_ffff) != 0;
+                            // Normal Apple G15 beginRenderPass() sets raw +0x1c8, so TA
+                            // 0x1ca48 is part of the ordinary list. AGXTAChannel owns one
+                            // option-0x3 range-5 payload resource; J615 topology yields an
+                            // exact 0x80000-byte allocation and channel payload field 0x200.
+                            // The inherited kernel-resource placement offset is exactly zero,
+                            // making the bound address the allocation GPUVA itself.
+                            let g15_ta_object_payload_reg_1ca48 =
+                                buffer::g15_ta_object_payload_reg_1ca48(
+                                    g15_ta_object_payload_gpuva,
+                                    buffer::G15_J615_TA_OBJECT_PAYLOAD_UNITS,
+                                );
                             // The optional 0x1ca10/0x14a1/0xa349 group is gated by the same
                             // AGXPerfCtrSampler state as the already-proven Fragment perf tail.
                             // Fresh/default sampler +0x34/+0x54 are zero, so ordinary Linux
@@ -2015,6 +2028,7 @@ impl super::QueueInner::ver {
                                 g15_ta_depth_level_reg_101c9,
                                 g15_ta_stencil_level_reg_d471,
                                 g15_ta_depth_level_low_present,
+                                g15_ta_object_payload_reg_1ca48,
                                 g15_ta_perf_feature_value,
                                 g15_ta_clear_reg_1a099,
                                 g15_ta_pm_scene,
