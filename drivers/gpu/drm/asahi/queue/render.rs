@@ -1099,6 +1099,18 @@ impl super::QueueInner::ver {
                                 tile_info.params.te_screen,
                             );
                             let g15_pm_scene_reg_1ca28 = g15_pm_scene_slice_gpuva & !0xf;
+                            // Apple userspace G15G C0 initializes the raw Render command
+                            // with bzero(0x870).  The late +0x648/+0x650/+0x658 fields are
+                            // only populated when an MTLRasterizationRateMap implementation
+                            // exists; current Asahi UAPI/Mesa expose no such state and Mesa
+                            // explicitly disables fragment-shading-rate support.  Raw +0x660
+                            // has no normal Render writer after the same zero initialization.
+                            // Keep these exact Linux-normal values type-checked while the
+                            // complete G15 RegisterArray remains deliberately non-emitting.
+                            let g15_vrs_reg_1a079: u64 = 0;
+                            let g15_vrs_reg_1a081: u64 = 0;
+                            let g15_vrs_reg_1a0d9: u64 = 0;
+                            let g15_vrs_reg_1a0e1: u64 = 0;
                             let _ = (
                                 g15_fb_dimensions,
                                 g15_blocks_per_utile,
@@ -1114,6 +1126,10 @@ impl super::QueueInner::ver {
                                 g15_pm_scene_slice_offset,
                                 g15_pm_scene_slice_gpuva,
                                 g15_pm_scene_reg_1ca28,
+                                g15_vrs_reg_1a079,
+                                g15_vrs_reg_1a081,
+                                g15_vrs_reg_1a0d9,
+                                g15_vrs_reg_1a0e1,
                                 g15_pm_record_gpuva,
                                 g15_pm_page_metrics_gpuva,
                                 load_bgobjvals,
