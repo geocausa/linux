@@ -177,6 +177,25 @@ const fn g15_ta_stencil_comp_packed_reg(comp_base: u64, comp_stride: u32) -> u64
     (comp_base & !0x1f) | ((comp_stride as u64) << 32)
 }
 
+// ContextSwitcherGen3::setupRenderCommand() allocates one 0x8e0-byte G15
+// render context-switch region. raw Render +0x68 is its 32-byte-aligned base
+// and raw +0x60 is the same base +0x280. TA mirrors each as a 32/64-bit pair.
+// Keep this address transform separate from the legacy deflake/preempt layout;
+// a dedicated G15 backing allocation is still required before runtime emission.
+const G15_RENDER_CTXSWITCH_BYTES: usize = 0x8e0;
+const G15_RENDER_CTXSWITCH_SECONDARY_OFFSET: u64 = 0x280;
+const G15_RENDER_CTXSWITCH_GPUVA_MASK: u64 = 0x0000_00ff_ffff_ffe0;
+
+const fn g15_ta_ctxswitch_primary_reg(base: u64) -> u64 {
+    base & G15_RENDER_CTXSWITCH_GPUVA_MASK
+}
+
+const fn g15_ta_ctxswitch_secondary_reg(base: u64) -> u64 {
+    base
+        .wrapping_add(G15_RENDER_CTXSWITCH_SECONDARY_OFFSET)
+        & G15_RENDER_CTXSWITCH_GPUVA_MASK
+}
+
 const _: [(); 0x10000] = [(); g15_ta_depth_level_reg(0x1_0000_0000) as usize];
 const _: [(); 0x80] = [(); g15_ta_depth_level_reg(0x10_0080) as usize];
 const _: [(); 0x42] = [(); g15_ta_stencil_level_reg(0x1_0000_0042) as usize];
@@ -184,6 +203,11 @@ const _: [(); 0x00ff_0000] = [(); g15_ta_dynamic_reg_10799(0, 0x1234) as usize];
 const _: [(); 0x0142_0000] = [(); g15_ta_dynamic_reg_10799(0x80, 0x42) as usize];
 const _: [(); 0x1234_0000_6780] =
     [(); g15_ta_stencil_comp_packed_reg(0x0000_0000_0000_6780, 0x1234) as usize];
+const _: [(); 0x8e0] = [(); G15_RENDER_CTXSWITCH_BYTES];
+const _: [(); 0x1234_5000] =
+    [(); g15_ta_ctxswitch_primary_reg(0x1234_501f) as usize];
+const _: [(); 0x1234_5280] =
+    [(); g15_ta_ctxswitch_secondary_reg(0x1234_5000) as usize];
 
 // Default/zero raw mode reduces 0x10039 to Linux's historical tile_config
 // composition. These constants also pin the non-default selector branches.
@@ -1962,9 +1986,16 @@ impl super::QueueInner::ver {
                             // RegisterArray branch below, so explicitly consume its shared
                             // locals here without using them as G15 producers.
                             let _g15_legacy_iogpu_pair = (iogpu_unk54, iogpu_unk56);
-                            // Likewise keep the legacy third-preempt accessor compiled for
-                            // shared Scene layout coverage, but do not use it as G15 TA 0x1c950.
-                            let _g15_legacy_preempt3 = inner.scene.preempt_buf_3_pointer();
+                            // Keep the inherited preempt accessors compiled for shared Scene
+                            // layout coverage only. Apple G15 setupRenderCommand() instead
+                            // allocates an 0x8e0-byte context-switch region and publishes its
+                            // base/+0x280 pair at raw +0x68/+0x60. Do not use these legacy
+                            // pointers as the G15 TA producers until dedicated backing exists.
+                            let _g15_legacy_preempt_layout = (
+                                inner.scene.preempt_buf_1_pointer(),
+                                inner.scene.preempt_buf_2_pointer(),
+                                inner.scene.preempt_buf_3_pointer(),
+                            );
                             // Apple endRenderPassCommon() explicitly zeros raw Render
                             // +0x1b8 on the current command before submission. The G15 TA
                             // generator masks its low five bits into both 0x12099 and the
@@ -2148,8 +2179,6 @@ impl super::QueueInner::ver {
                                 g15_ta_iogpu_reg_1c051,
                                 g15_ta_iogpu_reg_1c061,
                                 vtx_unk_118,
-                                inner.scene.preempt_buf_1_pointer(),
-                                inner.scene.preempt_buf_2_pointer(),
                             );
                         },
                     ),
