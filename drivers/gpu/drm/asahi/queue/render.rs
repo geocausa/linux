@@ -1155,6 +1155,14 @@ impl super::QueueInner::ver {
                             // AGXRenderCommandRec. Firmware forwards them as 0x15021/0x15049.
                             let g15_aux_reg_15021: u64 = 0;
                             let g15_aux_reg_15049: u64 = 0;
+                            // G15 framebuffer +0xfa0/+0xfa8 are the normal depth texture
+                            // GPUVA masked to 128-byte alignment; +0xfb0 is the equivalent
+                            // stencil GPUVA. Native resolve only patches +0xfa8/+0xfb8, and
+                            // Honeykrisp resolves separately, so existing attachment bases close
+                            // 0x15221/0x15239/0x15229 without a new userspace producer.
+                            let g15_depth_aux_reg_15221: u64 = cmdbuf.depth.base & !0x7f;
+                            let g15_depth_aux_reg_15239: u64 = cmdbuf.depth.base & !0x7f;
+                            let g15_stencil_aux_reg_15229: u64 = cmdbuf.stencil.base & !0x7f;
                             // Raw Render +0x600 survives the 0x870-byte command bzero.
                             // All apparent +0x600 writers in Apple userspace target
                             // RenderContext/ThreadedRenderPass/FramebufferConfig objects;
@@ -1194,6 +1202,9 @@ impl super::QueueInner::ver {
                                 g15_raw5f0_reg_16058,
                                 g15_aux_reg_15021,
                                 g15_aux_reg_15049,
+                                g15_depth_aux_reg_15221,
+                                g15_depth_aux_reg_15239,
+                                g15_stencil_aux_reg_15229,
                                 g15_raw600_reg_120a1,
                                 g15_raw600_reg_101e9,
                                 g15_vrs_reg_101c1,
