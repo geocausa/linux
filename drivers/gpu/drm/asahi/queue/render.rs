@@ -40,6 +40,66 @@ const DEBUG_CLASS: DebugFlags = DebugFlags::Render;
 /// cluster.
 const TILECTL_DISABLE_CLUSTERING: u32 = 1u32 << 0;
 
+// Apple G15 uses the same raw Render mode selector in TA and Fragment
+// register generation. Mode 2 suppresses the contribution, mode 3 selects
+// the lower value, and every other byte value selects the default/high value.
+// Keep the raw byte explicit until its userspace semantic is recovered.
+const fn g15_render_mode_selector(mode: u8, lower: u64, default: u64) -> u64 {
+    if mode == 2 {
+        0
+    } else if mode == 3 {
+        lower
+    } else {
+        default
+    }
+}
+
+// Exact Apple G15 value for hardware register 0x10039. RTM +0x98 is the
+// layer-count dimension; raw Render +0x618 is the process-empty-tiles byte;
+// raw +0x619/+0x61a are unresolved cross-engine mode selectors.
+const fn g15_fragment_tile_config(
+    layers: u32,
+    process_empty_tiles: bool,
+    raw_mode_619: u8,
+    raw_mode_61a: u8,
+) -> u64 {
+    (if layers > 1 { 1 } else { 0 })
+        | (if process_empty_tiles { 0x1_0000 } else { 0 })
+        | g15_render_mode_selector(raw_mode_619, 0x100, 0x200)
+        | g15_render_mode_selector(raw_mode_61a, 0x40, 0x80)
+}
+
+// Exact J615/G15G C0 value formula for hardware register 0x16068, with
+// no unresolved accelerator state: base configureDevice() clears accelerator
+// +0x650 bit 21 with mask 0xfffffe0c2287 and G15/G15G never set it again, so
+// Apple's result-bit-20 accelerator contribution is exactly zero here.
+const fn g15_fragment_tilecfg(
+    utile_config: u32,
+    layers: u32,
+    te_screen: u32,
+    raw_mode_619: u8,
+) -> u64 {
+    ((utile_config as u64 & 0xf000) << 28)
+        | ((if layers > 1 { 1u64 } else { 0 }) << 32)
+        | (g15_render_mode_selector(raw_mode_619, 0x100, 0x200) << 28)
+        | ((te_screen as u64 & 0x1ff) << 44)
+        | ((te_screen as u64 & 0x1ff000) << 41)
+        | 0x3617f
+}
+
+// Default/zero raw mode reduces 0x10039 to Linux's historical tile_config
+// composition. These constants also pin the non-default selector branches.
+const _: [(); 0x280] = [(); g15_fragment_tile_config(1, false, 0, 0) as usize];
+const _: [(); 0x10281] = [(); g15_fragment_tile_config(2, true, 0, 0) as usize];
+const _: [(); 0] = [(); g15_fragment_tile_config(1, false, 2, 2) as usize];
+const _: [(); 0x140] = [(); g15_fragment_tile_config(1, false, 3, 3) as usize];
+
+// For a 32x32 utile (utile_config high bits 0xa000), one layer and zero tile
+// counts, raw mode 0 supplies the same historical 0x20_00000000 mode bit,
+// while G15 changes the fixed low constant from 0x36011 to exact 0x3617f.
+const _: [(); 0xa200003617f] =
+    [(); g15_fragment_tilecfg(0xa000, 1, 0, 0) as usize];
+
 #[versions(AGX)]
 impl super::QueueInner::ver {
     /// Get the appropriate tiling parameters for a given userspace command buffer.
@@ -945,6 +1005,25 @@ impl super::QueueInner::ver {
                                     .div_ceil(2048);
                             let g15_aux_fb = inner.aux_fb.gpu_pointer();
                             let g15_rgn_stride: u64 = (tile_info.params.rgn_size as u64) << 26;
+                            // Exact composite formulas are source-closed, but raw Render
+                            // +0x619/+0x61a still lack a Linux UAPI semantic. Type-check the
+                            // fail-closed/default-mode values without emitting either register.
+                            let g15_process_empty_tiles = cmdbuf.flags
+                                & uapi::drm_asahi_render_flags_DRM_ASAHI_RENDER_PROCESS_EMPTY_TILES
+                                    as u32
+                                != 0;
+                            let g15_tile_config = g15_fragment_tile_config(
+                                cmdbuf.layers as u32,
+                                g15_process_empty_tiles,
+                                0,
+                                0,
+                            );
+                            let g15_tilecfg = g15_fragment_tilecfg(
+                                utile_config,
+                                cmdbuf.layers as u32,
+                                tile_info.params.te_screen,
+                                0,
+                            );
                             let _ = (
                                 g15_fb_dimensions,
                                 g15_blocks_per_utile,
@@ -954,6 +1033,8 @@ impl super::QueueInner::ver {
                                 g15_isp_mtile_size,
                                 g15_te_screen,
                                 g15_rgn_stride,
+                                g15_tile_config,
+                                g15_tilecfg,
                                 load_bgobjvals,
                                 inner.scene.tvb_tilemap_pointer(),
                                 inner.scene.tvb_heapmeta_pointer(),
