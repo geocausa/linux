@@ -1107,6 +1107,13 @@ impl super::QueueInner::ver {
                             // has no normal Render writer after the same zero initialization.
                             // Keep these exact Linux-normal values type-checked while the
                             // complete G15 RegisterArray remains deliberately non-emitting.
+                            // Apple raw Render +0x640 is the memoryless-render state:
+                            // isMemorylessRender returns framebuffer +0xf75 exactly, and the
+                            // only end-pass override (+0x8f3c) is initialized zero with no
+                            // producer in the analyzed G15G userspace path. Linux Asahi does
+                            // not support memoryless render targets, so the exact current-Linux
+                            // value for Fragment 0x1a0b1 (and shared TA 0x1a0a1) is zero.
+                            let g15_memoryless_reg_1a0b1: u64 = 0;
                             let g15_vrs_reg_1a079: u64 = 0;
                             let g15_vrs_reg_1a081: u64 = 0;
                             let g15_vrs_reg_1a0d9: u64 = 0;
@@ -1130,6 +1137,7 @@ impl super::QueueInner::ver {
                                 g15_pm_scene_slice_offset,
                                 g15_pm_scene_slice_gpuva,
                                 g15_pm_scene_reg_1ca28,
+                                g15_memoryless_reg_1a0b1,
                                 g15_vrs_reg_1a079,
                                 g15_vrs_reg_1a081,
                                 g15_vrs_reg_1a0d9,
