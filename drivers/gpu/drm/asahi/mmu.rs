@@ -1001,6 +1001,10 @@ impl Drop for KernelMapping {
 struct UatShared {
     kernel_ttb1: u64,
     map_kernel_to_user: bool,
+    // G15 client contexts import accelerator-owned bank 1 while allocating
+    // bank 0 privately. This root is driver-owned but its leaf PTEs are global.
+    // It is not published into SlotTTBS yet.
+    g15_shared_bank1: Option<UatPageTable>,
     handoff_rgn: UatRegion,
     ttbs_rgn: UatRegion,
 }
@@ -1707,7 +1711,10 @@ impl Uat {
 
     /// Creates the reference-counted inner data for a new `Uat` instance.
     #[inline(never)]
-    fn make_inner(dev: &driver::AsahiDevice) -> Result<Arc<UatInner>> {
+    fn make_inner(
+        dev: &driver::AsahiDevice,
+        g15_shared_bank1: Option<UatPageTable>,
+    ) -> Result<Arc<UatInner>> {
         let handoff_rgn = Self::map_region(dev.as_ref(), c_str!("handoff"), HANDOFF_SIZE, true)?;
         let ttbs_rgn = Self::map_region(dev.as_ref(), c_str!("ttbs"), SLOTS_SIZE, true)?;
 
@@ -1726,6 +1733,7 @@ impl Uat {
                     UatShared {
                         kernel_ttb1: 0,
                         map_kernel_to_user: false,
+                        g15_shared_bank1,
                         handoff_rgn,
                         ttbs_rgn,
                     },
@@ -1745,7 +1753,15 @@ impl Uat {
     ) -> Result<Self> {
         dev_info!(dev.as_ref(), "MMU: Initializing...\n");
 
-        let inner = Self::make_inner(dev)?;
+        // G15 has two 42-bit bank-local roots. Normal clients allocate bank 0
+        // privately and import accelerator-shared bank 1. Current G13/G14
+        // configs are all 39-bit, so this allocation is unreachable there.
+        let g15_shared_bank1 = if cfg.uat_ias >= G15_HW_UAT_IAS {
+            Some(UatPageTable::new_global(G15_HW_UAT_IAS, cfg.uat_oas)?)
+        } else {
+            None
+        };
+        let inner = Self::make_inner(dev, g15_shared_bank1)?;
 
         let of_node = dev.as_ref().of_node().ok_or(EINVAL)?;
         let res = of_node.reserved_mem_region_to_resource_byname(c_str!("pagetables"))?;
@@ -1785,6 +1801,13 @@ impl Uat {
 
         inner.map_kernel_to_user = map_kernel_to_user;
         inner.kernel_ttb1 = ttb1;
+        if let Some(bank1) = inner.g15_shared_bank1.as_ref() {
+            dev_info!(
+                dev.as_ref(),
+                "MMU: G15 shared bank-1 root prepared at {:#x} (not published)\n",
+                bank1.ttb()
+            );
+        }
 
         inner.handoff().init()?;
 

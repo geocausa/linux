@@ -283,6 +283,7 @@ pub(crate) struct DumpedPage {
 pub(crate) struct UatPageTable {
     ttb: PhysicalAddr,
     ttb_owned: bool,
+    non_global: bool,
     va_range: Range<u64>,
     ias_mask: u64,
     oas_mask: u64,
@@ -296,8 +297,13 @@ impl UatPageTable {
         Ok((1u64 << bits) - 1)
     }
 
-    pub(crate) fn new(ias: u32, oas: u32) -> Result<Self> {
-        mod_pr_debug!("UATPageTable::new: ias={} oas={}\n", ias, oas);
+    fn new_owned(ias: u32, oas: u32, non_global: bool) -> Result<Self> {
+        mod_pr_debug!(
+            "UATPageTable::new_owned: ias={} oas={} non_global={}\n",
+            ias,
+            oas,
+            non_global
+        );
         let ias_mask = Self::address_mask(ias)?;
         let oas_mask = Self::address_mask(oas)?;
         let ttb_page = Page::alloc_page(GFP_KERNEL | __GFP_ZERO)?;
@@ -305,10 +311,22 @@ impl UatPageTable {
         Ok(UatPageTable {
             ttb,
             ttb_owned: true,
+            non_global,
             va_range: 0..(1u64 << ias),
             ias_mask,
             oas_mask,
         })
+    }
+
+    pub(crate) fn new(ias: u32, oas: u32) -> Result<Self> {
+        Self::new_owned(ias, oas, true)
+    }
+
+    /// Allocate a driver-owned root whose leaf mappings are global. G15 uses
+    /// this shape for the accelerator-shared UAT bank 1 imported by every
+    /// client context. Existing user roots remain non-global.
+    pub(crate) fn new_global(ias: u32, oas: u32) -> Result<Self> {
+        Self::new_owned(ias, oas, false)
     }
 
     pub(crate) fn new_with_ttb(
@@ -344,6 +362,7 @@ impl UatPageTable {
         Ok(UatPageTable {
             ttb,
             ttb_owned: false,
+            non_global: false,
             va_range,
             ias_mask,
             oas_mask,
@@ -523,13 +542,12 @@ impl UatPageTable {
     }
 
     fn pte_bits(&self) -> u64 {
-        if self.ttb_owned {
-            // Owned page tables are userspace, so non-global
-            PTE_TYPE_LEAF_TABLE | UAT_NON_GLOBAL
-        } else {
-            // The sole non-owned page table is kernelspace, so global
-            PTE_TYPE_LEAF_TABLE
-        }
+        PTE_TYPE_LEAF_TABLE
+            | if self.non_global {
+                UAT_NON_GLOBAL
+            } else {
+                0
+            }
     }
 
     pub(crate) fn map_pages(
