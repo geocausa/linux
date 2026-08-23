@@ -70,6 +70,10 @@ pub(crate) const PAGES_PER_BLOCK: usize = 4;
 /// Size of a buffer block.
 pub(crate) const BLOCK_SIZE: usize = PAGE_SIZE * PAGES_PER_BLOCK;
 
+/// Exact J615/G15G ContextSwitcherGen3 render scratch allocation. Apple
+/// publishes its 32-byte-aligned base and base + 0x280 to the TA command.
+pub(crate) const G15_RENDER_CTXSWITCH_BYTES: usize = 0x8e0;
+
 /// Apple G15 parameter-management device configuration recovered from
 /// `AGXAcceleratorG15::halGetPMConfig()`.
 ///
@@ -450,6 +454,10 @@ pub(crate) struct Scene {
     object: GpuObject<buffer::Scene::ver>,
     slot: u32,
     rebind: bool,
+    // Host-owned lifetime anchor for the G15 ContextSwitcherGen3 render scratch
+    // allocation. Older generations keep this as None.
+    #[allow(dead_code)]
+    g15_ctxswitch: Option<GpuArray<u8>>,
     preempt2_off: usize,
     preempt3_off: usize,
     // Note: these are dead code only on some version variants.
@@ -524,6 +532,12 @@ impl Scene::ver {
     /// Returns the GPU pointer to the Tail Pointer Cache buffer.
     pub(crate) fn tpc_pointer(&self) -> GpuPointer<'_, &'_ [u8]> {
         self.object.tpc.gpu_pointer()
+    }
+
+    /// Returns the GPU pointer to the G15 ContextSwitcherGen3 render scratch region.
+    #[allow(dead_code)]
+    pub(crate) fn g15_ctxswitch_pointer(&self) -> Option<GpuPointer<'_, &'_ [u8]>> {
+        self.g15_ctxswitch.as_ref().map(|buf| buf.gpu_pointer())
     }
 
     /// Returns the GPU pointer to the first preemption scratch buffer.
@@ -943,6 +957,16 @@ impl Buffer::ver {
             b"PRMT",
         )?;
 
+        // ContextSwitcherGen3::setupRenderCommand() allocates exactly 0x8e0
+        // bytes for G15 TA context switching. Keep it Scene-owned so both the
+        // register list and command body can reference one allocation for the
+        // full render-job lifetime.
+        #[ver(G == G15)]
+        let g15_ctxswitch = inner
+            .ualloc
+            .lock()
+            .array_empty_tagged(G15_RENDER_CTXSWITCH_BYTES, b"CTSW")?;
+
         let tpc = match inner.tpc.as_ref() {
             Some(buf) if buf.len() >= tpc_size => buf.clone(),
             _ => {
@@ -1066,6 +1090,10 @@ impl Buffer::ver {
             object: scene,
             slot: inner.active_slot.as_ref().unwrap().slot(),
             rebind,
+            #[ver(G == G15)]
+            g15_ctxswitch: Some(g15_ctxswitch),
+            #[ver(G != G15)]
+            g15_ctxswitch: None,
             preempt2_off: inner.preempt1_size,
             preempt3_off: inner.preempt1_size + inner.preempt2_size,
             meta1_off: clmeta_size,

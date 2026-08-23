@@ -180,9 +180,9 @@ const fn g15_ta_stencil_comp_packed_reg(comp_base: u64, comp_stride: u32) -> u64
 // ContextSwitcherGen3::setupRenderCommand() allocates one 0x8e0-byte G15
 // render context-switch region. raw Render +0x68 is its 32-byte-aligned base
 // and raw +0x60 is the same base +0x280. TA mirrors each as a 32/64-bit pair.
-// Keep this address transform separate from the legacy deflake/preempt layout;
-// a dedicated G15 backing allocation is still required before runtime emission.
-const G15_RENDER_CTXSWITCH_BYTES: usize = 0x8e0;
+// Keep this address transform separate from the legacy deflake/preempt layout.
+// Scene owns the dedicated backing; RegisterArray emission remains blocked with
+// the rest of the G15 runtime path.
 const G15_RENDER_CTXSWITCH_SECONDARY_OFFSET: u64 = 0x280;
 const G15_RENDER_CTXSWITCH_GPUVA_MASK: u64 = 0x0000_00ff_ffff_ffe0;
 
@@ -203,7 +203,7 @@ const _: [(); 0x00ff_0000] = [(); g15_ta_dynamic_reg_10799(0, 0x1234) as usize];
 const _: [(); 0x0142_0000] = [(); g15_ta_dynamic_reg_10799(0x80, 0x42) as usize];
 const _: [(); 0x1234_0000_6780] =
     [(); g15_ta_stencil_comp_packed_reg(0x0000_0000_0000_6780, 0x1234) as usize];
-const _: [(); 0x8e0] = [(); G15_RENDER_CTXSWITCH_BYTES];
+const _: [(); 0x8e0] = [(); buffer::G15_RENDER_CTXSWITCH_BYTES];
 const _: [(); 0x1234_5000] =
     [(); g15_ta_ctxswitch_primary_reg(0x1234_501f) as usize];
 const _: [(); 0x1234_5280] =
@@ -1729,6 +1729,17 @@ impl super::QueueInner::ver {
                 let vm_slot = vm_bind.slot();
                 #[ver(G < G14)]
                 let core_masks = gpu.core_masks_packed();
+                #[ver(G == G15)]
+                let g15_ctxswitch_base: u64 = inner
+                    .scene
+                    .g15_ctxswitch_pointer()
+                    .expect("G15 Scene missing context-switch backing")
+                    .into();
+                #[ver(G == G15)]
+                let g15_ta_ctxswitch_primary = g15_ta_ctxswitch_primary_reg(g15_ctxswitch_base);
+                #[ver(G == G15)]
+                let g15_ta_ctxswitch_secondary =
+                    g15_ta_ctxswitch_secondary_reg(g15_ctxswitch_base);
 
                 try_init!(fw::vertex::raw::RunVertex::ver {
                     tag: fw::workqueue::CommandType::RunVertex,
@@ -1992,11 +2003,11 @@ impl super::QueueInner::ver {
                             // RegisterArray branch below, so explicitly consume its shared
                             // locals here without using them as G15 producers.
                             let _g15_legacy_iogpu_pair = (iogpu_unk54, iogpu_unk56);
-                            // Keep the inherited preempt accessors compiled for shared Scene
-                            // layout coverage only. Apple G15 setupRenderCommand() instead
-                            // allocates an 0x8e0-byte context-switch region and publishes its
-                            // base/+0x280 pair at raw +0x68/+0x60. Do not use these legacy
-                            // pointers as the G15 TA producers until dedicated backing exists.
+                            // Apple G15 setupRenderCommand() uses the dedicated Scene-owned
+                            // 0x8e0-byte context-switch allocation above and publishes its
+                            // base/+0x280 pair at raw +0x68/+0x60. The inherited preempt
+                            // accessors remain compiled only for shared Scene layout coverage;
+                            // they are not G15 TA producers.
                             let _g15_legacy_preempt_layout = (
                                 inner.scene.preempt_buf_1_pointer(),
                                 inner.scene.preempt_buf_2_pointer(),
@@ -2185,6 +2196,8 @@ impl super::QueueInner::ver {
                                 g15_pm_page_metrics_gpuva,
                                 g15_ta_iogpu_reg_1c051,
                                 g15_ta_iogpu_reg_1c061,
+                                g15_ta_ctxswitch_primary,
+                                g15_ta_ctxswitch_secondary,
                                 vtx_unk_118,
                             );
                         },
@@ -2249,7 +2262,7 @@ impl super::QueueInner::ver {
                     #[ver(G == G15)]
                     g15_raw_render_28_7a0: U64(0),
                     #[ver(G == G15)]
-                    g15_raw_render_60_7a8: U64(0),
+                    g15_raw_render_60_7a8: U64(g15_ta_ctxswitch_secondary),
                     #[ver(G == G15)]
                     g15_zero_7b0: U64(0),
                     #[ver(G == G15)]
