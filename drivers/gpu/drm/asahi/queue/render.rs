@@ -431,6 +431,11 @@ impl super::QueueInner::ver {
             .g15_pm_scene_alloc
             .gpu_offset_pointer(g15_pm_scene_slice_offset)
             .into();
+        #[ver(G == G15)]
+        let g15_pm_record_gpuva: u64 = self
+            .g15_pm_records
+            .gpu_offset_pointer(buffer::g15_j615_pm_record_offset(g15_pm_record_index))
+            .into();
 
         let vm_bind = job.vm_bind.clone();
 
@@ -1101,6 +1106,7 @@ impl super::QueueInner::ver {
                                 g15_pm_record_index,
                                 g15_pm_scene_slice_offset,
                                 g15_pm_scene_slice_gpuva,
+                                g15_pm_record_gpuva,
                                 load_bgobjvals,
                                 inner.scene.tvb_tilemap_pointer(),
                                 inner.scene.tvb_heapmeta_pointer(),

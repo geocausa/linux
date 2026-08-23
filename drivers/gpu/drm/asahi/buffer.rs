@@ -184,6 +184,10 @@ const _: [(); 0x20] = [(); core::mem::offset_of!(G15PmSceneStats, reset_request_
 /// Record +0x40 is the FWVA of the latter resource at offset +0x40, i.e. the
 /// Parameter Scene statistics half. These remain allocation geometry only.
 const G15_PM_RECORD_BYTES: usize = 0x80;
+/// Exact GPU-facing range-5 PM record resource: 80 records at a 0x80 stride.
+/// This deliberately excludes the separate 0x40 PM tail/state bookkeeping.
+pub(crate) const G15_J615_PM_GPU_RECORD_BYTES: usize =
+    G15_J615_PM_RECORD_COUNT * G15_PM_RECORD_BYTES;
 const G15_PM_STATE_BYTES: usize = 0x40;
 const G15_PM_FW_PAGE_LIST_ENTRY_BYTES: usize = 8;
 const G15_PM_PAGE_LIST_STATS_BYTES: usize = 0x80;
@@ -221,6 +225,11 @@ pub(crate) const fn g15_j615_pm_next_record_index(current: u32) -> u32 {
 pub(crate) const fn g15_j615_pm_scene_slice_offset(record_index: u32) -> usize {
     (record_index as usize % G15_J615_PM_SCENE_GROUP_COUNT)
         * g15_j615_pm_scene_stride(0x3366_0000)
+}
+
+/// Selected GPU record offset inside the exact 0x2800 range-5 record backing.
+pub(crate) const fn g15_j615_pm_record_offset(record_index: u32) -> usize {
+    (record_index as usize % G15_J615_PM_RECORD_COUNT) * G15_PM_RECORD_BYTES
 }
 
 /// `AGXArmFirmware::allocFirmwareData()` sizes one PMPageMetricsBuffer resource
@@ -266,6 +275,7 @@ const _: [(); 4] = [(); G15_PM_DEVICE_CONFIG.usage_page_granule];
 const _: [(); 0x50] = [(); G15_J615_PM_RECORD_COUNT];
 const _: [(); 0x24] = [(); G15_J615_PM_SCENE_GROUP_COUNT];
 const _: [(); 0x2800] = [(); g15_pm_state_offset(G15_J615_PM_RECORD_COUNT)];
+const _: [(); 0x2800] = [(); G15_J615_PM_GPU_RECORD_BYTES];
 const _: [(); 0x2840] = [(); g15_pm_record_pool_bytes(G15_J615_PM_RECORD_COUNT)];
 const _: [(); 0x280] = [(); g15_pm_fw_page_list_bytes(G15_J615_PM_RECORD_COUNT)];
 const _: [(); 0x80] = [(); G15_PM_PAGE_LIST_STATS_BYTES];
@@ -287,6 +297,9 @@ const _: [(); 0] = [(); g15_j615_pm_next_record_index(0x4f) as usize];
 const _: [(); 0x30] = [(); g15_j615_pm_scene_slice_offset(1)];
 const _: [(); 0] = [(); g15_j615_pm_scene_slice_offset(36)];
 const _: [(); 0x150] = [(); g15_j615_pm_scene_slice_offset(79)];
+const _: [(); 0x80] = [(); g15_j615_pm_record_offset(1)];
+const _: [(); 0x2780] = [(); g15_j615_pm_record_offset(79)];
+const _: [(); 0] = [(); g15_j615_pm_record_offset(80)];
 
 /// Metadata about the tiling configuration for a scene. This is computed in the `render` module.
 /// based on dimensions, tile size, and other info.

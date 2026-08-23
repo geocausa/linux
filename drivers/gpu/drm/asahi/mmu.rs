@@ -178,6 +178,18 @@ pub(crate) const G15_GART_RANGE5: Range<u64> = 0x100_0000_0000..0x300_0000_0000;
 const _: [(); 1] = [(); (G15_GART_RANGE5.start >= (1u64 << UAT_USER_IAS)) as usize];
 const _: [(); 1] = [(); (G15_GART_RANGE5.end <= (1u64 << G15_HW_UAT_IAS)) as usize];
 
+/// Linux-internal non-overlapping sub-arenas within Apple eGartRange 5. Apple
+/// uses one range with per-mapping PTE attributes; DefaultAllocator fixes one
+/// protection class per heap, so keep the exact G15 0x308 and 0x303 classes in
+/// separate halves. This split is an implementation detail, not an Apple ABI.
+pub(crate) const G15_GART_RANGE5_UNCACHED: Range<u64> =
+    G15_GART_RANGE5.start..0x200_0000_0000;
+pub(crate) const G15_GART_RANGE5_CACHED: Range<u64> =
+    G15_GART_RANGE5_UNCACHED.end..G15_GART_RANGE5.end;
+const _: [(); 1] = [(); (G15_GART_RANGE5_UNCACHED.end == G15_GART_RANGE5_CACHED.start) as usize];
+const _: [(); 5] = [(); g15_apple_gart_range(G15_GART_RANGE5_UNCACHED.start) as usize];
+const _: [(); 5] = [(); g15_apple_gart_range(G15_GART_RANGE5_CACHED.start) as usize];
+
 /// G15's UnifiedAddressTranslator has two bank-local page-table state blocks.
 /// Apple selects the bank with VA bit 42, then indexes the top-level table with
 /// VA bits 36..41. This is distinct from the 42 translated bits within a bank.

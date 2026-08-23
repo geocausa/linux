@@ -154,6 +154,10 @@ pub(crate) struct QueueInner {
     // still disabled; this only establishes the correct hidden-VA resource.
     #[ver(G == G15)]
     g15_pm_scene_alloc: GpuArray<u8>,
+    // Exact 0x2800 GPU-facing PM record backing. Apple uses range 5 with
+    // compact PTE class 0x303; the separate 0x40 tail is intentionally absent.
+    #[ver(G == G15)]
+    g15_pm_records: GpuArray<u8>,
 }
 
 #[versions(AGX)]
@@ -451,7 +455,8 @@ impl Queue::ver {
         alloc: &mut gpu::KernelAllocators,
         ualloc: Arc<Mutex<alloc::DefaultAllocator>>,
         ualloc_priv: Arc<Mutex<alloc::DefaultAllocator>>,
-        _g15_ualloc_range5: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
+        _g15_ualloc_range5_uncached: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
+        _g15_ualloc_range5_cached: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
         event_manager: Arc<event::EventManager>,
         mgr: &buffer::BufferManager::ver,
         id: u64,
@@ -496,11 +501,17 @@ impl Queue::ver {
             buffer::Buffer::ver::new(&*(*dev).gpu, alloc, ualloc.clone(), ualloc_priv, mgr)?;
 
         #[ver(G == G15)]
-        let g15_pm_scene_alloc = _g15_ualloc_range5
+        let g15_pm_scene_alloc = _g15_ualloc_range5_uncached
             .as_ref()
             .ok_or(EINVAL)?
             .lock()
             .array_empty_tagged(buffer::G15_J615_PM_SCENE_ALLOC_BYTES, b"PMSC")?;
+        #[ver(G == G15)]
+        let g15_pm_records = _g15_ualloc_range5_cached
+            .as_ref()
+            .ok_or(EINVAL)?
+            .lock()
+            .array_empty_tagged(buffer::G15_J615_PM_GPU_RECORD_BYTES, b"PMRC")?;
 
         let mut ret = Queue::ver {
             dev: dev.into(),
@@ -530,6 +541,8 @@ impl Queue::ver {
                 g15_pm_record_index: AtomicU32::new(0),
                 #[ver(G == G15)]
                 g15_pm_scene_alloc,
+                #[ver(G == G15)]
+                g15_pm_records,
             },
         };
 
