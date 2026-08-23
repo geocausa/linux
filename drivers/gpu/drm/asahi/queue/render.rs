@@ -1893,6 +1893,15 @@ impl super::QueueInner::ver {
                             // G15G/C0 dynamic encoded register 0x101e1.
                             let g15_ta_raw1b8_reg_12099: u64 = 0;
                             let g15_ta_raw1b8_reg_101e1: u64 = 0;
+                            // The direct raw +0x640..+0x660 extension is shared with
+                            // Fragment. +0x640 is Apple's memoryless-render bit, unsupported
+                            // by current Linux; +0x648/+0x650/+0x658 are VRS/rasterization-
+                            // rate-map state behind an absent UAPI path; +0x660 stays bzero.
+                            let g15_ta_memoryless_reg_1a0a1: u64 = 0;
+                            let g15_ta_vrs_reg_1a069: u64 = 0;
+                            let g15_ta_vrs_reg_1a071: u64 = 0;
+                            let g15_ta_vrs_reg_1a0c9: u64 = 0;
+                            let g15_ta_vrs_reg_1a0d1: u64 = 0;
                             // Exact Apple PM tail of the normal TA list:
                             // 0x1ca30 = record+0x28 & ~0xf;
                             // encoded 32-bit 0x16c39 carries the same source value;
@@ -1928,6 +1937,11 @@ impl super::QueueInner::ver {
                                 g15_ta_heapmeta_tagged,
                                 g15_ta_raw1b8_reg_12099,
                                 g15_ta_raw1b8_reg_101e1,
+                                g15_ta_memoryless_reg_1a0a1,
+                                g15_ta_vrs_reg_1a069,
+                                g15_ta_vrs_reg_1a071,
+                                g15_ta_vrs_reg_1a0c9,
+                                g15_ta_vrs_reg_1a0d1,
                                 g15_ta_pm_scene,
                                 g15_ta_pm_metrics_1c910,
                                 g15_pm_record_index,
