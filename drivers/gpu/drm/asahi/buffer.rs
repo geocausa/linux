@@ -106,6 +106,13 @@ const G15_J615_PM_SCENE_GROUP_COUNT: usize = 0x24;
 /// shared scene slice after the 36 modulo-selected per-record slices.
 const G15_J615_PM_EXTRA_SCENE_SLICES: usize = 1;
 
+/// Total J615 Parameter Scene Allocations backing: 36 modulo-selected 0x30
+/// slices plus the one G15G/C0 common slice. Apple allocates this with the
+/// same eGartRange=5 class used by the GTP/TPC backing; Linux maps that class
+/// through the per-VM GPU+FW-private allocator.
+pub(crate) const G15_J615_PM_SCENE_ALLOC_BYTES: usize =
+    (G15_J615_PM_SCENE_GROUP_COUNT + G15_J615_PM_EXTRA_SCENE_SLICES) * 0x30;
+
 /// Host-side G15 parameter-management record layout. Apple allocates these at
 /// an exact 0x80-byte stride and publishes one record pointer per PM slot.
 ///
@@ -252,6 +259,7 @@ const _: [(); 0x140] = [(); g15_pm_page_metrics_bytes(G15_J615_PM_RECORD_COUNT)]
 const _: [(); 0x30] = [(); g15_j615_pm_scene_stride(0x3366_0000)];
 const _: [(); 0x6c0] = [(); G15_J615_PM_SCENE_GROUP_COUNT
     * g15_j615_pm_scene_stride(0x3366_0000)];
+const _: [(); 0x6f0] = [(); G15_J615_PM_SCENE_ALLOC_BYTES];
 const _: [(); 0x6f0] = [(); (G15_J615_PM_SCENE_GROUP_COUNT
     + G15_J615_PM_EXTRA_SCENE_SLICES)
     * g15_j615_pm_scene_stride(0x3366_0000)];
