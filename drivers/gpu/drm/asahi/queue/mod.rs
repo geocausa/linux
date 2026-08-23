@@ -149,11 +149,6 @@ pub(crate) struct QueueInner {
     // render setup. No PM backing resources are allocated from this field yet.
     #[ver(G == G15)]
     g15_pm_record_index: AtomicU32,
-    // Apple Parameter Scene Allocations backing. The exact eGartRange=5
-    // allocation class is shared with GTP/TPC, hence Linux's per-VM
-    // GPU+FW-private allocator. Register emission remains disabled.
-    #[ver(G == G15)]
-    g15_pm_scene_alloc: GpuArray<u8>,
 }
 
 #[versions(AGX)]
@@ -492,12 +487,7 @@ impl Queue::ver {
         let entity = sched::Entity::new(&sched, sched::Priority::Kernel)?;
 
         let buffer =
-            buffer::Buffer::ver::new(&*(*dev).gpu, alloc, ualloc.clone(), ualloc_priv.clone(), mgr)?;
-
-        #[ver(G == G15)]
-        let g15_pm_scene_alloc = ualloc_priv
-            .lock()
-            .array_empty_tagged(buffer::G15_J615_PM_SCENE_ALLOC_BYTES, b"PMSC")?;
+            buffer::Buffer::ver::new(&*(*dev).gpu, alloc, ualloc.clone(), ualloc_priv, mgr)?;
 
         let mut ret = Queue::ver {
             dev: dev.into(),
@@ -525,8 +515,6 @@ impl Queue::ver {
                 counter: AtomicU64::new(0),
                 #[ver(G == G15)]
                 g15_pm_record_index: AtomicU32::new(0),
-                #[ver(G == G15)]
-                g15_pm_scene_alloc,
             },
         };
 

@@ -107,9 +107,10 @@ const G15_J615_PM_SCENE_GROUP_COUNT: usize = 0x24;
 const G15_J615_PM_EXTRA_SCENE_SLICES: usize = 1;
 
 /// Total J615 Parameter Scene Allocations backing: 36 modulo-selected 0x30
-/// slices plus the one G15G/C0 common slice. Apple allocates this with the
-/// same eGartRange=5 class used by the GTP/TPC backing; Linux maps that class
-/// through the per-VM GPU+FW-private allocator.
+/// slices plus the one G15G/C0 common slice. Apple allocates this in
+/// eGartRange 5. Exact AGXGart::returnGartRange() places that range above the
+/// current Linux 39-bit user aperture, so allocation stays blocked until the
+/// G15 VA contract is implemented.
 pub(crate) const G15_J615_PM_SCENE_ALLOC_BYTES: usize =
     (G15_J615_PM_SCENE_GROUP_COUNT + G15_J615_PM_EXTRA_SCENE_SLICES) * 0x30;
 
