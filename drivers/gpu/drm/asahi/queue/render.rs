@@ -214,7 +214,7 @@ const _: [(); 0x1234_5280] =
 // is inserted immediately after 0x1748 when low32(depth_level_offset) != 0.
 // The default-disabled AGXPerfCtrSampler trio (0x1ca10/0x14a1/0xa349) is not
 // part of this ordinary list. This is a compile-time geometry lock only; the
-// G15 RegisterArray remains deliberately non-emitting below.
+// The TA list is populated compile-time below; gpu_gen7 runtime remains fail-closed.
 const G15_TA_OPTIONAL_DEPTH_SEED_REGISTER: u32 = 0x17e1;
 const G15_TA_ORDINARY_REGISTERS: [u32; 59] = [
     0x1748, 0x10141, 0x1c039, 0x1c9c8, 0x1c0a1, 0x1c031, 0x1c9c0, 0x1c051, 0x1c061,
@@ -743,6 +743,7 @@ impl super::QueueInner::ver {
         let vtx_unk_f0 = 0x1c;
         #[ver(G < G14)]
         let vtx_unk_f0 = 0x1c + (align(tile_info.meta1_blocks, 4) as u64);
+        #[ver(G != G15)]
         let vtx_unk_118: u64 = 0x1c;
 
         // DRM_ASAHI_RENDER_DBIAS_IS_INT chosen to match hardware bit.
@@ -1959,10 +1960,11 @@ impl super::QueueInner::ver {
                     #[ver(G == G15)]
                     registers: fw::job::raw::RegisterArray::new(
                         inner_weak_ptr!(_ptr, registers.registers),
-                        |_r| {
-                            // Keep the existing helper inputs type-checked for the
-                            // later G15 register reconstruction without emitting
-                            // unproven register entries into this compile-only shell.
+                        |r| {
+                            // The ordinary J615/G15G C0 producer set and exact list
+                            // geometry are now closed. Populate the generation-specific
+                            // RegisterArray in Apple order while gpu_gen7 runtime remains
+                            // independently fail-closed.
                             // Apple TA descriptor +0xe58 is RTM +0x2a8, the same TVB
                             // heap-metadata address used by Fragment 0x16098. Its
                             // 0x1c031/0x1c9c0 tag is controlled by accelerator +0x650
@@ -1980,8 +1982,9 @@ impl super::QueueInner::ver {
                                     None
                                 };
                             let g15_ta_tiler_mode_10141 = G15_LINUX_TILER_MODE_10141;
-                            let g15_ta_tilemap = inner.scene.tvb_tilemap_pointer();
-                            let g15_ta_layermeta = inner.scene.tvb_layermeta_pointer();
+                            let g15_ta_tilemap: u64 = inner.scene.tvb_tilemap_pointer().into();
+                            let g15_ta_layermeta: u64 =
+                                inner.scene.tvb_layermeta_pointer().into();
                             let g15_ta_rgn_size: u64 = tile_info.params.rgn_size.into();
                             // RTM +0xf0 independently reconstructs the same utile/sample
                             // encoding as Linux `utile_config`. RTM +0xf8 is packed from
@@ -2017,9 +2020,8 @@ impl super::QueueInner::ver {
                             // Its size is 0x80 * utiles_per_mtile * layers * MGPUs,
                             // algebraically matching Linux TPC storage, and the established
                             // G14X RegisterArray maps the same 0x1c0a1 register to TE_TPC_ADDR.
-                            // Keep this producer type-checked only until the G15 array is
-                            // enabled as a whole.
-                            let g15_ta_tpc_pointer = inner.scene.tpc_pointer();
+                            // This is the exact G15 producer for 0x1c0a1.
+                            let g15_ta_tpc_pointer: u64 = inner.scene.tpc_pointer().into();
                             let g15_ta_geom_const_88: u64 = 0x88;
                             let g15_ta_geom_const_100: u64 = 0x100;
                             let g15_ta_process_empty_tiles = cmdbuf.flags
@@ -2032,10 +2034,11 @@ impl super::QueueInner::ver {
                             );
                             let g15_ta_render_target_max_masked =
                                 g15_ta_render_target_max & 0x47ff;
-                            let g15_ta_heapmeta_tagged = inner
+                            let g15_ta_heapmeta_tagged: u64 = inner
                                 .scene
                                 .tvb_heapmeta_pointer()
-                                .or(0x8000_0000_0000_0000);
+                                .or(0x8000_0000_0000_0000)
+                                .into();
                             // G15 no longer inherits the legacy iogpu_unk54/56 register
                             // pair verbatim. The raw Render command is bzeroed at pass start
                             // and no normal G15 writer touches +0xa0, so TA 0x1c051 is zero.
@@ -2129,8 +2132,7 @@ impl super::QueueInner::ver {
                             // copies them to wrapper +0x130/+0x138, and processRenderSetup()
                             // splits them into TA descriptor +0x1178/+0x1180/+0x1188.
                             // Honeykrisp supplies the same semantic AIL mip-level offsets.
-                            // Keep the exact 0x101c9/0xd471 producers type-checked while the
-                            // complete G15 TA RegisterArray remains deliberately non-emitting.
+                            // Feed the exact 0x101c9/0xd471 producers into the G15 list.
                             let g15_ta_depth_level_reg_101c9 =
                                 g15_ta_depth_level_reg(cmdbuf.depth_level_offset);
                             let g15_ta_stencil_level_reg_d471 =
@@ -2184,69 +2186,75 @@ impl super::QueueInner::ver {
                             let g15_ta_pm_scene = g15_pm_scene_slice_gpuva & !0xf;
                             let g15_ta_pm_metrics_1c910 =
                                 buffer::g15_pm_page_metrics_reg_1c910(g15_pm_page_metrics_gpuva);
-                            let _ = (
-                                g15_ta_seed_1748,
-                                g15_ta_seed_17e1,
-                                g15_ta_tiler_mode_10141,
-                                // RTM-backed G15 TA producer pairs:
-                                // 0x1c039/0x1c9c8 = tilemap;
-                                // 0x1c079/0x1c9d8 = layer metadata;
-                                // 0x1c0b1/0x1c850 = region-size dword;
-                                // 0x1c031/0x1c9c0 = tagged heap metadata.
-                                g15_ta_tilemap,
-                                g15_ta_layermeta,
-                                g15_ta_rgn_size,
-                                g15_ta_utile_config,
-                                g15_ta_ppp_multisamplectl,
-                                g15_ta_vdm_ctrl_stream_base,
-                                g15_ta_ppp_ctrl,
-                                g15_ta_ppp_screen,
-                                g15_ta_te_screen,
-                                g15_ta_te_mtile1,
-                                g15_ta_te_mtile2,
-                                g15_ta_tiles_per_mtile,
-                                g15_ta_tpc_stride,
-                                g15_ta_tpc_pointer,
-                                g15_ta_geom_const_88,
-                                g15_ta_geom_const_100,
-                                g15_ta_render_target_max,
-                                g15_ta_render_target_max_masked,
-                                g15_ta_heapmeta_tagged,
-                                g15_ta_raw1b8_reg_12099,
-                                g15_ta_raw1b8_reg_101e1,
-                                g15_ta_stencil_level_reg_1c199,
-                                g15_ta_stencil_stride_reg_1c1a1,
-                                g15_ta_stencil_comp_base_reg_1c1a9,
-                                g15_ta_stencil_comp_stride_reg_1c1b1,
-                                g15_ta_stencil_base_reg_1c1b9,
-                                g15_ta_stencil_comp_packed_reg_1c950,
-                                g15_ta_stencil_level_enable_10151,
-                                g15_ta_mode_reg_1c8f8,
-                                g15_ta_memoryless_reg_1a0a1,
-                                g15_ta_vrs_reg_1a069,
-                                g15_ta_vrs_reg_1a071,
-                                g15_ta_vrs_reg_1a0c9,
-                                g15_ta_vrs_reg_1a0d1,
-                                g15_ta_sampled_reg_1a0f1,
-                                g15_ta_depth_level_reg_101c9,
-                                g15_ta_stencil_level_reg_d471,
-                                g15_ta_dynamic_reg_10799,
-                                g15_ta_object_payload_reg_1ca48,
-                                g15_ta_param_buffer_id_1c830,
-                                g15_ta_perf_feature_value,
-                                g15_ta_clear_reg_1a099,
-                                g15_ta_pm_scene,
-                                g15_ta_pm_metrics_1c910,
-                                g15_pm_record_index,
-                                g15_pm_scene_slice_offset,
-                                g15_pm_scene_slice_gpuva,
-                                g15_pm_page_metrics_gpuva,
-                                g15_ta_iogpu_reg_1c051,
-                                g15_ta_iogpu_reg_1c061,
-                                g15_ta_ctxswitch_primary,
-                                g15_ta_ctxswitch_secondary,
-                                vtx_unk_118,
-                            );
+                            // Exact Apple list order. Width is encoded in Register.number
+                            // bit 0, matching RegisterArray::add() on existing generations.
+                            r.add(0x1748, g15_ta_seed_1748);
+                            if let Some(value) = g15_ta_seed_17e1 {
+                                r.add(0x17e1, value);
+                            }
+                            r.add(0x10141, g15_ta_tiler_mode_10141);
+                            r.add(0x1c039, g15_ta_tilemap);
+                            r.add(0x1c9c8, g15_ta_tilemap);
+                            r.add(0x1c0a1, g15_ta_tpc_pointer);
+                            r.add(0x1c031, g15_ta_heapmeta_tagged);
+                            r.add(0x1c9c0, g15_ta_heapmeta_tagged);
+                            r.add(0x1c051, g15_ta_iogpu_reg_1c051);
+                            r.add(0x1c061, g15_ta_iogpu_reg_1c061);
+                            r.add(0x10149, g15_ta_utile_config);
+                            r.add(0x10139, g15_ta_ppp_multisamplectl);
+                            r.add(0x10111, g15_ta_ctxswitch_secondary);
+                            r.add(0x1c9b0, g15_ta_ctxswitch_secondary);
+                            r.add(0x10119, g15_ta_ctxswitch_primary);
+                            r.add(0x1c9b8, g15_ta_ctxswitch_primary);
+                            r.add(0x1c958, 1);
+                            r.add(0x1c950, g15_ta_stencil_comp_packed_reg_1c950);
+                            r.add(0x1c930, 0);
+                            r.add(0x1c880, g15_ta_vdm_ctrl_stream_base);
+                            r.add(0x1c898, 0);
+                            r.add(0x1c079, g15_ta_layermeta);
+                            r.add(0x1c9d8, g15_ta_layermeta);
+                            r.add(0x10151, g15_ta_stencil_level_enable_10151);
+                            r.add(0x1c199, g15_ta_stencil_level_reg_1c199);
+                            r.add(0x1c1a1, g15_ta_stencil_stride_reg_1c1a1);
+                            r.add(0x1c1a9, g15_ta_stencil_comp_base_reg_1c1a9);
+                            r.add(0x1c1b1, g15_ta_stencil_comp_stride_reg_1c1b1);
+                            r.add(0x1c1b9, g15_ta_stencil_base_reg_1c1b9);
+                            r.add(0x1c8f8, g15_ta_mode_reg_1c8f8);
+                            r.add(0x1c0b1, g15_ta_rgn_size);
+                            r.add(0x1c850, g15_ta_rgn_size);
+                            r.add(0x10131, g15_ta_geom_const_88);
+                            r.add(0x10121, g15_ta_ppp_ctrl);
+                            r.add(0x10129, g15_ta_ppp_screen);
+                            r.add(0x101b9, g15_ta_te_screen);
+                            r.add(0x1c069, g15_ta_te_mtile1);
+                            r.add(0x1c071, g15_ta_te_mtile2);
+                            r.add(0x1c081, g15_ta_tiles_per_mtile);
+                            r.add(0x1c0a9, g15_ta_tpc_stride);
+                            r.add(0x10171, g15_ta_geom_const_100);
+                            r.add(0x10169, g15_ta_render_target_max.into());
+                            r.add(0x12099, g15_ta_raw1b8_reg_12099);
+                            r.add(0x101e1, g15_ta_raw1b8_reg_101e1);
+                            r.add(0x1c9e8, g15_ta_render_target_max_masked.into());
+                            r.add(0x1a099, g15_ta_clear_reg_1a099);
+                            r.add(0x1a0a1, g15_ta_memoryless_reg_1a0a1);
+                            r.add(0x1a069, g15_ta_vrs_reg_1a069);
+                            r.add(0x1a071, g15_ta_vrs_reg_1a071);
+                            r.add(0x1a0c9, g15_ta_vrs_reg_1a0c9);
+                            r.add(0x1a0d1, g15_ta_vrs_reg_1a0d1);
+                            r.add(0x101c9, g15_ta_depth_level_reg_101c9);
+                            r.add(0x0d471, g15_ta_stencil_level_reg_d471);
+                            r.add(0x1a0f1, g15_ta_sampled_reg_1a0f1);
+                            r.add(0x10799, g15_ta_dynamic_reg_10799.into());
+                            r.add(0x1ca48, g15_ta_object_payload_reg_1ca48);
+                            if let Some(value) = g15_ta_perf_feature_value {
+                                r.add(0x1ca10, value);
+                                r.add(0x14a1, value);
+                                r.add(0xa349, value);
+                            }
+                            r.add(0x1c830, g15_ta_param_buffer_id_1c830);
+                            r.add(0x1ca30, g15_ta_pm_scene);
+                            r.add(0x16c39, g15_ta_pm_scene);
+                            r.add(0x1c910, g15_ta_pm_metrics_1c910);
                         },
                     ),
                     #[ver(G == G15)]
