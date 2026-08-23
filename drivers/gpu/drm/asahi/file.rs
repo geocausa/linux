@@ -446,7 +446,7 @@ impl File {
                             &vm,
                             mmu::G15_GART_RANGE5_CACHED,
                             buffer::PAGE_SIZE,
-                            mmu::PROT_GPU_FW_PRIV_RW,
+                            mmu::PROT_G15_RANGE5_CACHED,
                             64 * 1024,
                             true,
                             fmt!("File {} VM {} G15 Range 5 Cached", file_id, id),

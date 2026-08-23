@@ -158,6 +158,12 @@ pub(crate) mod prot {
     /// PXN=UXN=0 for this resource class.
     pub(crate) const PROT_G15_RANGE5_UNCACHED: Prot =
         PROT_FW_GPU_NA.memattr(MEMATTR_UNCACHED);
+    /// Exact non-legacy G15 range-5 cached PTE shape used by the PM record
+    /// backing. SecureGart compact 0x300 emits AP=0, cached memory,
+    /// GPU-access=1, PXN=UXN=0. This intentionally does not reuse the older
+    /// `PROT_GPU_FW_PRIV_RW`, which would add PXN/UXN bits not present here.
+    pub(crate) const PROT_G15_RANGE5_CACHED: Prot =
+        PROT_FW_GPU_NA.memattr(MEMATTR_CACHED);
     /// Firmware/GPU shared (private) RW
     pub(crate) const PROT_GPU_FW_PRIV_RW: Prot = PROT_FW_GPU_RW.memattr(MEMATTR_CACHED);
     /// Firmware-RW/GPU-RO shared (private) RW
@@ -174,9 +180,10 @@ pub(crate) mod prot {
 // non-global bits.  PM scene/TPC compact 0x308 -> high GPU-access + uncached.
 const _: [(); 1] = [(); ((prot::PROT_G15_RANGE5_UNCACHED.as_pte() & UAT_PROT_BITS)
     == 0x0080_0000_0000_0008) as usize];
-// PM-record compact 0x303 -> the existing cached FW/GPU-private shape exactly.
-const _: [(); 1] = [(); ((prot::PROT_GPU_FW_PRIV_RW.as_pte() & UAT_PROT_BITS)
-    == 0x00e0_0000_0000_0000) as usize];
+// PM-record compact 0x300 -> G15 GPU-access high bit + cached memory,
+// with no PXN/UXN bits.
+const _: [(); 1] = [(); ((prot::PROT_G15_RANGE5_CACHED.as_pte() & UAT_PROT_BITS)
+    == 0x0080_0000_0000_0000) as usize];
 
 impl Prot {
     const fn from_bits(ap: u8, uxn: u16, pxn: u16) -> Self {
