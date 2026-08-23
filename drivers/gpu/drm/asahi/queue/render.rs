@@ -408,6 +408,25 @@ impl super::QueueInner::ver {
 
         let scene = Arc::new(buffer.new_scene(kalloc, &tile_info)?, GFP_KERNEL)?;
 
+        // Apple AGXCommandQueue::processRenderSetup() advances the selected
+        // AGXParameterManagement +0x2c record index after command validation and
+        // before descriptor loading. The PM object is AGX3DWorkQueue-owned, which
+        // matches this QueueInner lifetime. Keep only the proven ring/offset state
+        // here; PM backing resources and RegisterArray emission remain disabled.
+        #[ver(G == G15)]
+        let g15_pm_record_index = {
+            let current = self
+                .g15_pm_record_index
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                    Some(buffer::g15_j615_pm_next_record_index(current))
+                })
+                .expect("G15 PM record update is unconditional");
+            buffer::g15_j615_pm_next_record_index(current)
+        };
+        #[ver(G == G15)]
+        let g15_pm_scene_slice_offset =
+            buffer::g15_j615_pm_scene_slice_offset(g15_pm_record_index);
+
         let vm_bind = job.vm_bind.clone();
 
         mod_dev_dbg!(
@@ -1074,6 +1093,8 @@ impl super::QueueInner::ver {
                                 g15_rgn_stride,
                                 g15_tile_config,
                                 g15_tilecfg,
+                                g15_pm_record_index,
+                                g15_pm_scene_slice_offset,
                                 load_bgobjvals,
                                 inner.scene.tvb_tilemap_pointer(),
                                 inner.scene.tvb_heapmeta_pointer(),
@@ -1768,6 +1789,8 @@ impl super::QueueInner::ver {
                                 g15_ta_render_target_max,
                                 g15_ta_render_target_max_masked,
                                 g15_ta_heapmeta_tagged,
+                                g15_pm_record_index,
+                                g15_pm_scene_slice_offset,
                                 iogpu_unk54,
                                 iogpu_unk56,
                                 vtx_unk_118,

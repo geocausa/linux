@@ -144,6 +144,11 @@ pub(crate) struct QueueInner {
     // submitted channel command consumes one value from it across engines.
     #[ver(V >= V13_0B4)]
     counter: AtomicU64,
+    // G15 AGXParameterManagement +0x2c equivalent. Apple scopes the PM to
+    // AGX3DWorkQueue and advances this 80-record ring before each applicable
+    // render setup. No PM backing resources are allocated from this field yet.
+    #[ver(G == G15)]
+    g15_pm_record_index: AtomicU32,
 }
 
 #[versions(AGX)]
@@ -508,6 +513,8 @@ impl Queue::ver {
                 id,
                 #[ver(V >= V13_0B4)]
                 counter: AtomicU64::new(0),
+                #[ver(G == G15)]
+                g15_pm_record_index: AtomicU32::new(0),
             },
         };
 

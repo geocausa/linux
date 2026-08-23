@@ -100,7 +100,7 @@ const G15_PM_DEVICE_CONFIG: G15PmDeviceConfig = G15PmDeviceConfig {
 /// with 0x50, so the normal J615 PM record count is 80 and scene group count
 /// remains 36. The optional +0x2420/+0x2424 overrides stay zero in the
 /// analyzed normal path.
-const G15_J615_PM_RECORD_COUNT: usize = 0x50;
+pub(crate) const G15_J615_PM_RECORD_COUNT: usize = 0x50;
 const G15_J615_PM_SCENE_GROUP_COUNT: usize = 0x24;
 /// G15G/C0 sets accelerator +0x1dd8, so Apple reserves one additional
 /// shared scene slice after the 36 modulo-selected per-record slices.
@@ -193,6 +193,28 @@ const fn g15_pm_fw_page_list_bytes(record_count: usize) -> usize {
     record_count * G15_PM_FW_PAGE_LIST_ENTRY_BYTES
 }
 
+/// Apple keeps the selected PM record index at AGXParameterManagement +0x2c.
+/// processRenderSetup() increments it before loading the command descriptor and
+/// wraps it modulo the configured record count (0x50 on J615).  The PM object
+/// itself is owned by AGX3DWorkQueue (+0x1f8) and may be explicitly shared by
+/// another work queue, so this index is queue/PM state rather than a TVB slot.
+pub(crate) const fn g15_j615_pm_next_record_index(current: u32) -> u32 {
+    let next = current + 1;
+    if next >= G15_J615_PM_RECORD_COUNT as u32 {
+        0
+    } else {
+        next
+    }
+}
+
+/// setupSceneState() precomputes record[i]+0x28 as scene_base +
+/// 0x30 * (i % 36) on J615.  This returns only the mechanically proven offset;
+/// allocation/base-address wiring remains deliberately separate.
+pub(crate) const fn g15_j615_pm_scene_slice_offset(record_index: u32) -> usize {
+    (record_index as usize % G15_J615_PM_SCENE_GROUP_COUNT)
+        * g15_j615_pm_scene_stride(0x3366_0000)
+}
+
 /// `AGXArmFirmware::allocFirmwareData()` sizes one PMPageMetricsBuffer resource
 /// element as `align(record_count * 4, 0x40)`. Each PM record then receives a
 /// distinct four-byte slot within that element at `base + 4 * record_index`.
@@ -233,6 +255,13 @@ const _: [(); 0x6c0] = [(); G15_J615_PM_SCENE_GROUP_COUNT
 const _: [(); 0x6f0] = [(); (G15_J615_PM_SCENE_GROUP_COUNT
     + G15_J615_PM_EXTRA_SCENE_SLICES)
     * g15_j615_pm_scene_stride(0x3366_0000)];
+// PM +0x2c starts at zero, but processRenderSetup() advances before
+// descriptor selection, so the first ordinary record is index 1.
+const _: [(); 1] = [(); g15_j615_pm_next_record_index(0) as usize];
+const _: [(); 0] = [(); g15_j615_pm_next_record_index(0x4f) as usize];
+const _: [(); 0x30] = [(); g15_j615_pm_scene_slice_offset(1)];
+const _: [(); 0] = [(); g15_j615_pm_scene_slice_offset(36)];
+const _: [(); 0x150] = [(); g15_j615_pm_scene_slice_offset(79)];
 
 /// Metadata about the tiling configuration for a scene. This is computed in the `render` module.
 /// based on dimensions, tile size, and other info.
