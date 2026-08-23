@@ -1902,6 +1902,10 @@ impl super::QueueInner::ver {
                             let g15_ta_vrs_reg_1a071: u64 = 0;
                             let g15_ta_vrs_reg_1a0c9: u64 = 0;
                             let g15_ta_vrs_reg_1a0d1: u64 = 0;
+                            // Raw +0x670 is written as a low dword plus sampled-render byte
+                            // at +0x674 (0/1). TA 0x1a0f1 consumes the high dword masked
+                            // with ~7, so both ordinary and sampled paths produce zero.
+                            let g15_ta_sampled_reg_1a0f1: u64 = 0;
                             // Exact Apple PM tail of the normal TA list:
                             // 0x1ca30 = record+0x28 & ~0xf;
                             // encoded 32-bit 0x16c39 carries the same source value;
@@ -1942,6 +1946,7 @@ impl super::QueueInner::ver {
                                 g15_ta_vrs_reg_1a071,
                                 g15_ta_vrs_reg_1a0c9,
                                 g15_ta_vrs_reg_1a0d1,
+                                g15_ta_sampled_reg_1a0f1,
                                 g15_ta_pm_scene,
                                 g15_ta_pm_metrics_1c910,
                                 g15_pm_record_index,
