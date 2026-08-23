@@ -1126,6 +1126,15 @@ impl super::QueueInner::ver {
                             // producer in the analyzed G15G userspace path. Linux Asahi does
                             // not support memoryless render targets, so the exact current-Linux
                             // value for Fragment 0x1a0b1 (and shared TA 0x1a0a1) is zero.
+                            // The raw +0x450/+0x454/+0x458 extension is another
+                            // rasterization-rate-map cluster. assignRenderRegisters()
+                            // publishes framebuffer +0x1488/+0x1490 only when the same
+                            // +0x147c VRS gate is active; current Linux has no such path.
+                            // Hence 0x101c1/0x0d469 are zero, while dynamic 0x10791 takes
+                            // the normal desc+0x6a1==0 gate branch and equals 0xff0200.
+                            let g15_vrs_reg_101c1: u64 = 0;
+                            let g15_vrs_reg_0d469: u64 = 0;
+                            let g15_vrs_reg_10791: u64 = 0xff0200;
                             let g15_memoryless_reg_1a0b1: u64 = 0;
                             let g15_vrs_reg_1a079: u64 = 0;
                             let g15_vrs_reg_1a081: u64 = 0;
@@ -1150,6 +1159,9 @@ impl super::QueueInner::ver {
                                 g15_pm_scene_slice_offset,
                                 g15_pm_scene_slice_gpuva,
                                 g15_pm_scene_reg_1ca28,
+                                g15_vrs_reg_101c1,
+                                g15_vrs_reg_0d469,
+                                g15_vrs_reg_10791,
                                 g15_memoryless_reg_1a0b1,
                                 g15_vrs_reg_1a079,
                                 g15_vrs_reg_1a081,
