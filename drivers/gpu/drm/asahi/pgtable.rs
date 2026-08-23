@@ -151,6 +151,13 @@ pub(crate) mod prot {
     pub(crate) const PROT_FW_PRIV_RW: Prot = PROT_FW_RW.memattr(MEMATTR_CACHED);
     /// Firmware/GPU shared (uncached) RW
     pub(crate) const PROT_GPU_FW_SHARED_RW: Prot = PROT_FW_GPU_RW.memattr(MEMATTR_UNCACHED);
+    /// Exact non-legacy G15 range-5 PTE protection shape used by ordinary
+    /// GTP/TPC and Parameter Scene Allocations.  Do not infer the older
+    /// generation `PROT_FW_GPU_NA` semantic name here: the mechanically
+    /// recovered G15 UAT encoder emits AP=0, memattr=uncached, GPU-access=1,
+    /// PXN=UXN=0 for this resource class.
+    pub(crate) const PROT_G15_RANGE5_UNCACHED: Prot =
+        PROT_FW_GPU_NA.memattr(MEMATTR_UNCACHED);
     /// Firmware/GPU shared (private) RW
     pub(crate) const PROT_GPU_FW_PRIV_RW: Prot = PROT_FW_GPU_RW.memattr(MEMATTR_CACHED);
     /// Firmware-RW/GPU-RO shared (private) RW
@@ -162,6 +169,14 @@ pub(crate) mod prot {
     /// GPU shared/coherent WO
     pub(crate) const PROT_GPU_SHARED_WO: Prot = PROT_GPU_WO.memattr(MEMATTR_UNCACHED);
 }
+
+// Apple non-legacy G15 SecureGart/UAT protection bits, excluding AF/type/
+// non-global bits.  PM scene/TPC compact 0x308 -> high GPU-access + uncached.
+const _: [(); 1] = [(); ((prot::PROT_G15_RANGE5_UNCACHED.as_pte() & UAT_PROT_BITS)
+    == 0x0080_0000_0000_0008) as usize];
+// PM-record compact 0x303 -> the existing cached FW/GPU-private shape exactly.
+const _: [(); 1] = [(); ((prot::PROT_GPU_FW_PRIV_RW.as_pte() & UAT_PROT_BITS)
+    == 0x00e0_0000_0000_0000) as usize];
 
 impl Prot {
     const fn from_bits(ap: u8, uxn: u16, pxn: u16) -> Self {
