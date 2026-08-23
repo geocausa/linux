@@ -167,9 +167,11 @@ const _: [(); 5] = [(); g15_apple_gart_range(0x100_0000_0000) as usize];
 const _: [(); 5] = [(); g15_apple_gart_range(0x2ff_ffff_ffff) as usize];
 const _: [(); 0] = [(); g15_apple_gart_range(0x300_0000_0000) as usize];
 // PMPageMetricsBuffer uses Apple eGartRange 7.
-const _: [(); 7] = [(); g15_apple_gart_range(0xffff_fc20_0000_0000) as usize];
-const _: [(); 7] = [(); g15_apple_gart_range(0xffff_fc20_0bff_ffff) as usize];
-const _: [(); 8] = [(); g15_apple_gart_range(0xffff_fc20_0c00_0000) as usize];
+pub(crate) const G15_GART_RANGE7: Range<u64> =
+    0xffff_fc20_0000_0000..0xffff_fc20_0c00_0000;
+const _: [(); 7] = [(); g15_apple_gart_range(G15_GART_RANGE7.start) as usize];
+const _: [(); 7] = [(); g15_apple_gart_range(G15_GART_RANGE7.end - 1) as usize];
+const _: [(); 8] = [(); g15_apple_gart_range(G15_GART_RANGE7.end) as usize];
 
 /// Apple G15 eGartRange 5. Parameter Scene Allocations and GTP/TPC use this
 /// per-client lower-address-space aperture. It is intentionally outside the
@@ -201,11 +203,61 @@ const fn g15_uat_top_index(addr: u64) -> usize {
     ((addr >> 36) & 0x3f) as usize
 }
 
+/// Address presented to one bank-local 42-bit page-table walker after G15 has
+/// selected the bank with VA bit 42. Canonical high addresses therefore keep
+/// only their low 42 translated bits inside the selected bank.
+const fn g15_uat_bank_iova(addr: u64) -> u64 {
+    addr & ((1u64 << G15_HW_UAT_IAS) - 1)
+}
+
+// Apple AGXUnifiedAddressTranslator stores two 0x90-byte bank-local state
+// blocks. Bank 0 begins at +0x28 and bank 1 at +0xb8. Normal client init copies
+// the accelerator-owned bank-1 block into +0xb8, then allocateGart() allocates
+// only bank 0 locally. getPageTablePhysicalBaseAddress(0/1) reads the roots
+// from these two blocks, and setClientContextID() publishes them as adjacent
+// GPTBAT qwords. Keep this compile-only until G15 TTB publication is enabled.
+const G15_UAT_BANK_STATE_BYTES: usize = 0x90;
+const G15_UAT_BANK0_STATE_OFFSET: usize = 0x28;
+const G15_UAT_BANK1_STATE_OFFSET: usize =
+    G15_UAT_BANK0_STATE_OFFSET + G15_UAT_BANK_STATE_BYTES;
+const G15_GPTBAT_ROOT_MASK: u64 = 0xffff_ffff_ffff_c000;
+const G15_GPTBAT_PHYS_ROOT_MASK: u64 = ((1u64 << G15_HW_UAT_IAS) - 1) & !0x3fff;
+const G15_GPTBAT_BANK0_HIGH_MASK: u64 = 0xffff_fc00_0000_0000;
+
+const fn g15_gptbat_bank0(root: u64, context_id: u8) -> u64 {
+    (root & G15_GPTBAT_ROOT_MASK) | ((context_id as u64) << 48) | TTBR_VALID
+}
+
+const fn g15_gptbat_bank1(bank0_root: u64, bank1_root: u64, context_id: u8) -> u64 {
+    (bank1_root & G15_GPTBAT_ROOT_MASK)
+        | (bank0_root & G15_GPTBAT_BANK0_HIGH_MASK)
+        | ((context_id as u64) << 48)
+        | TTBR_VALID
+}
+
 // Range 5 (PM scene / GTP) is bank 0; range 7 (PM page metrics) is bank 1.
 const _: [(); 0] = [(); g15_uat_bank(G15_GART_RANGE5.start)];
 const _: [(); 0x10] = [(); g15_uat_top_index(G15_GART_RANGE5.start)];
-const _: [(); 1] = [(); g15_uat_bank(0xffff_fc20_0000_0000)];
-const _: [(); 0x2] = [(); g15_uat_top_index(0xffff_fc20_0000_0000)];
+const _: [(); 1] = [(); g15_uat_bank(G15_GART_RANGE7.start)];
+const _: [(); 0x2] = [(); g15_uat_top_index(G15_GART_RANGE7.start)];
+const _: [(); 1] = [(); (g15_uat_bank_iova(G15_GART_RANGE7.start) == 0x20_0000_0000) as usize];
+const _: [(); 0xb8] = [(); G15_UAT_BANK1_STATE_OFFSET];
+const G15_GPTBAT_SAMPLE_BANK0_ROOT: u64 = 0x0000_0001_2345_4000;
+const G15_GPTBAT_SAMPLE_BANK1_ROOT: u64 = 0x0000_0020_5678_8000;
+const G15_GPTBAT_SAMPLE_CONTEXT: u8 = 0x3f;
+const G15_GPTBAT_SAMPLE0: u64 =
+    g15_gptbat_bank0(G15_GPTBAT_SAMPLE_BANK0_ROOT, G15_GPTBAT_SAMPLE_CONTEXT);
+const G15_GPTBAT_SAMPLE1: u64 = g15_gptbat_bank1(
+    G15_GPTBAT_SAMPLE_BANK0_ROOT,
+    G15_GPTBAT_SAMPLE_BANK1_ROOT,
+    G15_GPTBAT_SAMPLE_CONTEXT,
+);
+const _: [(); 1] = [(); ((G15_GPTBAT_SAMPLE0 & G15_GPTBAT_PHYS_ROOT_MASK)
+    == G15_GPTBAT_SAMPLE_BANK0_ROOT) as usize];
+const _: [(); 1] = [(); ((G15_GPTBAT_SAMPLE1 & G15_GPTBAT_PHYS_ROOT_MASK)
+    == G15_GPTBAT_SAMPLE_BANK1_ROOT) as usize];
+const _: [(); 0x3f] = [(); ((G15_GPTBAT_SAMPLE0 >> 48) & 0xff) as usize];
+const _: [(); 0x3f] = [(); ((G15_GPTBAT_SAMPLE1 >> 48) & 0xff) as usize];
 /// Lower/user top VA.
 pub(crate) const IOVA_USER_TOP: u64 = 1 << UAT_USER_IAS;
 /// Lower/user VA range
