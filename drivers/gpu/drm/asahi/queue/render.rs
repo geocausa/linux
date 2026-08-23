@@ -1111,6 +1111,10 @@ impl super::QueueInner::ver {
                             let g15_vrs_reg_1a081: u64 = 0;
                             let g15_vrs_reg_1a0d9: u64 = 0;
                             let g15_vrs_reg_1a0e1: u64 = 0;
+                            // Apple copies the sampled-render flag (only 0/1) to raw
+                            // Render +0x674. G15 0x1a0f9 masks that dword with
+                            // 0xfffffff8, so its exact value is zero in both cases.
+                            let g15_sampled_reg_1a0f9: u64 = 0;
                             let _ = (
                                 g15_fb_dimensions,
                                 g15_blocks_per_utile,
@@ -1130,6 +1134,7 @@ impl super::QueueInner::ver {
                                 g15_vrs_reg_1a081,
                                 g15_vrs_reg_1a0d9,
                                 g15_vrs_reg_1a0e1,
+                                g15_sampled_reg_1a0f9,
                                 g15_pm_record_gpuva,
                                 g15_pm_page_metrics_gpuva,
                                 load_bgobjvals,
