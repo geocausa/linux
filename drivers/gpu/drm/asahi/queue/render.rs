@@ -77,6 +77,19 @@ const fn g15_fragment_tile_config(
 // request them.
 const G15_LINUX_TILER_MODE_10141: u64 = 0x200;
 
+// G15 Fragment 0x1a0a9 (and TA 0x1a099) comes from raw Render +0x638.
+// Apple packs an initial-render "any attachment loadAction=CLEAR" boolean in
+// byte 0 and native in-render resolve state in byte 1. Honeykrisp performs
+// resolves as a separate control stream, so byte 1 is zero for Linux. The
+// remaining producer is an explicit has-load-clear semantic that the current
+// render UAPI does not expose; keep only the exact formula here until it does.
+const fn g15_render_clear_state(has_load_clear: bool) -> u64 {
+    if has_load_clear { 1 } else { 0 }
+}
+
+const _: [(); 0] = [(); g15_render_clear_state(false) as usize];
+const _: [(); 1] = [(); g15_render_clear_state(true) as usize];
+
 const fn g15_fragment_tile_config_linux(layers: u32, process_empty_tiles: bool) -> u64 {
     (if layers > 1 { 1 } else { 0 })
         | (if process_empty_tiles { 0x1_0000 } else { 0 })
