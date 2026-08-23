@@ -87,6 +87,20 @@ const fn g15_fragment_tilecfg(
         | 0x3617f
 }
 
+// G15 TA 0x10169 is layer-count state plus the raw +0x618 process-empty-tiles
+// mode. Apple then derives 0x1c9e8 by masking this value with 0x47ff.
+const fn g15_ta_render_target_max(layers: u32, process_empty_tiles: bool) -> u32 {
+    let mut value = (layers - 1) | 0x8000;
+    if layers > 1 {
+        value |= 0x4000 | if process_empty_tiles { 0x2000 } else { 0x1000 };
+    }
+    value
+}
+
+const _: [(); 0x8000] = [(); g15_ta_render_target_max(1, false) as usize];
+const _: [(); 0xd001] = [(); g15_ta_render_target_max(2, false) as usize];
+const _: [(); 0xe001] = [(); g15_ta_render_target_max(2, true) as usize];
+
 // Default/zero raw mode reduces 0x10039 to Linux's historical tile_config
 // composition. These constants also pin the non-default selector branches.
 const _: [(); 0x280] = [(); g15_fragment_tile_config(1, false, 0, 0) as usize];
@@ -1662,6 +1676,27 @@ impl super::QueueInner::ver {
                             // TA 0x10139 the same PPP_MULTISAMPLECTL value.
                             let g15_ta_utile_config: u64 = utile_config.into();
                             let g15_ta_ppp_multisamplectl = cmdbuf.ppp_multisamplectl;
+                            // Exact G15 RTM geometry maps back onto Linux TilingParameters.
+                            let g15_ta_ppp_screen: u64 = tile_info.params.x_max as u64
+                                | ((tile_info.params.y_max as u64) << 16);
+                            let g15_ta_te_screen: u64 = tile_info.params.te_screen.into();
+                            let g15_ta_te_mtile1: u64 = tile_info.params.te_mtile1.into();
+                            let g15_ta_te_mtile2: u64 = tile_info.params.te_mtile2.into();
+                            let g15_ta_tiles_per_mtile: u64 =
+                                tile_info.params.tiles_per_mtile.into();
+                            let g15_ta_tpc_stride: u64 = tile_info.params.tpc_stride.into();
+                            let g15_ta_geom_const_88: u64 = 0x88;
+                            let g15_ta_geom_const_100: u64 = 0x100;
+                            let g15_ta_process_empty_tiles = cmdbuf.flags
+                                & uapi::drm_asahi_render_flags_DRM_ASAHI_RENDER_PROCESS_EMPTY_TILES
+                                    as u32
+                                != 0;
+                            let g15_ta_render_target_max = g15_ta_render_target_max(
+                                cmdbuf.layers as u32,
+                                g15_ta_process_empty_tiles,
+                            );
+                            let g15_ta_render_target_max_masked =
+                                g15_ta_render_target_max & 0x47ff;
                             let g15_ta_heapmeta_tagged = inner
                                 .scene
                                 .tvb_heapmeta_pointer()
@@ -1677,6 +1712,16 @@ impl super::QueueInner::ver {
                                 g15_ta_rgn_size,
                                 g15_ta_utile_config,
                                 g15_ta_ppp_multisamplectl,
+                                g15_ta_ppp_screen,
+                                g15_ta_te_screen,
+                                g15_ta_te_mtile1,
+                                g15_ta_te_mtile2,
+                                g15_ta_tiles_per_mtile,
+                                g15_ta_tpc_stride,
+                                g15_ta_geom_const_88,
+                                g15_ta_geom_const_100,
+                                g15_ta_render_target_max,
+                                g15_ta_render_target_max_masked,
                                 g15_ta_heapmeta_tagged,
                                 iogpu_unk54,
                                 iogpu_unk56,
