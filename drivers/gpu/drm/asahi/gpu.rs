@@ -290,6 +290,7 @@ pub(crate) trait GpuManager: Send + Sync {
         vm: mmu::Vm,
         ualloc: Arc<Mutex<alloc::DefaultAllocator>>,
         ualloc_priv: Arc<Mutex<alloc::DefaultAllocator>>,
+        g15_ualloc_range5: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
         priority: u32,
         usc_exec_base: u64,
     ) -> Result<KBox<dyn queue::Queue>>;
@@ -1397,6 +1398,7 @@ impl GpuManager for GpuManager::ver {
         vm: mmu::Vm,
         ualloc: Arc<Mutex<alloc::DefaultAllocator>>,
         ualloc_priv: Arc<Mutex<alloc::DefaultAllocator>>,
+        g15_ualloc_range5: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
         priority: u32,
         usc_exec_base: u64,
     ) -> Result<KBox<dyn queue::Queue>> {
@@ -1409,6 +1411,7 @@ impl GpuManager for GpuManager::ver {
                 &mut kalloc,
                 ualloc,
                 ualloc_priv,
+                g15_ualloc_range5,
                 self.event_manager.clone(),
                 &self.buffer_mgr,
                 id,

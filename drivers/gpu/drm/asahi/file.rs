@@ -60,6 +60,10 @@ pub(crate) const MAX_COMMANDS_PER_SUBMISSION: u32 = 64;
 struct Vm {
     ualloc: Arc<Mutex<alloc::DefaultAllocator>>,
     ualloc_priv: Arc<Mutex<alloc::DefaultAllocator>>,
+    // G15 eGartRange 5 lives above the 39-bit userspace ABI but inside the
+    // per-client bank-0 TTBR0. Only instantiate this on a sufficiently wide
+    // hardware IAS; current G13/G14 VMs therefore keep no extra allocator.
+    g15_ualloc_range5: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
     vm: mmu::Vm,
     kernel_range: Range<u64>,
     _dummy_mapping: mmu::KernelMapping,
@@ -418,6 +422,25 @@ impl File {
             GFP_KERNEL,
         )?;
 
+        let g15_ualloc_range5 = if gpu.get_cfg().uat_ias >= 42 {
+            Some(Arc::pin_init(
+                new_mutex!(alloc::DefaultAllocator::new(
+                    device,
+                    &vm,
+                    mmu::G15_GART_RANGE5,
+                    buffer::PAGE_SIZE,
+                    mmu::PROT_GPU_FW_PRIV_RW,
+                    64 * 1024,
+                    true,
+                    fmt!("File {} VM {} G15 Range 5", file_id, id),
+                    false,
+                )?),
+                GFP_KERNEL,
+            )?)
+        } else {
+            None
+        };
+
         mod_dev_dbg!(
             device,
             "[File {} VM {}]: Creating dummy object\n",
@@ -434,6 +457,7 @@ impl File {
             Vm {
                 ualloc,
                 ualloc_priv,
+                g15_ualloc_range5,
                 vm,
                 kernel_range,
                 _dummy_mapping: dummy_mapping,
@@ -932,6 +956,7 @@ impl File {
         let vm = file_vm.vm.clone();
         let ualloc = file_vm.ualloc.clone();
         let ualloc_priv = file_vm.ualloc_priv.clone();
+        let g15_ualloc_range5 = file_vm.g15_ualloc_range5.clone();
         // Drop the vms lock eagerly
         let _ = file_vm;
         core::mem::drop(guard);
@@ -940,6 +965,7 @@ impl File {
             vm,
             ualloc,
             ualloc_priv,
+            g15_ualloc_range5,
             // TODO: Plumb deeper the enum
             uapi::drm_asahi_priority_DRM_ASAHI_PRIORITY_REALTIME - data.priority,
             data.usc_exec_base,

@@ -146,9 +146,14 @@ pub(crate) struct QueueInner {
     counter: AtomicU64,
     // G15 AGXParameterManagement +0x2c equivalent. Apple scopes the PM to
     // AGX3DWorkQueue and advances this 80-record ring before each applicable
-    // render setup. No PM backing resources are allocated from this field yet.
+    // render setup. The selector is independent from the range-5 backing below.
     #[ver(G == G15)]
     g15_pm_record_index: AtomicU32,
+    // Exact 0x6f0 Parameter Scene Allocations backing. Apple scopes this to
+    // AGXShared/eGartRange 5 and PM/work-queue lifetime. Register emission is
+    // still disabled; this only establishes the correct hidden-VA resource.
+    #[ver(G == G15)]
+    g15_pm_scene_alloc: GpuArray<u8>,
 }
 
 #[versions(AGX)]
@@ -446,6 +451,7 @@ impl Queue::ver {
         alloc: &mut gpu::KernelAllocators,
         ualloc: Arc<Mutex<alloc::DefaultAllocator>>,
         ualloc_priv: Arc<Mutex<alloc::DefaultAllocator>>,
+        _g15_ualloc_range5: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
         event_manager: Arc<event::EventManager>,
         mgr: &buffer::BufferManager::ver,
         id: u64,
@@ -489,6 +495,13 @@ impl Queue::ver {
         let buffer =
             buffer::Buffer::ver::new(&*(*dev).gpu, alloc, ualloc.clone(), ualloc_priv, mgr)?;
 
+        #[ver(G == G15)]
+        let g15_pm_scene_alloc = _g15_ualloc_range5
+            .as_ref()
+            .ok_or(EINVAL)?
+            .lock()
+            .array_empty_tagged(buffer::G15_J615_PM_SCENE_ALLOC_BYTES, b"PMSC")?;
+
         let mut ret = Queue::ver {
             dev: dev.into(),
             _sched: sched,
@@ -515,6 +528,8 @@ impl Queue::ver {
                 counter: AtomicU64::new(0),
                 #[ver(G == G15)]
                 g15_pm_record_index: AtomicU32::new(0),
+                #[ver(G == G15)]
+                g15_pm_scene_alloc,
             },
         };
 
