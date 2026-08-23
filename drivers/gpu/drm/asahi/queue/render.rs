@@ -1656,6 +1656,12 @@ impl super::QueueInner::ver {
                             let g15_ta_tilemap = inner.scene.tvb_tilemap_pointer();
                             let g15_ta_layermeta = inner.scene.tvb_layermeta_pointer();
                             let g15_ta_rgn_size: u64 = tile_info.params.rgn_size.into();
+                            // RTM +0xf0 independently reconstructs the same utile/sample
+                            // encoding as Linux `utile_config`. RTM +0xf8 is packed from
+                            // the same AGXSampleOffsetRec as Fragment RTM +0xb0, making
+                            // TA 0x10139 the same PPP_MULTISAMPLECTL value.
+                            let g15_ta_utile_config: u64 = utile_config.into();
+                            let g15_ta_ppp_multisamplectl = cmdbuf.ppp_multisamplectl;
                             let g15_ta_heapmeta_tagged = inner
                                 .scene
                                 .tvb_heapmeta_pointer()
@@ -1669,6 +1675,8 @@ impl super::QueueInner::ver {
                                 g15_ta_tilemap,
                                 g15_ta_layermeta,
                                 g15_ta_rgn_size,
+                                g15_ta_utile_config,
+                                g15_ta_ppp_multisamplectl,
                                 g15_ta_heapmeta_tagged,
                                 iogpu_unk54,
                                 iogpu_unk56,
