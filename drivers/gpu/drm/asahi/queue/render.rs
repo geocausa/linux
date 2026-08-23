@@ -1887,6 +1887,12 @@ impl super::QueueInner::ver {
                                 .scene
                                 .tvb_heapmeta_pointer()
                                 .or(0x8000_0000_0000_0000);
+                            // Apple endRenderPassCommon() explicitly zeros raw Render
+                            // +0x1b8 on the current command before submission. The G15 TA
+                            // generator masks its low five bits into both 0x12099 and the
+                            // G15G/C0 dynamic encoded register 0x101e1.
+                            let g15_ta_raw1b8_reg_12099: u64 = 0;
+                            let g15_ta_raw1b8_reg_101e1: u64 = 0;
                             // Exact Apple PM tail of the normal TA list:
                             // 0x1ca30 = record+0x28 & ~0xf;
                             // encoded 32-bit 0x16c39 carries the same source value;
@@ -1920,6 +1926,8 @@ impl super::QueueInner::ver {
                                 g15_ta_render_target_max,
                                 g15_ta_render_target_max_masked,
                                 g15_ta_heapmeta_tagged,
+                                g15_ta_raw1b8_reg_12099,
+                                g15_ta_raw1b8_reg_101e1,
                                 g15_ta_pm_scene,
                                 g15_ta_pm_metrics_1c910,
                                 g15_pm_record_index,
