@@ -209,6 +209,40 @@ const _: [(); 0x1234_5000] =
 const _: [(); 0x1234_5280] =
     [(); g15_ta_ctxswitch_secondary_reg(0x1234_5000) as usize];
 
+// Exact ordinary J615/G15G C0 TA RegisterArray order, including the mandatory
+// seed and both G15G dynamic register IDs. The conditional depth seed 0x17e1
+// is inserted immediately after 0x1748 when low32(depth_level_offset) != 0.
+// The default-disabled AGXPerfCtrSampler trio (0x1ca10/0x14a1/0xa349) is not
+// part of this ordinary list. This is a compile-time geometry lock only; the
+// G15 RegisterArray remains deliberately non-emitting below.
+const G15_TA_OPTIONAL_DEPTH_SEED_REGISTER: u32 = 0x17e1;
+const G15_TA_ORDINARY_REGISTERS: [u32; 59] = [
+    0x1748, 0x10141, 0x1c039, 0x1c9c8, 0x1c0a1, 0x1c031, 0x1c9c0, 0x1c051, 0x1c061,
+    0x10149, 0x10139, 0x10111, 0x1c9b0, 0x10119, 0x1c9b8, 0x1c958, 0x1c950, 0x1c930,
+    0x1c880, 0x1c898, 0x1c079, 0x1c9d8, 0x10151, 0x1c199, 0x1c1a1, 0x1c1a9, 0x1c1b1,
+    0x1c1b9, 0x1c8f8, 0x1c0b1, 0x1c850, 0x10131, 0x10121, 0x10129, 0x101b9, 0x1c069,
+    0x1c071, 0x1c081, 0x1c0a9, 0x10171, 0x10169, 0x12099, 0x101e1, 0x1c9e8, 0x1a099,
+    0x1a0a1, 0x1a069, 0x1a071, 0x1a0c9, 0x1a0d1, 0x101c9, 0x0d471, 0x1a0f1, 0x10799,
+    0x1ca48, 0x1c830, 0x1ca30, 0x16c39, 0x1c910,
+];
+
+const fn g15_ta_ordinary_register_count(depth_level_offset: u64) -> usize {
+    G15_TA_ORDINARY_REGISTERS.len()
+        + if (depth_level_offset as u32) != 0 {
+            1
+        } else {
+            0
+        }
+}
+
+const _: [(); 0x17e1] = [(); G15_TA_OPTIONAL_DEPTH_SEED_REGISTER as usize];
+const _: [(); 59] = [(); g15_ta_ordinary_register_count(0)];
+const _: [(); 60] = [(); g15_ta_ordinary_register_count(0x80)];
+const _: [(); 0x2c4] =
+    [(); 59 * core::mem::size_of::<fw::job::raw::Register>()];
+const _: [(); 0x2d0] =
+    [(); 60 * core::mem::size_of::<fw::job::raw::Register>()];
+
 // Default/zero raw mode reduces 0x10039 to Linux's historical tile_config
 // composition. These constants also pin the non-default selector branches.
 const _: [(); 0x280] = [(); g15_fragment_tile_config(1, false, 0, 0) as usize];
