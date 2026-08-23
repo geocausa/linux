@@ -790,6 +790,15 @@ enum drm_asahi_render_flags {
 	DRM_ASAHI_RENDER_NO_VERTEX_CLUSTERING = (1U << 2),
 
 	/**
+	 * @DRM_ASAHI_RENDER_HAS_LOAD_CLEAR: At least one attachment is cleared
+	 * by the initial render operation.
+	 *
+	 * This is distinct from @DRM_ASAHI_RENDER_PROCESS_EMPTY_TILES: a clear
+	 * may be present even when empty tiles do not need to be processed.
+	 */
+	DRM_ASAHI_RENDER_HAS_LOAD_CLEAR = (1U << 3),
+
+	/**
 	 * @DRM_ASAHI_RENDER_DBIAS_IS_INT: Use integer depth bias formula.
 	 *
 	 * Graphics specifications contain two alternate formulas for depth

@@ -312,12 +312,18 @@ impl super::QueueInner::ver {
             & !(uapi::drm_asahi_render_flags_DRM_ASAHI_RENDER_VERTEX_SCRATCH
                 | uapi::drm_asahi_render_flags_DRM_ASAHI_RENDER_PROCESS_EMPTY_TILES
                 | uapi::drm_asahi_render_flags_DRM_ASAHI_RENDER_NO_VERTEX_CLUSTERING
+                | uapi::drm_asahi_render_flags_DRM_ASAHI_RENDER_HAS_LOAD_CLEAR
                 | uapi::drm_asahi_render_flags_DRM_ASAHI_RENDER_DBIAS_IS_INT) as u32
             != 0
         {
             cls_pr_debug!(Errors, "Invalid flags ({:#x})\n", cmdbuf.flags);
             return Err(EINVAL);
         }
+
+        #[ver(G == G15)]
+        let g15_has_load_clear = cmdbuf.flags
+            & uapi::drm_asahi_render_flags_DRM_ASAHI_RENDER_HAS_LOAD_CLEAR as u32
+            != 0;
 
         if cmdbuf.width_px == 0
             || cmdbuf.height_px == 0
@@ -1112,6 +1118,12 @@ impl super::QueueInner::ver {
                                 tile_info.params.te_screen,
                             );
                             let g15_pm_scene_reg_1ca28 = g15_pm_scene_slice_gpuva & !0xf;
+                            // G15 Fragment 0x1a0a9 is the initial-load-clear state.
+                            // Apple keeps this separate from process-empty-tiles; the UAPI
+                            // mirrors that distinction explicitly. Native resolve is absent
+                            // from Honeykrisp's separate-resolve path, so its second byte is 0.
+                            let g15_clear_reg_1a0a9 =
+                                g15_render_clear_state(g15_has_load_clear);
                             // Apple userspace G15G C0 initializes the raw Render command
                             // with bzero(0x870).  The late +0x648/+0x650/+0x658 fields are
                             // only populated when an MTLRasterizationRateMap implementation
@@ -1197,6 +1209,7 @@ impl super::QueueInner::ver {
                                 g15_pm_scene_slice_offset,
                                 g15_pm_scene_slice_gpuva,
                                 g15_pm_scene_reg_1ca28,
+                                g15_clear_reg_1a0a9,
                                 g15_reg_100b8,
                                 g15_native_resolve_reg_15231,
                                 g15_raw5f0_reg_16058,
@@ -1906,6 +1919,11 @@ impl super::QueueInner::ver {
                             // at +0x674 (0/1). TA 0x1a0f1 consumes the high dword masked
                             // with ~7, so both ordinary and sampled paths produce zero.
                             let g15_ta_sampled_reg_1a0f1: u64 = 0;
+                            // TA 0x1a099 shares the exact raw +0x638 initial-clear source
+                            // with Fragment 0x1a0a9. The explicit UAPI flag deliberately
+                            // does not alias PROCESS_EMPTY_TILES.
+                            let g15_ta_clear_reg_1a099 =
+                                g15_render_clear_state(g15_has_load_clear);
                             // Exact Apple PM tail of the normal TA list:
                             // 0x1ca30 = record+0x28 & ~0xf;
                             // encoded 32-bit 0x16c39 carries the same source value;
@@ -1947,6 +1965,7 @@ impl super::QueueInner::ver {
                                 g15_ta_vrs_reg_1a0c9,
                                 g15_ta_vrs_reg_1a0d1,
                                 g15_ta_sampled_reg_1a0f1,
+                                g15_ta_clear_reg_1a099,
                                 g15_ta_pm_scene,
                                 g15_ta_pm_metrics_1c910,
                                 g15_pm_record_index,
