@@ -235,6 +235,20 @@ const fn g15_pm_page_metrics_bytes(record_count: usize) -> usize {
     (bytes + G15_PM_PAGE_METRICS_ALIGNMENT - 1) & !(G15_PM_PAGE_METRICS_ALIGNMENT - 1)
 }
 
+/// Exact G15 TA register 0x1c910 encoding of a selected PMPageMetricsBuffer
+/// slot GPUVA. Apple places this resource in eGartRange 7. The transform folds
+/// source address bit 42 into result bit 39 and sets bit 0 as the enable bit.
+/// Keep this compile-only until Linux implements the G15 range-7 VA class.
+const fn g15_pm_page_metrics_reg_1c910(gpuva: u64) -> u64 {
+    let prefix = if gpuva & 0x400_0000_0000 != 0 {
+        0
+    } else {
+        0x70_0000_0000
+    };
+
+    ((gpuva >> 3) & 0x80_0000_0000) | ((prefix + gpuva) & 0x7f_ffff_fffe) | 1
+}
+
 const fn g15_j615_pm_scene_stride(pb_max_size: usize) -> usize {
     let pages = (pb_max_size + PAGE_SIZE - 1) / PAGE_SIZE;
     let entries = (pages + G15_PM_DEVICE_CONFIG.scene_pages_per_entry - 1)
@@ -257,6 +271,8 @@ const _: [(); 0x280] = [(); g15_pm_fw_page_list_bytes(G15_J615_PM_RECORD_COUNT)]
 const _: [(); 0x80] = [(); G15_PM_PAGE_LIST_STATS_BYTES];
 const _: [(); 0x40] = [(); G15_PM_SCENE_STATS_OFFSET];
 const _: [(); 0x140] = [(); g15_pm_page_metrics_bytes(G15_J615_PM_RECORD_COUNT)];
+const _: [(); 0xa0] = [(); (g15_pm_page_metrics_reg_1c910(0xffff_fc20_0000_0000) >> 32) as usize];
+const _: [(); 0x4001] = [(); (g15_pm_page_metrics_reg_1c910(0xffff_fc20_0000_4000) & 0xffff) as usize];
 const _: [(); 0x30] = [(); g15_j615_pm_scene_stride(0x3366_0000)];
 const _: [(); 0x6c0] = [(); G15_J615_PM_SCENE_GROUP_COUNT
     * g15_j615_pm_scene_stride(0x3366_0000)];

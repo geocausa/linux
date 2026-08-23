@@ -99,6 +99,77 @@ pub(crate) const IOVA_USER_BASE: u64 = UAT_PGSZ as u64;
 /// Current userspace ABI aperture. Keep this independent from the hardware UAT IAS
 /// until the G15 userspace VA contract is characterized.
 const UAT_USER_IAS: u32 = 39;
+
+/// Exact Apple G15 non-legacy GART geometry uses 16 KiB pages, two full
+/// 11-bit lower indices, and six significant bits in the top index
+/// (`0x3f << 36`). This gives a 42-bit translated input address space.
+///
+/// Keep this compile-only and distinct from UAT_USER_IAS: generation-7 runtime
+/// matching and the userspace VA contract are still deliberately disabled.
+const G15_HW_UAT_IAS: u32 = 42;
+
+/// Exact `AGXGart::returnGartRange(u64)` classifier from the G15 Apple host
+/// driver. These range IDs feed the Apple memory-mapping API and are part of
+/// the G15 VA contract; they are not Linux allocator IDs.
+const fn g15_apple_gart_range(addr: u64) -> u8 {
+    if addr >> 36 != 0 {
+        if addr >> 34 < 0x1b {
+            return 1;
+        }
+        if addr >> 33 > 0x36 {
+            if addr >> 32 < 0x6f {
+                return 2;
+            }
+            if addr < 0x6fff_c00000 {
+                return 3;
+            }
+            if addr >> 36 < 7 {
+                return 4;
+            }
+            if addr >> 40 != 0 {
+                if addr >> 40 < 3 {
+                    return 5;
+                }
+                if addr > 0xffff_fc1f_ffdf_ffff {
+                    if addr < 0xffff_fc20_0000_0000 {
+                        return 6;
+                    }
+                    if addr < 0xffff_fc20_0c00_0000 {
+                        return 7;
+                    }
+                    if addr < 0xffff_fc20_1000_0000 {
+                        return 8;
+                    }
+                    if addr < 0xffff_fc20_1140_0000 {
+                        return 9;
+                    }
+                    if addr < 0xffff_fc20_1180_0000 {
+                        return 10;
+                    }
+                    if addr < 0xffff_fc20_1580_0000 {
+                        return 11;
+                    }
+                    if addr < 0xffff_fc20_1980_0000 {
+                        return 12;
+                    }
+                }
+            }
+        }
+    }
+    0
+}
+
+// Pin the exact non-legacy G15 top-level mask: bits 36..41 are significant.
+const _: [(); 42] = [(); G15_HW_UAT_IAS as usize];
+const _: [(); 0x3f] = [(); (0x3f0_0000_0000u64 >> 36) as usize];
+// PM/GTP scene resources use Apple eGartRange 5.
+const _: [(); 5] = [(); g15_apple_gart_range(0x100_0000_0000) as usize];
+const _: [(); 5] = [(); g15_apple_gart_range(0x2ff_ffff_ffff) as usize];
+const _: [(); 0] = [(); g15_apple_gart_range(0x300_0000_0000) as usize];
+// PMPageMetricsBuffer uses Apple eGartRange 7.
+const _: [(); 7] = [(); g15_apple_gart_range(0xffff_fc20_0000_0000) as usize];
+const _: [(); 7] = [(); g15_apple_gart_range(0xffff_fc20_0bff_ffff) as usize];
+const _: [(); 8] = [(); g15_apple_gart_range(0xffff_fc20_0c00_0000) as usize];
 /// Lower/user top VA.
 pub(crate) const IOVA_USER_TOP: u64 = 1 << UAT_USER_IAS;
 /// Lower/user VA range
