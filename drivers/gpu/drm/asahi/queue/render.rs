@@ -1933,6 +1933,12 @@ impl super::QueueInner::ver {
                             // TA 0x10139 the same PPP_MULTISAMPLECTL value.
                             let g15_ta_utile_config: u64 = utile_config.into();
                             let g15_ta_ppp_multisamplectl = cmdbuf.ppp_multisamplectl;
+                            // Apple beginRenderPass() publishes raw Render +0x000
+                            // as the GPUVA of the VDM stream cursor: RenderContext +0x40 is
+                            // the CPU write cursor and +0x50 is its GPUVA translation delta.
+                            // The G15 TA generator clears the low two address bits for 0x1c880.
+                            let g15_ta_vdm_ctrl_stream_base =
+                                cmdbuf.vdm_ctrl_stream_base & !0x3;
                             // Apple G15 synthesizes 0x10121 (PPP_CTRL) from private raw
                             // Render fields plus accelerator feature state.  For normal J615
                             // that yields 0x202, exactly matching Mesa's named W-clamp +
@@ -2134,6 +2140,7 @@ impl super::QueueInner::ver {
                                 g15_ta_rgn_size,
                                 g15_ta_utile_config,
                                 g15_ta_ppp_multisamplectl,
+                                g15_ta_vdm_ctrl_stream_base,
                                 g15_ta_ppp_ctrl,
                                 g15_ta_ppp_screen,
                                 g15_ta_te_screen,
