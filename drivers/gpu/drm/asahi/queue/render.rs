@@ -1144,6 +1144,11 @@ impl super::QueueInner::ver {
                             // here conditionally. Honeykrisp resolves in a separate control
                             // stream, so the exact current-Linux value for G15 0x15231 is 0.
                             let g15_native_resolve_reg_15231: u64 = 0;
+                            // Raw Render +0x5f0 is covered by the same 0x870-byte bzero.
+                            // No AGXRenderCommandRec producer writes it; apparent +0x5f0
+                            // stores target framebuffer/program/geometry argument objects.
+                            // G15 masks descriptor +0x3a8 (raw +0x5f0) with ~0xff for 0x16058.
+                            let g15_raw5f0_reg_16058: u64 = 0;
                             // Raw Render +0x600 survives the 0x870-byte command bzero.
                             // All apparent +0x600 writers in Apple userspace target
                             // RenderContext/ThreadedRenderPass/FramebufferConfig objects;
@@ -1180,6 +1185,7 @@ impl super::QueueInner::ver {
                                 g15_pm_scene_reg_1ca28,
                                 g15_reg_100b8,
                                 g15_native_resolve_reg_15231,
+                                g15_raw5f0_reg_16058,
                                 g15_raw600_reg_120a1,
                                 g15_raw600_reg_101e9,
                                 g15_vrs_reg_101c1,
