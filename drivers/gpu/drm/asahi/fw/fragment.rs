@@ -320,10 +320,12 @@ pub(crate) mod raw {
         // entry qword +0x398 to descriptor +0x148, which submit exports here.
         #[ver(G == G15)]
         pub(crate) g15_cmd_buffer_state_398_20: U64,
-        // Descriptor init zeroes +0x754..+0x763; normal Render setup never
-        // rewrites +0x758, so the identity FWVA conversion exports zero here.
+        // Normal Render shares the TA-prepared parameter-management state.
+        // AGXTACommandDescriptor::prepare() publishes the G15 0x80-byte
+        // parameter-buffer Info GPUVA at descriptor +0x758, and 3D submit's
+        // identity GPUVA->FWVA conversion exports it at command +0x28.
         #[ver(G == G15)]
-        pub(crate) g15_zero_28: U64,
+        pub(crate) g15_buffer_fwva_28: U64,
         // loadParameterManagementData() selects one of the 80 PM records.
         // PM +0xa8 is a host array of record GPUVAs, so descriptor +0x760
         // (and therefore command +0x30) is the selected 0x80-byte record FWVA.
@@ -550,7 +552,7 @@ pub(crate) mod raw {
     const _: [(); 0x0c] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_context_id_c)];
     const _: [(); 0x10] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_pad_10)];
     const _: [(); 0x20] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_cmd_buffer_state_398_20)];
-    const _: [(); 0x28] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_zero_28)];
+    const _: [(); 0x28] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_buffer_fwva_28)];
     const _: [(); 0x30] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_pm_record_fwva_30)];
     const _: [(); 0x38] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_pm_state_fwva_38)];
     const _: [(); 0x40] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_rtm_298_addr_40)];

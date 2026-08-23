@@ -694,7 +694,7 @@ impl super::QueueInner::ver {
                     #[ver(G == G15)]
                     g15_cmd_buffer_state_398_20: U64(0),
                     #[ver(G == G15)]
-                    g15_zero_28: U64(0),
+                    g15_buffer_fwva_28: U64(inner.scene.buffer_pointer().into()),
                     #[ver(G == G15)]
                     g15_pm_record_fwva_30: U64(0),
                     #[ver(G == G15)]
