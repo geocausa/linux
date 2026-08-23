@@ -121,7 +121,7 @@ pub(crate) const G15_J615_PM_SCENE_ALLOC_BYTES: usize =
 /// the same extra scene-allocation slice for every record when accelerator
 /// +0x1dd8 is set; no stronger semantic role is assumed here.
 #[repr(C)]
-struct G15PmRecord {
+pub(crate) struct G15PmRecord {
     page_metrics_gpuva: u64,
     page_metrics_fwva: u64,
     // setupSceneState() initially zeroes these qwords, but normal Fragment
@@ -156,6 +156,40 @@ struct G15PmSceneStats {
     // before applying the current completion update.
     reset_request_20: u32,
     opaque_24: [u8; 0x1c],
+}
+
+impl Default for G15PmRecord {
+    fn default() -> Self {
+        Self {
+            page_metrics_gpuva: 0,
+            page_metrics_fwva: 0,
+            completion_stat_10: 0,
+            opaque_14: 0,
+            completion_stat_18: 0,
+            opaque_1c: 0,
+            zero_20: 0,
+            scene_slice_gpuva: 0,
+            shared_scene_slice_gpuva: 0,
+            opaque_38: 0,
+            scene_stats_fwva: 0,
+            completion_accumulator_48: 0,
+            opaque_4c: [0; 0x34],
+        }
+    }
+}
+
+impl G15PmRecord {
+    /// Construct the GPU-facing portion of one J615 PM record before the
+    /// range-7 page-metrics and separate scene-statistics resources exist.
+    /// Apple initializes the remaining fields to zero, then wires +0x00/+0x08
+    /// and +0x40 from those independent resources.
+    pub(crate) fn new_scene_only(scene_slice_gpuva: u64, shared_scene_slice_gpuva: u64) -> Self {
+        Self {
+            scene_slice_gpuva,
+            shared_scene_slice_gpuva,
+            ..Default::default()
+        }
+    }
 }
 
 const _: [(); 0x80] = [(); core::mem::size_of::<G15PmRecord>()];
@@ -225,6 +259,11 @@ pub(crate) const fn g15_j615_pm_next_record_index(current: u32) -> u32 {
 pub(crate) const fn g15_j615_pm_scene_slice_offset(record_index: u32) -> usize {
     (record_index as usize % G15_J615_PM_SCENE_GROUP_COUNT)
         * g15_j615_pm_scene_stride(0x3366_0000)
+}
+
+/// Common G15G/C0 scene slice shared by every PM record.
+pub(crate) const fn g15_j615_pm_shared_scene_slice_offset() -> usize {
+    G15_J615_PM_SCENE_GROUP_COUNT * g15_j615_pm_scene_stride(0x3366_0000)
 }
 
 /// Selected GPU record offset inside the exact 0x2800 range-5 record backing.
@@ -297,6 +336,7 @@ const _: [(); 0] = [(); g15_j615_pm_next_record_index(0x4f) as usize];
 const _: [(); 0x30] = [(); g15_j615_pm_scene_slice_offset(1)];
 const _: [(); 0] = [(); g15_j615_pm_scene_slice_offset(36)];
 const _: [(); 0x150] = [(); g15_j615_pm_scene_slice_offset(79)];
+const _: [(); 0x6c0] = [(); g15_j615_pm_shared_scene_slice_offset()];
 const _: [(); 0x80] = [(); g15_j615_pm_record_offset(1)];
 const _: [(); 0x2780] = [(); g15_j615_pm_record_offset(79)];
 const _: [(); 0] = [(); g15_j615_pm_record_offset(80)];

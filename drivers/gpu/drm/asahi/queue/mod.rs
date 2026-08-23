@@ -157,7 +157,7 @@ pub(crate) struct QueueInner {
     // Exact 0x2800 GPU-facing PM record backing. Apple uses range 5 with
     // compact PTE class 0x303; the separate 0x40 tail is intentionally absent.
     #[ver(G == G15)]
-    g15_pm_records: GpuArray<u8>,
+    g15_pm_records: GpuArray<buffer::G15PmRecord>,
 }
 
 #[versions(AGX)]
@@ -507,11 +507,21 @@ impl Queue::ver {
             .lock()
             .array_empty_tagged(buffer::G15_J615_PM_SCENE_ALLOC_BYTES, b"PMSC")?;
         #[ver(G == G15)]
-        let g15_pm_records = _g15_ualloc_range5_cached
+        let mut g15_pm_records = _g15_ualloc_range5_cached
             .as_ref()
             .ok_or(EINVAL)?
             .lock()
-            .array_empty_tagged(buffer::G15_J615_PM_GPU_RECORD_BYTES, b"PMRC")?;
+            .array_empty_tagged(buffer::G15_J615_PM_RECORD_COUNT, b"PMRC")?;
+        #[ver(G == G15)]
+        {
+            let scene_base: u64 = g15_pm_scene_alloc.gpu_pointer().into();
+            let shared_scene =
+                scene_base + buffer::g15_j615_pm_shared_scene_slice_offset() as u64;
+            for (i, record) in g15_pm_records.as_mut_slice().iter_mut().enumerate() {
+                let scene = scene_base + buffer::g15_j615_pm_scene_slice_offset(i as u32) as u64;
+                *record = buffer::G15PmRecord::new_scene_only(scene, shared_scene);
+            }
+        }
 
         let mut ret = Queue::ver {
             dev: dev.into(),
