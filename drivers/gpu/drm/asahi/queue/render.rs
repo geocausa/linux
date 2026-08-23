@@ -69,6 +69,20 @@ const fn g15_fragment_tile_config(
         | g15_render_mode_selector(raw_mode_61a, 0x40, 0x80)
 }
 
+// Linux has historically exposed only the normal/default tiler mode (`unk1=false`).
+// On G14X that means TA 0x10141 = 0x200 and Fragment 0x10039 contributes
+// 0x280.  Exact G15 splits those contributions across raw +0x619/+0x61a;
+// their default/high branches reproduce the same Linux-visible state.  Modes 2/3
+// are private Apple extensions and need a future UAPI semantic before Linux can
+// request them.
+const G15_LINUX_TILER_MODE_10141: u64 = 0x200;
+
+const fn g15_fragment_tile_config_linux(layers: u32, process_empty_tiles: bool) -> u64 {
+    (if layers > 1 { 1 } else { 0 })
+        | (if process_empty_tiles { 0x1_0000 } else { 0 })
+        | 0x280
+}
+
 // Exact J615/G15G C0 value formula for hardware register 0x16068, with
 // no unresolved accelerator state: base configureDevice() clears accelerator
 // +0x650 bit 21 with mask 0xfffffe0c2287 and G15/G15G never set it again, so
@@ -82,6 +96,15 @@ const fn g15_fragment_tilecfg(
     ((utile_config as u64 & 0xf000) << 28)
         | ((if layers > 1 { 1u64 } else { 0 }) << 32)
         | (g15_render_mode_selector(raw_mode_619, 0x100, 0x200) << 28)
+        | ((te_screen as u64 & 0x1ff) << 44)
+        | ((te_screen as u64 & 0x1ff000) << 41)
+        | 0x3617f
+}
+
+const fn g15_fragment_tilecfg_linux(utile_config: u32, layers: u32, te_screen: u32) -> u64 {
+    ((utile_config as u64 & 0xf000) << 28)
+        | ((if layers > 1 { 1u64 } else { 0 }) << 32)
+        | 0x20_00000000
         | ((te_screen as u64 & 0x1ff) << 44)
         | ((te_screen as u64 & 0x1ff000) << 41)
         | 0x3617f
@@ -105,6 +128,8 @@ const _: [(); 0xe001] = [(); g15_ta_render_target_max(2, true) as usize];
 // composition. These constants also pin the non-default selector branches.
 const _: [(); 0x280] = [(); g15_fragment_tile_config(1, false, 0, 0) as usize];
 const _: [(); 0x10281] = [(); g15_fragment_tile_config(2, true, 0, 0) as usize];
+const _: [(); 0x280] = [(); g15_fragment_tile_config_linux(1, false) as usize];
+const _: [(); 0x10281] = [(); g15_fragment_tile_config_linux(2, true) as usize];
 const _: [(); 0] = [(); g15_fragment_tile_config(1, false, 2, 2) as usize];
 const _: [(); 0x140] = [(); g15_fragment_tile_config(1, false, 3, 3) as usize];
 
@@ -113,6 +138,8 @@ const _: [(); 0x140] = [(); g15_fragment_tile_config(1, false, 3, 3) as usize];
 // while G15 changes the fixed low constant from 0x36011 to exact 0x3617f.
 const _: [(); 0xa200003617f] =
     [(); g15_fragment_tilecfg(0xa000, 1, 0, 0) as usize];
+const _: [(); 0xa200003617f] =
+    [(); g15_fragment_tilecfg_linux(0xa000, 1, 0) as usize];
 
 #[versions(AGX)]
 impl super::QueueInner::ver {
@@ -1019,24 +1046,22 @@ impl super::QueueInner::ver {
                                     .div_ceil(2048);
                             let g15_aux_fb = inner.aux_fb.gpu_pointer();
                             let g15_rgn_stride: u64 = (tile_info.params.rgn_size as u64) << 26;
-                            // Exact composite formulas are source-closed, but raw Render
-                            // +0x619/+0x61a still lack a Linux UAPI semantic. Type-check the
-                            // fail-closed/default-mode values without emitting either register.
+                            // Exact Apple selectors include private modes 2/3, but Linux's
+                            // existing render ABI exposes only the historical normal tiler mode
+                            // (`unk1=false`).  That closes the Linux producers at 0x280 /
+                            // 0x20_00000000 without guessing private Apple mode semantics.
                             let g15_process_empty_tiles = cmdbuf.flags
                                 & uapi::drm_asahi_render_flags_DRM_ASAHI_RENDER_PROCESS_EMPTY_TILES
                                     as u32
                                 != 0;
-                            let g15_tile_config = g15_fragment_tile_config(
+                            let g15_tile_config = g15_fragment_tile_config_linux(
                                 cmdbuf.layers as u32,
                                 g15_process_empty_tiles,
-                                0,
-                                0,
                             );
-                            let g15_tilecfg = g15_fragment_tilecfg(
+                            let g15_tilecfg = g15_fragment_tilecfg_linux(
                                 utile_config,
                                 cmdbuf.layers as u32,
                                 tile_info.params.te_screen,
-                                0,
                             );
                             let _ = (
                                 g15_fb_dimensions,
@@ -1667,6 +1692,7 @@ impl super::QueueInner::ver {
                             // 0x1c031/0x1c9c0 tag is controlled by accelerator +0x650
                             // bit 21. Base configureDevice() clears that bit and G15/G15G
                             // never set it, so exact J615 keeps the high-bit tag set.
+                            let g15_ta_tiler_mode_10141 = G15_LINUX_TILER_MODE_10141;
                             let g15_ta_tilemap = inner.scene.tvb_tilemap_pointer();
                             let g15_ta_layermeta = inner.scene.tvb_layermeta_pointer();
                             let g15_ta_rgn_size: u64 = tile_info.params.rgn_size.into();
@@ -1718,6 +1744,7 @@ impl super::QueueInner::ver {
                                 .tvb_heapmeta_pointer()
                                 .or(0x8000_0000_0000_0000);
                             let _ = (
+                                g15_ta_tiler_mode_10141,
                                 // RTM-backed G15 TA producer pairs:
                                 // 0x1c039/0x1c9c8 = tilemap;
                                 // 0x1c079/0x1c9d8 = layer metadata;
