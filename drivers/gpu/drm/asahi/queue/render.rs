@@ -1676,6 +1676,15 @@ impl super::QueueInner::ver {
                             // TA 0x10139 the same PPP_MULTISAMPLECTL value.
                             let g15_ta_utile_config: u64 = utile_config.into();
                             let g15_ta_ppp_multisamplectl = cmdbuf.ppp_multisamplectl;
+                            // Apple G15 synthesizes 0x10121 (PPP_CTRL) from private raw
+                            // Render fields plus accelerator feature state.  For normal J615
+                            // that yields 0x202, exactly matching Mesa's named W-clamp +
+                            // fixed-point-format value.  Linux UAPI already carries the final
+                            // hardware PPP_CTRL value, as it does for earlier generations, so
+                            // the Linux-side producer is the existing raw register value.
+                            // Apple-only exceptional 0x600e/0x800 modes remain documented
+                            // separately and do not need to be invented by the kernel.
+                            let g15_ta_ppp_ctrl: u64 = cmdbuf.ppp_ctrl.into();
                             // Exact G15 RTM geometry maps back onto Linux TilingParameters.
                             let g15_ta_ppp_screen: u64 = tile_info.params.x_max as u64
                                 | ((tile_info.params.y_max as u64) << 16);
@@ -1719,6 +1728,7 @@ impl super::QueueInner::ver {
                                 g15_ta_rgn_size,
                                 g15_ta_utile_config,
                                 g15_ta_ppp_multisamplectl,
+                                g15_ta_ppp_ctrl,
                                 g15_ta_ppp_screen,
                                 g15_ta_te_screen,
                                 g15_ta_te_mtile1,
