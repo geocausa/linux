@@ -1138,6 +1138,12 @@ impl super::QueueInner::ver {
                             // Firmware therefore selects 0x8860; J615 MGPU=1 means
                             // the >=5-MGPU |0x1c contribution is absent.
                             let g15_reg_100b8: u64 = 0x8860;
+                            // Raw Render +0x2e8 is the native-resolve auxiliary buffer.
+                            // Apple only allocates framebuffer +0x1500 when its native
+                            // in-render resolve state (+0x7ca) is active, then publishes it
+                            // here conditionally. Honeykrisp resolves in a separate control
+                            // stream, so the exact current-Linux value for G15 0x15231 is 0.
+                            let g15_native_resolve_reg_15231: u64 = 0;
                             let g15_vrs_reg_101c1: u64 = 0;
                             let g15_vrs_reg_0d469: u64 = 0;
                             let g15_vrs_reg_10791: u64 = 0xff0200;
@@ -1166,6 +1172,7 @@ impl super::QueueInner::ver {
                                 g15_pm_scene_slice_gpuva,
                                 g15_pm_scene_reg_1ca28,
                                 g15_reg_100b8,
+                                g15_native_resolve_reg_15231,
                                 g15_vrs_reg_101c1,
                                 g15_vrs_reg_0d469,
                                 g15_vrs_reg_10791,
