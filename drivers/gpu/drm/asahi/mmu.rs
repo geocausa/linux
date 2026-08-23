@@ -177,6 +177,23 @@ const _: [(); 8] = [(); g15_apple_gart_range(0xffff_fc20_0c00_0000) as usize];
 pub(crate) const G15_GART_RANGE5: Range<u64> = 0x100_0000_0000..0x300_0000_0000;
 const _: [(); 1] = [(); (G15_GART_RANGE5.start >= (1u64 << UAT_USER_IAS)) as usize];
 const _: [(); 1] = [(); (G15_GART_RANGE5.end <= (1u64 << G15_HW_UAT_IAS)) as usize];
+
+/// G15's UnifiedAddressTranslator has two bank-local page-table state blocks.
+/// Apple selects the bank with VA bit 42, then indexes the top-level table with
+/// VA bits 36..41. This is distinct from the 42 translated bits within a bank.
+const fn g15_uat_bank(addr: u64) -> usize {
+    ((addr >> 42) & 1) as usize
+}
+
+const fn g15_uat_top_index(addr: u64) -> usize {
+    ((addr >> 36) & 0x3f) as usize
+}
+
+// Range 5 (PM scene / GTP) is bank 0; range 7 (PM page metrics) is bank 1.
+const _: [(); 0] = [(); g15_uat_bank(G15_GART_RANGE5.start)];
+const _: [(); 0x10] = [(); g15_uat_top_index(G15_GART_RANGE5.start)];
+const _: [(); 1] = [(); g15_uat_bank(0xffff_fc20_0000_0000)];
+const _: [(); 0x2] = [(); g15_uat_top_index(0xffff_fc20_0000_0000)];
 /// Lower/user top VA.
 pub(crate) const IOVA_USER_TOP: u64 = 1 << UAT_USER_IAS;
 /// Lower/user VA range
