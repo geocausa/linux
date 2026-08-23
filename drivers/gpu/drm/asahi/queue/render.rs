@@ -1929,6 +1929,28 @@ impl super::QueueInner::ver {
                             // G15G/C0 dynamic encoded register 0x101e1.
                             let g15_ta_raw1b8_reg_12099: u64 = 0;
                             let g15_ta_raw1b8_reg_101e1: u64 = 0;
+                            // Apple FramebufferGen3_2 publishes the stencil ZLS
+                            // tuple into raw TA +0x170..+0x190. Exact constructor tracing
+                            // identifies framebuffer +0x9c8 as the stencil texture and
+                            // Texture +0x1f8 as G15 CompressionMetadata. The five raw fields
+                            // are selected mip-level offset, layer stride, compression-metadata
+                            // base, compression-metadata layer stride, and stencil base. Host
+                            // processRenderSetup copies them verbatim to descriptor +0xd10..
+                            // +0xd30; G15 TA then masks all five to 256-byte granularity for
+                            // 0x1c199/0x1c1a1/0x1c1a9/0x1c1b1/0x1c1b9. Honeykrisp's ZLS
+                            // UAPI already carries exactly these semantics. Apple may rewrite
+                            // store-side state for native in-render resolve; Linux resolves in
+                            // a separate control stream, so the common UAPI tuple is exact.
+                            let g15_ta_stencil_level_reg_1c199 =
+                                cmdbuf.stencil_level_offset & !0xff;
+                            let g15_ta_stencil_stride_reg_1c1a1 =
+                                (cmdbuf.stencil.stride as u64) & !0xff;
+                            let g15_ta_stencil_comp_base_reg_1c1a9 =
+                                cmdbuf.stencil.comp_base & !0xff;
+                            let g15_ta_stencil_comp_stride_reg_1c1b1 =
+                                (cmdbuf.stencil.comp_stride as u64) & !0xff;
+                            let g15_ta_stencil_base_reg_1c1b9 =
+                                cmdbuf.stencil.base & !0xff;
                             // The direct raw +0x640..+0x660 extension is shared with
                             // Fragment. +0x640 is Apple's memoryless-render bit, unsupported
                             // by current Linux; +0x648/+0x650/+0x658 are VRS/rasterization-
@@ -2028,6 +2050,11 @@ impl super::QueueInner::ver {
                                 g15_ta_heapmeta_tagged,
                                 g15_ta_raw1b8_reg_12099,
                                 g15_ta_raw1b8_reg_101e1,
+                                g15_ta_stencil_level_reg_1c199,
+                                g15_ta_stencil_stride_reg_1c1a1,
+                                g15_ta_stencil_comp_base_reg_1c1a9,
+                                g15_ta_stencil_comp_stride_reg_1c1b1,
+                                g15_ta_stencil_base_reg_1c1b9,
                                 g15_ta_memoryless_reg_1a0a1,
                                 g15_ta_vrs_reg_1a069,
                                 g15_ta_vrs_reg_1a071,
