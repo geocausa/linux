@@ -106,6 +106,36 @@ const G15_J615_PM_SCENE_GROUP_COUNT: usize = 0x24;
 /// shared scene slice after the 36 modulo-selected per-record slices.
 const G15_J615_PM_EXTRA_SCENE_SLICES: usize = 1;
 
+/// Host-side G15 parameter-management record layout. Apple allocates these at
+/// an exact 0x80-byte stride and publishes one record pointer per PM slot.
+///
+/// Only mechanically proven fields are named. In particular, +0x30 points to
+/// the same extra scene-allocation slice for every record when accelerator
+/// +0x1dd8 is set; no stronger semantic role is assumed here.
+#[repr(C)]
+struct G15PmRecord {
+    page_metrics_gpuva: u64,
+    page_metrics_fwva: u64,
+    zero_10: u64,
+    zero_18: u64,
+    zero_20: u64,
+    scene_slice_gpuva: u64,
+    shared_scene_slice_gpuva: u64,
+    opaque_38: u64,
+    fwva_40: u64,
+    opaque_48: [u8; 0x38],
+}
+
+const _: [(); 0x80] = [(); core::mem::size_of::<G15PmRecord>()];
+const _: [(); 0x00] = [(); core::mem::offset_of!(G15PmRecord, page_metrics_gpuva)];
+const _: [(); 0x08] = [(); core::mem::offset_of!(G15PmRecord, page_metrics_fwva)];
+const _: [(); 0x10] = [(); core::mem::offset_of!(G15PmRecord, zero_10)];
+const _: [(); 0x18] = [(); core::mem::offset_of!(G15PmRecord, zero_18)];
+const _: [(); 0x20] = [(); core::mem::offset_of!(G15PmRecord, zero_20)];
+const _: [(); 0x28] = [(); core::mem::offset_of!(G15PmRecord, scene_slice_gpuva)];
+const _: [(); 0x30] = [(); core::mem::offset_of!(G15PmRecord, shared_scene_slice_gpuva)];
+const _: [(); 0x40] = [(); core::mem::offset_of!(G15PmRecord, fwva_40)];
+
 /// `AGXArmFirmware::allocFirmwareData()` sizes one PMPageMetricsBuffer resource
 /// element as `align(record_count * 4, 0x40)`. Each PM record then receives a
 /// distinct four-byte slot within that element at `base + 4 * record_index`.
