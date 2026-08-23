@@ -137,6 +137,27 @@ const _: [(); 0x8000] = [(); g15_ta_render_target_max(1, false) as usize];
 const _: [(); 0xd001] = [(); g15_ta_render_target_max(2, false) as usize];
 const _: [(); 0xe001] = [(); g15_ta_render_target_max(2, true) as usize];
 
+// processRenderSetup() splits raw Render +0x148 into zero-extended low/high
+// dwords at TA descriptor +0x1178/+0x1180. The G15 register generator then
+// reconstructs 0x101c8 with this exact transform. For Linux's non-native-
+// resolve path, raw +0x148 is the selected depth mip-level byte offset.
+const fn g15_ta_depth_level_reg(level_offset: u64) -> u64 {
+    let low = level_offset & 0xffff_ffff;
+    let high = level_offset >> 32;
+
+    (low & 0xffff_ffff_ffe0_ffff) | (high << 16)
+}
+
+// Raw Render +0x150 is the stencil counterpart. processRenderSetup() exports
+// its low dword at descriptor +0x1188 and G15 writes that value to 0xd470.
+const fn g15_ta_stencil_level_reg(level_offset: u64) -> u64 {
+    level_offset & 0xffff_ffff
+}
+
+const _: [(); 0x10000] = [(); g15_ta_depth_level_reg(0x1_0000_0000) as usize];
+const _: [(); 0x80] = [(); g15_ta_depth_level_reg(0x10_0080) as usize];
+const _: [(); 0x42] = [(); g15_ta_stencil_level_reg(0x1_0000_0042) as usize];
+
 // Default/zero raw mode reduces 0x10039 to Linux's historical tile_config
 // composition. These constants also pin the non-default selector branches.
 const _: [(); 0x280] = [(); g15_fragment_tile_config(1, false, 0, 0) as usize];
@@ -1919,6 +1940,23 @@ impl super::QueueInner::ver {
                             // at +0x674 (0/1). TA 0x1a0f1 consumes the high dword masked
                             // with ~7, so both ordinary and sampled paths produce zero.
                             let g15_ta_sampled_reg_1a0f1: u64 = 0;
+                            // Apple userspace initializes framebuffer +0x1038/+0x1040 from
+                            // Texture::getLevelOffset(); assignRenderRegisters() publishes
+                            // those values to raw Render +0x148/+0x150. parseAndValidate()
+                            // copies them to wrapper +0x130/+0x138, and processRenderSetup()
+                            // splits them into TA descriptor +0x1178/+0x1180/+0x1188.
+                            // Honeykrisp supplies the same semantic AIL mip-level offsets.
+                            // Keep the exact 0x101c9/0xd471 producers type-checked while the
+                            // complete G15 TA RegisterArray remains deliberately non-emitting.
+                            let g15_ta_depth_level_reg_101c9 =
+                                g15_ta_depth_level_reg(cmdbuf.depth_level_offset);
+                            let g15_ta_stencil_level_reg_d471 =
+                                g15_ta_stencil_level_reg(cmdbuf.stencil_level_offset);
+                            // Dynamic G15G/C0 0x10799 gates on descriptor +0x1178, i.e.
+                            // the low dword of the same depth level state. Its nonzero branch
+                            // still depends on unresolved raw +0x670 GPU-gather state.
+                            let g15_ta_depth_level_low_present =
+                                (cmdbuf.depth_level_offset & 0xffff_ffff) != 0;
                             // TA 0x1a099 shares the exact raw +0x638 initial-clear source
                             // with Fragment 0x1a0a9. The explicit UAPI flag deliberately
                             // does not alias PROCESS_EMPTY_TILES.
@@ -1965,6 +2003,9 @@ impl super::QueueInner::ver {
                                 g15_ta_vrs_reg_1a0c9,
                                 g15_ta_vrs_reg_1a0d1,
                                 g15_ta_sampled_reg_1a0f1,
+                                g15_ta_depth_level_reg_101c9,
+                                g15_ta_stencil_level_reg_d471,
+                                g15_ta_depth_level_low_present,
                                 g15_ta_clear_reg_1a099,
                                 g15_ta_pm_scene,
                                 g15_ta_pm_metrics_1c910,

@@ -1116,6 +1116,18 @@ struct drm_asahi_cmd_render {
 
 	/** @ts_frag: Timestamps for the fragment portion of the render */
 	struct drm_asahi_timestamps ts_frag;
+
+	/**
+	 * @depth_level_offset: Byte offset of the selected mip level within the
+	 * depth image plane, excluding any array-layer offset.
+	 */
+	__u64 depth_level_offset;
+
+	/**
+	 * @stencil_level_offset: Byte offset of the selected mip level within the
+	 * stencil image plane, excluding any array-layer offset.
+	 */
+	__u64 stencil_level_offset;
 };
 
 /**
