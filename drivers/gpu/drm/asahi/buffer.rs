@@ -122,7 +122,7 @@ struct G15PmRecord {
     scene_slice_gpuva: u64,
     shared_scene_slice_gpuva: u64,
     opaque_38: u64,
-    fwva_40: u64,
+    scene_stats_fwva: u64,
     opaque_48: [u8; 0x38],
 }
 
@@ -134,7 +134,29 @@ const _: [(); 0x18] = [(); core::mem::offset_of!(G15PmRecord, zero_18)];
 const _: [(); 0x20] = [(); core::mem::offset_of!(G15PmRecord, zero_20)];
 const _: [(); 0x28] = [(); core::mem::offset_of!(G15PmRecord, scene_slice_gpuva)];
 const _: [(); 0x30] = [(); core::mem::offset_of!(G15PmRecord, shared_scene_slice_gpuva)];
-const _: [(); 0x40] = [(); core::mem::offset_of!(G15PmRecord, fwva_40)];
+const _: [(); 0x40] = [(); core::mem::offset_of!(G15PmRecord, scene_stats_fwva)];
+
+/// `AGXParameterManagement::init()` allocates the record pool as
+/// `(record_count * 0x80) | 0x40`. Since every record starts on a 0x80
+/// boundary, the final OR reserves one trailing 0x40-byte region. J615 also
+/// allocates a separate eight-byte-per-record "Firmware Page List Entries"
+/// resource and an exact 0x80-byte
+/// "Firmware Page List Entries, Parameter Scene statistics" resource.
+/// Record +0x40 is the FWVA of the latter resource at offset +0x40, i.e. the
+/// Parameter Scene statistics half. These remain allocation geometry only.
+const G15_PM_RECORD_BYTES: usize = 0x80;
+const G15_PM_RECORD_POOL_TAIL_BYTES: usize = 0x40;
+const G15_PM_FW_PAGE_LIST_ENTRY_BYTES: usize = 8;
+const G15_PM_PAGE_LIST_STATS_BYTES: usize = 0x80;
+const G15_PM_SCENE_STATS_OFFSET: usize = 0x40;
+
+const fn g15_pm_record_pool_bytes(record_count: usize) -> usize {
+    (record_count * G15_PM_RECORD_BYTES) | G15_PM_RECORD_POOL_TAIL_BYTES
+}
+
+const fn g15_pm_fw_page_list_bytes(record_count: usize) -> usize {
+    record_count * G15_PM_FW_PAGE_LIST_ENTRY_BYTES
+}
 
 /// `AGXArmFirmware::allocFirmwareData()` sizes one PMPageMetricsBuffer resource
 /// element as `align(record_count * 4, 0x40)`. Each PM record then receives a
@@ -164,6 +186,10 @@ const fn g15_j615_pm_scene_stride(pb_max_size: usize) -> usize {
 const _: [(); 4] = [(); G15_PM_DEVICE_CONFIG.usage_page_granule];
 const _: [(); 0x50] = [(); G15_J615_PM_RECORD_COUNT];
 const _: [(); 0x24] = [(); G15_J615_PM_SCENE_GROUP_COUNT];
+const _: [(); 0x2840] = [(); g15_pm_record_pool_bytes(G15_J615_PM_RECORD_COUNT)];
+const _: [(); 0x280] = [(); g15_pm_fw_page_list_bytes(G15_J615_PM_RECORD_COUNT)];
+const _: [(); 0x80] = [(); G15_PM_PAGE_LIST_STATS_BYTES];
+const _: [(); 0x40] = [(); G15_PM_SCENE_STATS_OFFSET];
 const _: [(); 0x140] = [(); g15_pm_page_metrics_bytes(G15_J615_PM_RECORD_COUNT)];
 const _: [(); 0x30] = [(); g15_j615_pm_scene_stride(0x3366_0000)];
 const _: [(); 0x6c0] = [(); G15_J615_PM_SCENE_GROUP_COUNT
