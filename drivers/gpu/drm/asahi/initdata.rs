@@ -211,6 +211,56 @@ impl<'a> InitDataBuilder::ver<'a> {
         })
     }
 
+    /// Construct the exact J615/C0 G15 HwDataA pre-tail at +0x3a9c.
+    ///
+    /// The DPE dynamic patch count is zero on this path, so the C0 payload is
+    /// deterministic. SoCHot discovers MTR sensors 3,6,8,9,11,14 on J615
+    /// (bitmap 0x4b48) and masks them with 0x4248, yielding 0x4248.
+    fn g15_hwdata_a_pretail() -> impl Init<raw::G15HwDataAPreTail> {
+        pin_init::init_zeroed::<raw::G15HwDataAPreTail>().chain(|ret| {
+            const Q_BANK: u64 = 0x03ff_ffff_03ff_ffff;
+            const Q_3FFFFF: u64 = 0x003f_ffff_003f_ffff;
+            const Q_0F07: u64 = 0x0f07_0f07_0f07_0f07;
+
+            ret.constant_008 = F32::from_bits(0x40a0_0000); // 5.0f
+
+            let dpe = &mut ret.dpe_00c;
+            for v in dpe.all_ones_0cc.iter_mut() {
+                *v = U64(u64::MAX);
+            }
+            dpe.bootstrap_0ec = U64(0x0000_0000_0008_0000);
+            for v in dpe.q_3fffff_0f4.iter_mut() {
+                *v = U64(Q_3FFFFF);
+            }
+            dpe.literal_114 = U64(0x003f_0000_0000_0000);
+            dpe.literal_13c = U64(0x2000_0000_0000_0000);
+            for v in dpe.all_ones_144.iter_mut() {
+                *v = U64(u64::MAX);
+            }
+            for v in dpe.q_0f07_164.iter_mut() {
+                *v = U64(Q_0F07);
+            }
+            for v in dpe.bank1_184.iter_mut() {
+                *v = U64(Q_BANK);
+            }
+            dpe.special_384 = U64(0xa000_0000_0000_0017);
+            for v in dpe.all_ones_38c.iter_mut() {
+                *v = U64(u64::MAX);
+            }
+            for v in dpe.q_0f07_3ac.iter_mut() {
+                *v = U64(Q_0F07);
+            }
+            for v in dpe.bank2_3cc.iter_mut() {
+                *v = U64(Q_BANK);
+            }
+            dpe.control_5d4 = U64(0x0000_0000_00c0_0000);
+
+            ret.sochot_6ec.sensor_mask_010 = U64(0x4248);
+            ret.sochot_6ec.constant_018 = U64(125);
+            Ok(())
+        })
+    }
+
     /// Create the HwDataA structure. This mostly contains power-related configuration.
     fn hwdata_a(&mut self) -> Result<GpuObject<HwDataA::ver>> {
         let pwr = &self.dyncfg.pwr;
@@ -411,7 +461,14 @@ impl<'a> InitDataBuilder::ver<'a> {
                             ..Zeroable::init_zeroed()
                         })
                     },
+                    // G15 only programs the primary FastDie mask at HwDataA
+                    // +0x8ac. The generated second copy at +0x1278 remains
+                    // zero from the allocation clear; older generations clone
+                    // the configured mask here.
+                    #[ver(G != G15)]
                     fast_die0_sensor_mask_2: U64(cfg.fast_sensor_mask[0]),
+                    #[ver(G == G15)]
+                    fast_die0_sensor_mask_2: U64(0),
                     #[ver(G >= G14X)]
                     fast_die1_sensor_mask_2: U64(cfg.fast_sensor_mask[1]),
                     unk_e24: cfg.da.unk_e24,
@@ -423,10 +480,16 @@ impl<'a> InitDataBuilder::ver<'a> {
                     fast_die0_sensor_present: U64(cfg.fast_die0_sensor_present as u64),
                     unk_163c: 1,
                     unk_3644: 0,
+                    #[ver(G != G15)]
                     hws1 <- Self::hw_shared1(cfg),
+                    #[ver(G != G15)]
                     hws2 <- Self::hw_shared2(cfg, dyncfg),
+                    #[ver(G != G15)]
                     hws3 <- Self::hw_shared3(cfg),
+                    #[ver(G != G15)]
                     unk_3ce8: 1,
+                    #[ver(G == G15)]
+                    g15_pretail_3a9c <- Self::g15_hwdata_a_pretail(),
                     ..Zeroable::init_zeroed()
                 })
                 .chain(|raw| {
@@ -434,15 +497,17 @@ impl<'a> InitDataBuilder::ver<'a> {
                         raw.sram_k[i] = self.cfg.sram_k;
                     }
 
+                    #[ver(G != G15)]
                     for (i, coef) in pwr.core_leak_coef.iter().enumerate() {
                         raw.core_leak_coef[i] = *coef;
                     }
 
+                    #[ver(G != G15)]
                     for (i, coef) in pwr.sram_leak_coef.iter().enumerate() {
                         raw.sram_leak_coef[i] = *coef;
                     }
 
-                    #[ver(V >= V13_0B4)]
+                    #[ver(V >= V13_0B4 && G != G15)]
                     if let Some(csafr) = pwr.csafr.as_ref() {
                         for (i, coef) in csafr.leak_coef_afr.iter().enumerate() {
                             raw.aux_leak_coef.cs_1[i] = *coef;
@@ -478,7 +543,7 @@ impl<'a> InitDataBuilder::ver<'a> {
                         raw.power_zones[i].unk_10 = 1320000000;
                     }
 
-                    #[ver(V >= V13_0B4 && G >= G14X)]
+                    #[ver(V >= V13_0B4 && G >= G14X && G != G15)]
                     for (i, j) in raw.hws2.g14.curve2.t1.iter().enumerate() {
                         raw.unk_hws2[i] = if *j == 0xffff { 0 } else { j / 2 };
                     }

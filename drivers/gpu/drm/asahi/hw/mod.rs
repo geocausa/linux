@@ -15,6 +15,7 @@ pub(crate) mod t600x;
 pub(crate) mod t602x;
 pub(crate) mod t8103;
 pub(crate) mod t8112;
+pub(crate) mod t8122;
 
 /// GPU generation enumeration. Note: Part of the UABI.
 #[derive(Debug, PartialEq, Copy, Clone)]
@@ -22,6 +23,9 @@ pub(crate) mod t8112;
 pub(crate) enum GpuGen {
     G13 = 13,
     G14 = 14,
+    // Generation-7 identity is exposed only for the T8122 preflight path.
+    // The driver refuses before firmware start / DRM registration.
+    G15 = 15,
 }
 
 /// GPU variant enumeration. Note: Part of the UABI.

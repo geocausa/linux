@@ -26,6 +26,7 @@ use crate::{
     gem::AsahiObject,
     gpu,
     hw,
+    mmu,
     regs, //
 };
 
@@ -122,6 +123,10 @@ kernel::of_device_table!(
             &hw::t8112::HWCONFIG
         ),
         (
+            of::DeviceId::new(c_str!("apple,agx-t8122")),
+            &hw::t8122::HWCONFIG_PREFLIGHT
+        ),
+        (
             of::DeviceId::new(c_str!("apple,agx-t6000")),
             &hw::t600x::HWCONFIG_T6000
         ),
@@ -163,6 +168,191 @@ impl platform::Driver for AsahiDriver {
         dev_info!(pdev.as_ref(), "Probing...\n");
 
         let cfg = info.ok_or(ENODEV)?;
+
+        if cfg.gpu_gen == hw::GpuGen::G15 {
+            // T8122 bring-up checkpoint: first validate the exact generation-7
+            // identity, then start only the preloaded GFX ASC and initialize
+            // the UAT handoff/TTB state. Do not create a GpuManager/RTKit
+            // object, build firmware initdata, start RTKit endpoints, send
+            // MSG_INIT, register DRM, or submit GPU work.
+            unsafe { pdev.dma_set_mask_and_coherent(DmaMask::try_new(cfg.uat_oas)?)? };
+
+            let res = regs::Resources::new(pdev)?;
+            res.init_mmio()?;
+            let id = res.get_gpu_id()?;
+
+            if id.gpu_gen != hw::GpuGen::G15
+                || id.gpu_variant != hw::GpuVariant::G
+                || id.gpu_rev != hw::GpuRevision::C0
+                || id.num_clusters != cfg.max_num_clusters
+                || id.num_cores != cfg.max_num_cores
+                || id.total_active_cores != cfg.max_num_cores
+                || id.core_masks.len() != 1
+                || id.core_masks[0] != 0x3ff
+            {
+                dev_err!(pdev.as_ref(), "T8122 G15 preflight identity mismatch: {:?}\n", id);
+                return Err(EIO);
+            }
+
+            dev_info!(
+                pdev.as_ref(),
+                "T8122 G15G C0 identity PASS (1 MGPU, 10/10 cores); starting UAT handoff preflight\n"
+            );
+
+            regs::Resources::start_cpu(pdev)?;
+
+            // Uat::new() needs an Asahi DRM device for its private GEM-backed
+            // page tables, but this device is never registered with DRM. This
+            // is the same uninitialized-device construction used by the normal
+            // probe path before manager setup.
+            let uninit = unsafe {
+                pin_init::pin_init_from_closure::<AsahiData, kernel::error::Error>(|_slot| Ok(()))
+            };
+            let drm: ARef<AsahiDevice> = drm::device::Device::new(pdev.as_ref(), uninit)?;
+
+            let uat_result = mmu::Uat::new(&drm, cfg, true);
+            match uat_result {
+                Ok(uat) => {
+                    dev_info!(
+                        pdev.as_ref(),
+                        "T8122 G15 UAT handoff preflight PASS; RTKit/initdata/MSG_INIT intentionally blocked\n"
+                    );
+                    core::mem::drop(uat);
+                }
+                Err(e) => {
+                    dev_err!(pdev.as_ref(), "T8122 G15 UAT handoff preflight failed: {:?}\n", e);
+                    let _ = regs::Resources::stop_cpu(pdev);
+                    return Err(e);
+                }
+            }
+
+            regs::Resources::stop_cpu(pdev)?;
+            dev_info!(pdev.as_ref(), "T8122 G15 ASC stopped after UAT preflight\n");
+
+            // The next checkpoint is deliberately CPU/DT-only. Parse the
+            // complete J615 power configuration after the ASC is stopped,
+            // validate every machine-specific input we recovered, then return
+            // ENODEV. GpuManager/initdata/RTKit/MSG_INIT remain unreachable.
+            let pwr = match hw::PwrConfig::load(&drm, cfg) {
+                Ok(pwr) => pwr,
+                Err(e) => {
+                    dev_err!(pdev.as_ref(), "T8122 G15 PwrConfig load failed: {:?}\n", e);
+                    return Err(e);
+                }
+            };
+
+            const FREQ_HZ: [u32; 14] = [
+                0, 338_000_000, 618_000_000, 796_000_000, 836_000_000, 928_000_000,
+                952_000_000, 1_056_000_000, 1_053_000_000, 1_170_000_000,
+                1_152_000_000, 1_278_000_000, 1_204_000_000, 1_338_000_000,
+            ];
+            const VOLT_MV: [u32; 14] = [
+                125, 650, 675, 720, 755, 755, 805, 805, 850, 850, 890, 890, 915, 915,
+            ];
+            const POWER_MW: [u32; 14] = [
+                0, 3516, 5774, 8103, 9376, 10194, 12037, 13102, 14799, 16149,
+                17713, 19322, 19586, 21405,
+            ];
+
+            let mut power_ok = pwr.perf_states.len() == FREQ_HZ.len();
+            if power_ok {
+                for i in 0..FREQ_HZ.len() {
+                    let ps = &pwr.perf_states[i];
+                    if ps.freq_hz != FREQ_HZ[i]
+                        || ps.pwr_mw != POWER_MW[i]
+                        || ps.volt_mv.len() != 1
+                        || ps.volt_mv[0] != VOLT_MV[i]
+                    {
+                        power_ok = false;
+                        break;
+                    }
+                }
+            }
+
+            power_ok = power_ok
+                && pwr.power_zones.is_empty()
+                && pwr.csafr.is_none()
+                && pwr.core_leak_coef.len() == 1
+                && pwr.sram_leak_coef.len() == 1
+                && pwr.core_leak_coef[0].to_bits() == 0x44cd_8000 // 1644.0
+                && pwr.sram_leak_coef[0].to_bits() == 0x4270_0000 // 60.0
+                && pwr.max_power_mw == 21_405
+                && pwr.max_freq_mhz == 1_338
+                && pwr.perf_base_pstate == 1
+                && pwr.perf_max_pstate == 13
+                && pwr.min_sram_microvolt == 790_000
+                && pwr.avg_power_filter_tc_ms == 40
+                && pwr.avg_power_ki_only.to_bits() == 0x428c_0000 // 70.0
+                && pwr.avg_power_kp.to_bits() == 0x3ff9_999a // 1.95
+                && pwr.avg_power_min_duty_cycle == 30
+                && pwr.avg_power_target_filter_tc == 1
+                && pwr.fast_die0_integral_gain.to_bits() == 0x43e1_0000 // 450.0
+                && pwr.fast_die0_proportional_gain.to_bits() == 0x4208_0000 // 34.0
+                && pwr.fast_die0_prop_tgt_delta == 0
+                && pwr.fast_die0_release_temp == 80
+                && pwr.fender_idle_off_delay_ms == 40
+                && pwr.fw_early_wake_timeout_ms == 5
+                && pwr.idle_off_delay_ms == 2
+                && pwr.idle_off_standby_timer == 700
+                && pwr.perf_boost_ce_step == 50
+                && pwr.perf_boost_min_util == 90
+                && pwr.perf_filter_drop_threshold == 0
+                && pwr.perf_filter_time_constant == 5
+                && pwr.perf_filter_time_constant2 == 200
+                && pwr.perf_integral_gain.to_bits() == 0x3f4c_28f6
+                && pwr.perf_integral_gain2.to_bits() == 0x3f4c_28f6
+                && pwr.perf_integral_min_clamp == 0
+                && pwr.perf_proportional_gain.to_bits() == 0x40ac_cccd
+                && pwr.perf_proportional_gain2.to_bits() == 0x40ac_cccd
+                && pwr.perf_reset_iters == 6
+                && pwr.perf_tgt_utilization == 85
+                && pwr.power_sample_period == 8
+                && pwr.ppm_filter_time_constant_ms == 100
+                && pwr.ppm_ki.to_bits() == 0x42c2_3333
+                && pwr.ppm_kp.to_bits() == 0x4039_999a
+                && pwr.pwr_filter_time_constant == 313
+                && pwr.pwr_integral_gain.to_bits() == 0x3ca5_9586
+                && pwr.pwr_integral_min_clamp == 0
+                && pwr.pwr_min_duty_cycle == 30
+                && pwr.pwr_proportional_gain.to_bits() == 0x40a9_0fdb
+                && pwr.pwr_sample_period_aic_clks == 200_000
+                && pwr.se_engagement_criteria == 600
+                && pwr.se_filter_time_constant == 9
+                && pwr.se_filter_time_constant_1 == 3
+                && pwr.se_inactive_threshold == 2500
+                && pwr.se_ki.to_bits() == 0xc248_0000
+                && pwr.se_ki_1.to_bits() == 0xc2c8_0000
+                && pwr.se_kp.to_bits() == 0xc0a0_0000
+                && pwr.se_kp_1.to_bits() == 0xc120_0000
+                && pwr.se_reset_criteria == 50;
+
+            if !power_ok {
+                dev_err!(pdev.as_ref(), "T8122 G15 PwrConfig mismatch: {:?}\n", pwr);
+                return Err(EIO);
+            }
+
+            dev_info!(
+                pdev.as_ref(),
+                "T8122 G15 PwrConfig PASS (14 OPPs, leak 1644/60, SRAM floor 790mV, max 21405mW); starting RTKit management-only preflight after host graph validation\n"
+            );
+
+            regs::Resources::start_cpu(pdev)?;
+            let initdata_result = gpu::GpuManagerG15V14_7::rtkit_management_preflight(&drm, &res, cfg);
+            let stop_result = regs::Resources::stop_cpu(pdev);
+
+            if let Err(e) = initdata_result {
+                dev_err!(pdev.as_ref(), "T8122 G15 RTKit management preflight failed: {:?}\n", e);
+                let _ = stop_result;
+                return Err(e);
+            }
+            stop_result?;
+
+            dev_info!(
+                pdev.as_ref(),
+                "T8122 G15 RTKit management-only PASS; ASC stopped; app endpoints/MSG_INIT intentionally blocked\n"
+            );
+            return Err(ENODEV);
+        }
 
         unsafe { pdev.dma_set_mask_and_coherent(DmaMask::try_new(cfg.uat_oas)?)? };
 

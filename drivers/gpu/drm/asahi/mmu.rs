@@ -1259,9 +1259,14 @@ impl Handoff {
     }
 
     /// Initialize the handoff region
-    fn init(&self) -> Result {
+    fn init(&self, g15: bool) -> Result {
         self.magic_ap.store(PPL_MAGIC, Ordering::Relaxed);
-        self.cur_slot.store(0, Ordering::Relaxed);
+        // Apple G15 AGXUnifiedAddressTranslator::initHandoff() writes
+        // 0xffffffff at +0x18 for the no-current-slot sentinel. Older
+        // generations use the existing zero sentinel; current_slot() accepts
+        // both representations as None.
+        self.cur_slot
+            .store(if g15 { u32::MAX } else { 0 }, Ordering::Relaxed);
         self.unk3.store(0, Ordering::Relaxed);
         fence(Ordering::SeqCst);
 
@@ -1831,6 +1836,25 @@ impl Uat {
         inner.page_table.dump_pages(IOVA_KERN_FULL_RANGE)
     }
 
+    /// Read-only G15 bring-up helper for a single TTBR0 page. This does not
+    /// allocate, map, unmap, or alter page-table state.
+    #[cfg(CONFIG_DEV_COREDUMP)]
+    pub(crate) fn probe_lower_page(&self, iova: u64) -> Result<Option<(u64, u64, bool)>> {
+        let start = iova & !(UAT_PGMSK as u64);
+        let end = start + UAT_PGSZ as u64;
+        let mut inner = self.kernel_lower_vm.inner.exec_lock(None, false)?;
+        let pages = inner.page_table.dump_pages(start..end)?;
+
+        for page in pages {
+            return Ok(Some((
+                page.pte,
+                page.pte & pgtable::PTE_ADDR_BITS,
+                page.data.is_some(),
+            )));
+        }
+        Ok(None)
+    }
+
     /// Returns the base physical address of the TTBAT region.
     pub(crate) fn ttb_base(&self) -> u64 {
         let inner = self.inner.lock();
@@ -2038,7 +2062,7 @@ impl Uat {
             );
         }
 
-        inner.handoff().init()?;
+        inner.handoff().init(cfg.gpu_gen == hw::GpuGen::G15)?;
 
         dev_info!(dev.as_ref(), "MMU: Initializing TTBs\n");
 

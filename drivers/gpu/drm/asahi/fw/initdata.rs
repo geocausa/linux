@@ -614,9 +614,76 @@ pub(crate) mod raw {
         pub(crate) cs_2: Array<2, F32>,
     }
 
-    /// G15-only extension appended to the inherited HwDataA prefix.
+    /// J615/C0 G15 DPE/PPT payload at HwDataA +0x3aa8.
     ///
-    /// The generated pre-G15-style object ends exactly at +0x421c, while
+    /// This is the exact zero-count bootstrap image produced by
+    /// AGXAcceleratorG15G::populateDPEPPTConfigData() on 25F84. The two
+    /// repeated 64-qword banks are represented structurally rather than as an
+    /// opaque captured byte blob.
+    #[derive(Debug)]
+    #[repr(C)]
+    pub(crate) struct G15DpePptConfig {
+        pub(crate) loop_count_000: u32,
+        pub(crate) pad_004: Pad<0xc8>,
+        pub(crate) all_ones_0cc: Array<4, U64>,
+        pub(crate) bootstrap_0ec: U64,
+        pub(crate) q_3fffff_0f4: Array<2, U64>,
+        pub(crate) pad_104: Pad<0x10>,
+        pub(crate) literal_114: U64,
+        pub(crate) pad_11c: Pad<0x20>,
+        pub(crate) literal_13c: U64,
+        pub(crate) all_ones_144: Array<4, U64>,
+        pub(crate) q_0f07_164: Array<4, U64>,
+        pub(crate) bank1_184: Array<64, U64>,
+        pub(crate) special_384: U64,
+        pub(crate) all_ones_38c: Array<4, U64>,
+        pub(crate) q_0f07_3ac: Array<4, U64>,
+        pub(crate) bank2_3cc: Array<64, U64>,
+        pub(crate) pad_5cc: Pad<0x08>,
+        pub(crate) control_5d4: U64,
+    }
+    default_zeroed!(G15DpePptConfig);
+    const _: [(); 0x5dc] = [(); core::mem::size_of::<G15DpePptConfig>()];
+    const _: [(); 0x0cc] = [(); core::mem::offset_of!(G15DpePptConfig, all_ones_0cc)];
+    const _: [(); 0x184] = [(); core::mem::offset_of!(G15DpePptConfig, bank1_184)];
+    const _: [(); 0x384] = [(); core::mem::offset_of!(G15DpePptConfig, special_384)];
+    const _: [(); 0x3cc] = [(); core::mem::offset_of!(G15DpePptConfig, bank2_3cc)];
+    const _: [(); 0x5d4] = [(); core::mem::offset_of!(G15DpePptConfig, control_5d4)];
+
+    /// Sparse SoCHot payload copied to HwDataA +0x4188 on J615/C0.
+    #[derive(Debug)]
+    #[repr(C)]
+    pub(crate) struct G15SoCHotConfig {
+        pub(crate) pad_000: Pad<0x10>,
+        pub(crate) sensor_mask_010: U64,
+        pub(crate) constant_018: U64,
+        pub(crate) pad_020: Pad<0x34>,
+    }
+    default_zeroed!(G15SoCHotConfig);
+    const _: [(); 0x54] = [(); core::mem::size_of::<G15SoCHotConfig>()];
+    const _: [(); 0x10] = [(); core::mem::offset_of!(G15SoCHotConfig, sensor_mask_010)];
+    const _: [(); 0x18] = [(); core::mem::offset_of!(G15SoCHotConfig, constant_018)];
+
+    /// G15 replacement for the inherited Shared1/2/3 through leakage-coef
+    /// region, spanning HwDataA +0x3a9c..+0x421b exactly.
+    #[derive(Debug)]
+    #[repr(C)]
+    pub(crate) struct G15HwDataAPreTail {
+        pub(crate) pad_000: Pad<0x08>,
+        pub(crate) constant_008: F32,
+        pub(crate) dpe_00c: G15DpePptConfig,
+        pub(crate) pad_5e8: Pad<0x104>,
+        pub(crate) sochot_6ec: G15SoCHotConfig,
+        pub(crate) pad_740: Pad<0x40>,
+    }
+    default_zeroed!(G15HwDataAPreTail);
+    const _: [(); 0x780] = [(); core::mem::size_of::<G15HwDataAPreTail>()];
+    const _: [(); 0x008] = [(); core::mem::offset_of!(G15HwDataAPreTail, constant_008)];
+    const _: [(); 0x00c] = [(); core::mem::offset_of!(G15HwDataAPreTail, dpe_00c)];
+    const _: [(); 0x6ec] = [(); core::mem::offset_of!(G15HwDataAPreTail, sochot_6ec)];
+
+    /// G15-only extension at HwDataA +0x421c.
+    ///
     /// Apple's G15 allocation is 0x4360 bytes. Firmware directly accesses
     /// several fields in this 0x144-byte extension. Unresolved fields remain
     /// offset-named and zero-initialized until host semantics are proven.
@@ -970,45 +1037,72 @@ pub(crate) mod raw {
 
         pub(crate) unk_3640: u32,
         pub(crate) unk_3644: u32,
+
+        #[ver(G != G15)]
         pub(crate) hws1: HwDataShared1,
 
-        #[ver(V >= V13_0B4)]
+        #[ver(V >= V13_0B4 && G != G15)]
         pub(crate) unk_hws2: Array<16, u16>,
 
+        #[ver(G != G15)]
         pub(crate) hws2: HwDataShared2,
+        #[ver(G != G15)]
         pub(crate) unk_3c00: u32,
+        #[ver(G != G15)]
         pub(crate) unk_3c04: u32,
+        #[ver(G != G15)]
         pub(crate) hws3: HwDataShared3,
+        #[ver(G != G15)]
         pub(crate) unk_3c58: Array<0x3c, u8>,
+        #[ver(G != G15)]
         pub(crate) unk_3c94: u32,
+        #[ver(G != G15)]
         pub(crate) unk_3c98: U64,
+        #[ver(G != G15)]
         pub(crate) unk_3ca0: U64,
+        #[ver(G != G15)]
         pub(crate) unk_3ca8: U64,
+        #[ver(G != G15)]
         pub(crate) unk_3cb0: U64,
+        #[ver(G != G15)]
         pub(crate) ts_last_idle: U64,
+        #[ver(G != G15)]
         pub(crate) ts_last_poweron: U64,
+        #[ver(G != G15)]
         pub(crate) ts_last_poweroff: U64,
+        #[ver(G != G15)]
         pub(crate) unk_3cd0: U64,
+        #[ver(G != G15)]
         pub(crate) unk_3cd8: U64,
 
-        #[ver(V >= V13_0B4)]
+        #[ver(V >= V13_0B4 && G != G15)]
         pub(crate) unk_3ce0_0: u32,
 
+        #[ver(G != G15)]
         pub(crate) unk_3ce0: u32,
+        #[ver(G != G15)]
         pub(crate) unk_3ce4: u32,
+        #[ver(G != G15)]
         pub(crate) unk_3ce8: u32,
+        #[ver(G != G15)]
         pub(crate) unk_3cec: u32,
+        #[ver(G != G15)]
         pub(crate) unk_3cf0: u32,
+        #[ver(G != G15)]
         pub(crate) core_leak_coef: Array<8, F32>,
+        #[ver(G != G15)]
         pub(crate) sram_leak_coef: Array<8, F32>,
 
-        #[ver(V >= V13_0B4)]
+        #[ver(V >= V13_0B4 && G != G15)]
         pub(crate) aux_leak_coef: AuxLeakCoef,
-        #[ver(V >= V13_0B4)]
+        #[ver(V >= V13_0B4 && G != G15)]
         pub(crate) unk_3d34_0: Array<0x18, u8>,
 
+        #[ver(G != G15)]
         pub(crate) unk_3d34: Array<0x38, u8>,
 
+        #[ver(G == G15)]
+        pub(crate) g15_pretail_3a9c: G15HwDataAPreTail,
         #[ver(G == G15)]
         pub(crate) g15_tail_421c: G15HwDataATail,
     }
@@ -1018,6 +1112,8 @@ pub(crate) mod raw {
     no_debug!(HwDataA::ver);
 
     const _: [(); 0x4360] = [(); core::mem::size_of::<HwDataAG15V14_7>()];
+    const _: [(); 0x3a94] = [(); core::mem::offset_of!(HwDataAG15V14_7, unk_3640)];
+    const _: [(); 0x3a9c] = [(); core::mem::offset_of!(HwDataAG15V14_7, g15_pretail_3a9c)];
     const _: [(); 0x421c] = [(); core::mem::offset_of!(HwDataAG15V14_7, g15_tail_421c)];
 
     #[derive(Debug, Default, Clone, Copy)]

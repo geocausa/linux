@@ -420,6 +420,58 @@ impl rtkit::Operations for GpuManager::ver {
         mod_dev_dbg!(dev, "shmem_alloc() -> VA {:#x}\n", mapping.iova());
         Ok(RtkitObject { vmap, mapping })
     }
+
+    /// G15 bring-up probe: record firmware-selected RTKit shared-memory IOVAs
+    /// without mapping or acknowledging them. Keep fail-closed until the exact
+    /// backing semantics are proven.
+    fn shmem_map(
+        data: <Self::Data as ForeignOwnable>::Borrowed<'_>,
+        iova: usize,
+        size: usize,
+    ) -> Result<Self::Buffer> {
+        #[cfg(CONFIG_DEV_COREDUMP)]
+        {
+            // m1n1 AGXASC::ioread/iowrite/iotranslate strips the upper DVA
+            // tag bits before walking the AGX UAT. Mirror that only for this
+            // read-only probe; no mapping or acknowledgement is performed.
+            let asc_dva = (iova as u64) & 0x0000_00ff_ffff_ffff;
+            match data.uat.probe_lower_page(asc_dva) {
+                Ok(Some((pte, phys, cpu_page))) => dev_info!(
+                    data.dev.as_ref(),
+                    "T8122 G15 RTKit shmem_map probe: tagged DVA {:#x}, masked DVA {:#x}, size {:#x}, PTE {:#x}, phys {:#x}, cpu_page={}; intentionally refusing\n",
+                    iova,
+                    asc_dva,
+                    size,
+                    pte,
+                    phys,
+                    cpu_page
+                ),
+                Ok(None) => dev_info!(
+                    data.dev.as_ref(),
+                    "T8122 G15 RTKit shmem_map probe: tagged DVA {:#x}, masked DVA {:#x}, size {:#x}, unmapped in TTBR0; intentionally refusing\n",
+                    iova,
+                    asc_dva,
+                    size
+                ),
+                Err(e) => dev_info!(
+                    data.dev.as_ref(),
+                    "T8122 G15 RTKit shmem_map probe: tagged DVA {:#x}, masked DVA {:#x}, size {:#x}, TTBR0 probe failed {:?}; intentionally refusing\n",
+                    iova,
+                    asc_dva,
+                    size,
+                    e
+                ),
+            }
+        }
+        #[cfg(not(CONFIG_DEV_COREDUMP))]
+        dev_info!(
+            data.dev.as_ref(),
+            "T8122 G15 RTKit shmem_map probe: IOVA {:#x}, size {:#x}; intentionally refusing\n",
+            iova,
+            size
+        );
+        Err(EINVAL)
+    }
 }
 
 #[versions(AGX)]
@@ -431,6 +483,30 @@ impl GpuManager::ver {
         res: &regs::Resources,
         cfg: &'static hw::HwConfig,
     ) -> Result<Arc<GpuManager::ver>> {
+        let mgr = Self::build_pre_rtkit(dev, res, cfg)?;
+        let mgr = Arc::from(mgr);
+
+        let rtkit = rtkit::RtKit::<GpuManager::ver>::new(dev.as_ref(), None, 0, mgr.clone())?;
+
+        *mgr.rtkit.lock() = Some(rtkit);
+
+        {
+            let mut rxc = mgr.rx_channels.lock();
+            rxc.event.set_manager(mgr.clone());
+        }
+
+        Ok(mgr)
+    }
+
+    /// Build and wire the complete manager object graph up to, but excluding,
+    /// RTKit construction. This is also the safe G15 bring-up boundary used by
+    /// the build-and-destroy preflight.
+    #[inline(never)]
+    fn build_pre_rtkit(
+        dev: &AsahiDevice,
+        res: &regs::Resources,
+        cfg: &'static hw::HwConfig,
+    ) -> Result<Pin<UniqueArc<GpuManager::ver>>> {
         let uat = Self::make_uat(dev, cfg)?;
         let dyncfg = Self::make_dyncfg(dev, res, cfg, &uat)?;
 
@@ -528,8 +604,9 @@ impl GpuManager::ver {
         #[ver(G == G15)]
         {
             // G15 no longer exposes the legacy FwStatus object in InitData.
-            // Keep firmware-control wiring disabled until the exact G15 shared
-            // channel location is reconstructed from the Apple host ABI.
+            // Its exact 0x20 state + 0x1800 mapping/control ring already live
+            // in q22 +0x4568/+0x4570. Runtime notification production remains
+            // fail-closed; there is no separate legacy FwCtlChannel to wire.
         }
 
         {
@@ -631,18 +708,337 @@ impl GpuManager::ver {
             mgr.as_mut().io_mappings_mut().push(mapping, GFP_KERNEL)?;
         }
 
-        let mgr = Arc::from(mgr);
+        Ok(mgr)
+    }
 
-        let rtkit = rtkit::RtKit::<GpuManager::ver>::new(dev.as_ref(), None, 0, mgr.clone())?;
-
-        *mgr.rtkit.lock() = Some(rtkit);
-
+    /// G15 bring-up checkpoint: construct the full InitData allocation tree,
+    /// validate the deterministic J615/C0 HwDataA pre-tail in CPU memory, and
+    /// drop everything without creating RTKit or sending firmware messages.
+    pub(crate) fn initdata_preflight(
+        dev: &AsahiDevice,
+        res: &regs::Resources,
+        cfg: &'static hw::HwConfig,
+    ) -> Result<()> {
+        #[ver(G != G15)]
         {
-            let mut rxc = mgr.rx_channels.lock();
-            rxc.event.set_manager(mgr.clone());
+            let _ = (dev, res, cfg);
+            return Err(EINVAL);
         }
 
-        Ok(mgr)
+        #[ver(G == G15)]
+        {
+            let uat = Self::make_uat(dev, cfg)?;
+            let dyncfg = Self::make_dyncfg(dev, res, cfg, &uat)?;
+
+            let mut alloc = KernelAllocators {
+                private: alloc::DefaultAllocator::new(
+                    dev,
+                    uat.kernel_vm(),
+                    IOVA_KERN_PRIV_RANGE,
+                    0x80,
+                    mmu::PROT_FW_PRIV_RW,
+                    1024 * 1024,
+                    true,
+                    fmt!("Kernel Private"),
+                    true,
+                )?,
+                shared: alloc::DefaultAllocator::new(
+                    dev,
+                    uat.kernel_vm(),
+                    IOVA_KERN_SHARED_RANGE,
+                    0x80,
+                    mmu::PROT_FW_SHARED_RW,
+                    1024 * 1024,
+                    true,
+                    fmt!("Kernel Shared"),
+                    false,
+                )?,
+                shared_ro: alloc::DefaultAllocator::new(
+                    dev,
+                    uat.kernel_vm(),
+                    IOVA_KERN_SHARED_RO_RANGE,
+                    0x80,
+                    mmu::PROT_FW_SHARED_RO,
+                    64 * 1024,
+                    true,
+                    fmt!("Kernel RO Shared"),
+                    false,
+                )?,
+                gpu: alloc::DefaultAllocator::new(
+                    dev,
+                    uat.kernel_vm(),
+                    IOVA_KERN_GPU_RANGE,
+                    0x80,
+                    mmu::PROT_GPU_FW_SHARED_RW,
+                    64 * 1024,
+                    true,
+                    fmt!("Kernel GPU Shared"),
+                    false,
+                )?,
+                gpu_ro: alloc::DefaultAllocator::new(
+                    dev,
+                    uat.kernel_vm(),
+                    IOVA_KERN_GPU_RO_RANGE,
+                    0x80,
+                    mmu::PROT_GPU_RO_FW_PRIV_RW,
+                    1024 * 1024,
+                    true,
+                    fmt!("Kernel GPU RO Shared"),
+                    true,
+                )?,
+            };
+
+            let initdata = Self::make_initdata(dev, cfg, &dyncfg, &mut alloc)?;
+            let hwdata_a_va = initdata.runtime_pointers.hwdata_a.gpu_va().get();
+            let initdata_va = initdata.gpu_va().get();
+
+            let pre_ok = initdata.runtime_pointers.hwdata_a.with(|raw, _inner| {
+                let pre = &raw.g15_pretail_3a9c;
+                let dpe = &pre.dpe_00c;
+                let u64_is = |v: &U64, x: u64| v.0 == x;
+
+                pre.constant_008.to_bits() == 0x40a0_0000
+                    && dpe.loop_count_000 == 0
+                    && dpe.all_ones_0cc.iter().all(|v| u64_is(v, u64::MAX))
+                    && u64_is(&dpe.bootstrap_0ec, 0x0000_0000_0008_0000)
+                    && dpe
+                        .q_3fffff_0f4
+                        .iter()
+                        .all(|v| u64_is(v, 0x003f_ffff_003f_ffff))
+                    && u64_is(&dpe.literal_114, 0x003f_0000_0000_0000)
+                    && u64_is(&dpe.literal_13c, 0x2000_0000_0000_0000)
+                    && dpe.all_ones_144.iter().all(|v| u64_is(v, u64::MAX))
+                    && dpe
+                        .q_0f07_164
+                        .iter()
+                        .all(|v| u64_is(v, 0x0f07_0f07_0f07_0f07))
+                    && dpe
+                        .bank1_184
+                        .iter()
+                        .all(|v| u64_is(v, 0x03ff_ffff_03ff_ffff))
+                    && u64_is(&dpe.special_384, 0xa000_0000_0000_0017)
+                    && dpe.all_ones_38c.iter().all(|v| u64_is(v, u64::MAX))
+                    && dpe
+                        .q_0f07_3ac
+                        .iter()
+                        .all(|v| u64_is(v, 0x0f07_0f07_0f07_0f07))
+                    && dpe
+                        .bank2_3cc
+                        .iter()
+                        .all(|v| u64_is(v, 0x03ff_ffff_03ff_ffff))
+                    && u64_is(&dpe.control_5d4, 0x0000_0000_00c0_0000)
+                    && u64_is(&pre.sochot_6ec.sensor_mask_010, 0x4248)
+                    && u64_is(&pre.sochot_6ec.constant_018, 125)
+            });
+
+            if !pre_ok {
+                dev_err!(dev.as_ref(), "T8122 G15 InitData preflight HwDataA pre-tail mismatch\n");
+                return Err(EIO);
+            }
+
+            dev_info!(
+                dev.as_ref(),
+                "T8122 G15 InitData construction PASS (InitData VA {:#x}, HwDataA VA {:#x}, pre-tail 0x3a9c..0x421b exact); dropping without RTKit/MSG_INIT\n",
+                initdata_va,
+                hwdata_a_va
+            );
+
+            core::mem::drop(initdata);
+            core::mem::drop(alloc);
+            core::mem::drop(dyncfg);
+            core::mem::drop(uat);
+            Ok(())
+        }
+    }
+
+    /// G15 bring-up checkpoint: build and wire the complete manager graph up
+    /// to the exact RTKit construction boundary, validate all startup-visible
+    /// channel/backing pointers, then drop it without constructing RTKit or
+    /// sending MSG_INIT.
+    pub(crate) fn manager_preflight(
+        dev: &AsahiDevice,
+        res: &regs::Resources,
+        cfg: &'static hw::HwConfig,
+    ) -> Result<()> {
+        #[ver(G != G15)]
+        {
+            let _ = (dev, res, cfg);
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            // Preserve the already-proven HwDataA deterministic pre-tail gate
+            // before advancing to the larger manager/channel object graph.
+            Self::initdata_preflight(dev, res, cfg)?;
+
+            let mgr = Self::build_pre_rtkit(dev, res, cfg)?;
+
+            let initdata_va = mgr.initdata.gpu_va().get();
+            let wrapper_va = mgr.initdata.runtime_pointers.gpu_va().get();
+            let q22_va = mgr.initdata.g15_q22.gpu_va().get();
+            let q22_state_va = mgr.initdata.g15_cache_flush_state.gpu_va().get();
+            let q22_ring_va = mgr.initdata.g15_cache_flush_ring.gpu_va().get();
+
+            let root_ok = mgr.initdata.with(|raw, _inner| {
+                raw.g15_q0_signature.0 == 0x0c08_e21e_8380_0490
+                    && raw.g15_q3_runtime_pointers.0 == wrapper_va
+                    && raw.g15_q5_host_mapped.0 == 0x0000_0001_0000_0000
+                    && raw.g15_q22.0 == q22_va
+            });
+
+            let q22_ok = mgr.initdata.g15_q22.with(|raw, _inner| {
+                raw.shared_ptr_4568.0 == q22_state_va
+                    && raw.shared_ptr_4570.0 == q22_ring_va
+                    && raw.host_flag_45c4.0 == 1
+            });
+
+            let tx_ring_ok = |r: &fw::initdata::raw::G15TxChannelRing| {
+                let read = r.read_ptr.0;
+                read != 0
+                    && r.write_ptr_shadow.0 == read + 0x10
+                    && r.write_ptr.0 == read + 0x20
+                    && r.ring.0 != 0
+            };
+
+            let wrapper_ok = mgr.initdata.runtime_pointers.with(|raw, _inner| {
+                let pipes_ok = raw.pipes.iter().all(|p| {
+                    tx_ring_ok(&p.vtx) && tx_ring_ok(&p.frag) && tx_ring_ok(&p.comp)
+                });
+
+                pipes_ok
+                    && tx_ring_ok(&raw.device_control)
+                    && raw.event.state.is_some()
+                    && raw.event.ring.is_some()
+                    && raw.fw_log.state.is_some()
+                    && raw.fw_log.ring.is_some()
+                    && raw.ktrace.state.is_some()
+                    && raw.ktrace.ring.is_some()
+                    && raw.stats.state.is_some()
+                    && raw.stats.ring.is_some()
+                    && raw.fwlog_buf.is_some()
+            });
+
+            let bufmgr_ok = mgr
+                .initdata
+                .runtime_pointers
+                .buffer_mgr_ctl_low_mapping
+                .is_some()
+                && mgr
+                    .initdata
+                    .runtime_pointers
+                    .buffer_mgr_ctl_high_mapping
+                    .is_some();
+
+            // J615/T8122 currently has no static HwConfig MMIO or SRAM mapping
+            // entries. Keep this explicit so a later table addition cannot
+            // silently bypass the preflight's mapping validation.
+            let mappings_ok = cfg.io_mappings.is_empty()
+                && cfg.sram_base.is_none()
+                && cfg.sram_size.is_none()
+                && mgr.io_mappings.is_empty();
+
+            if !(root_ok && q22_ok && wrapper_ok && bufmgr_ok && mappings_ok) {
+                dev_err!(
+                    dev.as_ref(),
+                    "T8122 G15 pre-RTKit manager validation failed: root={} q22={} wrapper={} bufmgr={} mappings={}\n",
+                    root_ok,
+                    q22_ok,
+                    wrapper_ok,
+                    bufmgr_ok,
+                    mappings_ok
+                );
+                return Err(EIO);
+            }
+
+            dev_info!(
+                dev.as_ref(),
+                "T8122 G15 pre-RTKit manager PASS (InitData {:#x}, wrapper {:#x}, q22 {:#x}, q22 ctl {:#x}/{:#x}; 12 pipe TX + device-control + RX/log/stats wired); dropping before RtKit::new/MSG_INIT\n",
+                initdata_va,
+                wrapper_va,
+                q22_va,
+                q22_state_va,
+                q22_ring_va
+            );
+
+            core::mem::drop(mgr);
+            Ok(())
+        }
+    }
+
+    /// G15 bring-up checkpoint: allow only the standard RTKit management
+    /// handshake. App endpoints are discovered but never started, and MSG_INIT
+    /// is never sent. RTKit is destroyed again before ASC is stopped by the
+    /// caller.
+    pub(crate) fn rtkit_management_preflight(
+        dev: &AsahiDevice,
+        res: &regs::Resources,
+        cfg: &'static hw::HwConfig,
+    ) -> Result<()> {
+        #[ver(G != G15)]
+        {
+            let _ = (dev, res, cfg);
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            // Keep every previous host-side validation as a prerequisite.
+            Self::manager_preflight(dev, res, cfg)?;
+
+            let mgr = Arc::from(Self::build_pre_rtkit(dev, res, cfg)?);
+            let rtkit = rtkit::RtKit::<GpuManager::ver>::new(
+                dev.as_ref(),
+                None,
+                0,
+                mgr.clone(),
+            )?;
+            *mgr.rtkit.lock() = Some(rtkit);
+
+            let (fw_ep, doorbell_ep) = {
+                let mut guard = mgr.rtkit.lock();
+                let mut rtk = guard.as_mut().as_pin_mut().ok_or(EIO)?;
+
+                // This performs only RTKit management/system-endpoint boot:
+                // HELLO/EPMAP negotiation, system endpoints and AP power-on.
+                // It does not start EP_FIRMWARE/EP_DOORBELL and sends no MSG_INIT.
+                rtk.as_mut().boot()?;
+                let fw = rtk.as_mut().has_endpoint(EP_FIRMWARE);
+                let doorbell = rtk.as_mut().has_endpoint(EP_DOORBELL);
+                (fw, doorbell)
+            };
+
+            let q21_untouched = mgr.initdata.g15_q21.with(|raw, _inner| {
+                raw.busy.load(Ordering::Relaxed) == 0
+                    && raw.firmware_ready.load(Ordering::Relaxed) == 0
+                    && raw.power_state.load(Ordering::Relaxed) == 0
+            });
+            let crashed = mgr.crashed.load(Ordering::Relaxed);
+
+            if !fw_ep || !doorbell_ep || !q21_untouched || crashed {
+                dev_err!(
+                    dev.as_ref(),
+                    "T8122 G15 RTKit management validation failed: fw_ep={} doorbell_ep={} q21_untouched={} crashed={}\n",
+                    fw_ep,
+                    doorbell_ep,
+                    q21_untouched,
+                    crashed
+                );
+                return Err(EIO);
+            }
+
+            dev_info!(
+                dev.as_ref(),
+                "T8122 G15 RTKit management PASS (EP20 firmware + EP21 doorbell discovered; app endpoints not started; q21 untouched); destroying RTKit without MSG_INIT\n"
+            );
+
+            // Stop mailbox RX and release any RTKit system buffers before the
+            // manager/UAT disappear. The caller stops ASC immediately after.
+            let rtkit = mgr.rtkit.lock().take();
+            core::mem::drop(rtkit);
+            core::mem::drop(mgr);
+            Ok(())
+        }
     }
 
     /// Return a mutable reference to the initdata member

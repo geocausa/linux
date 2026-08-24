@@ -1128,6 +1128,16 @@ struct drm_asahi_cmd_render {
 	 * stencil image plane, excluding any array-layer offset.
 	 */
 	__u64 stencil_level_offset;
+
+	/**
+	 * @eot_state_loader: GPU address of the end-of-tile state-loader program.
+	 *
+	 * Newer GPU generations can execute a small I/O-to-register state-loader
+	 * program before the EOT USC program. The address is 64-byte aligned.
+	 * Older generations ignore this field. Since render commands are
+	 * size-versioned, older userspace that omits it is read as zero.
+	 */
+	__u64 eot_state_loader;
 };
 
 /**

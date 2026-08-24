@@ -431,6 +431,19 @@ impl super::QueueInner::ver {
             & uapi::drm_asahi_render_flags_DRM_ASAHI_RENDER_HAS_LOAD_CLEAR as u32
             != 0;
 
+        #[ver(G == G15)]
+        if cmdbuf.eot_state_loader == 0
+            || cmdbuf.eot_state_loader
+                != (cmdbuf.eot_state_loader & 0x0000_ffff_ffff_ffc0)
+        {
+            cls_pr_debug!(
+                Errors,
+                "Invalid G15 EOT state-loader GPUVA ({:#x})\n",
+                cmdbuf.eot_state_loader
+            );
+            return Err(EINVAL);
+        }
+
         if cmdbuf.width_px == 0
             || cmdbuf.height_px == 0
             || cmdbuf.width_px > 16384
@@ -1177,22 +1190,16 @@ impl super::QueueInner::ver {
                     #[ver(G == G15)]
                     registers: fw::job::raw::RegisterArray::new(
                         inner_weak_ptr!(_ptr, registers.registers),
-                        |_r| {
-                            // Exact G15 command geometry uses the register-list body,
-                            // but individual 3D register entries are not yet imported.
-                            // Keep the proven/common inputs type-checked without emitting
-                            // unverified register programming. Apple also has three optional
+                        |r| {
+                            // Exact G15G/C0 normal 3D register-list geometry and producers
+                            // are closed and emitted below. Apple also has three optional
                             // G15 registers gated by AGXPerfCtrSampler state; fresh/inactive
                             // sampler state makes that outer gate false, so they are not part
                             // of the base render list and stay absent until G15 perf sampling
                             // has its own independently correct lifecycle.
-                            // PM register 0x1ca28 is now fully constructible from the
-                            // reconstructed per-slot Parameter Scene Allocations resource. Keep
-                            // it non-emitting with the rest of the G15 RegisterArray until the
-                            // complete base list crosses the runtime-enablement boundary.
-                            // RTM/common formulas independently matched to the existing
-                            // kernel-owned geometry producers. Keep these typed here so later
-                            // list import cannot silently drift while G15 emission is disabled.
+                            // PM register 0x1ca28 is constructed from the reconstructed
+                            // per-slot Parameter Scene Allocations resource. RTM/common formulas
+                            // independently match existing kernel-owned geometry producers.
                             let g15_isp_mtile_size: u64 = (tile_info.utiles_per_mtile_y
                                 | (tile_info.utiles_per_mtile_x << 16))
                                 .into();
@@ -1207,7 +1214,7 @@ impl super::QueueInner::ver {
                             let g15_blocks_per_utile =
                                 ((cmdbuf.sample_size_B as u32) * g15_samples_per_utile)
                                     .div_ceil(2048);
-                            let g15_aux_fb = inner.aux_fb.gpu_pointer();
+                            let g15_aux_fb: u64 = inner.aux_fb.gpu_pointer().into();
                             let g15_rgn_stride: u64 = (tile_info.params.rgn_size as u64) << 26;
                             // Exact Apple selectors include private modes 2/3, but Linux's
                             // existing render ABI exposes only the historical normal tiler mode
@@ -1303,6 +1310,95 @@ impl super::QueueInner::ver {
                             // Render +0x674. G15 0x1a0f9 masks that dword with
                             // 0xfffffff8, so its exact value is zero in both cases.
                             let g15_sampled_reg_1a0f9: u64 = 0;
+                            // Exact G15 EOT 0x15351 is the GPUVA of the
+                            // userspace-generated I/O-to-register ESL bytecode.
+                            // Apple inserts address bits 6..47 and leaves the
+                            // remaining bits zero on the ordinary 24G84 path.
+                            // Honeykrisp now owns the command-lifetime ESL allocation and
+                            // the UAPI validation above guarantees the exact 64-byte-aligned
+                            // 48-bit GPUVA form consumed by the ordinary G15 register.
+                            let g15_eot_state_loader_reg_15351: u64 =
+                                cmdbuf.eot_state_loader;
+                            // Exact normal G15G/C0 Fragment list. The initial 0x1739 seed
+                            // is outside the 74 helper-emitted entries in the Apple trace.
+                            // The conditional 0x17e1 VRS seed is absent because current Linux
+                            // has no rasterization-rate-map producer (g15_vrs_reg_101c1 == 0).
+                            r.add(0x1739, 1);
+                            r.add(0x10009, utile_config.into());
+                            r.add(0x15379, cmdbuf.eot.rsrc_spec.into());
+                            r.add(0x15381, cmdbuf.eot.usc.into());
+                            r.add(0x15369, cmdbuf.bg.rsrc_spec.into());
+                            r.add(0x15371, cmdbuf.bg.usc.into());
+                            r.add(0x15131, cmdbuf.isp_merge_upper_x.into());
+                            r.add(0x15139, cmdbuf.isp_merge_upper_y.into());
+                            r.add(0x100a1, 0);
+                            r.add(0x15069, 0);
+                            r.add(0x15071, 0);
+                            r.add(0x16058, g15_raw5f0_reg_16058);
+                            r.add(0x10019, cmdbuf.ppp_multisamplectl);
+                            r.add(0x100b1, g15_isp_mtile_size);
+                            r.add(0x16030, g15_isp_mtile_size);
+                            r.add(0x100d9, g15_te_screen);
+                            r.add(0x10791, g15_vrs_reg_10791);
+                            r.add(0x16098, inner.scene.tvb_heapmeta_pointer().into());
+                            r.add(0x15109, cmdbuf.isp_scissor_base & !0x3);
+                            r.add(0x15101, cmdbuf.isp_dbias_base & !0x3);
+                            r.add(0x15021, g15_aux_reg_15021);
+                            r.add(0x15211, g15_fb_dimensions);
+                            r.add(0x15049, g15_aux_reg_15049);
+                            r.add(0x10051, g15_blocks_per_utile.into());
+                            r.add(0x15321, cmdbuf.isp_zls_pixels.into());
+                            r.add(0x15301, cmdbuf.isp_bgobjdepth.into());
+                            r.add(0x15309, load_bgobjvals);
+                            r.add(0x15311, cmdbuf.isp_oclqry_base & !0xf);
+                            r.add(0x15319, cmdbuf.zls_ctrl);
+                            r.add(0x15349, 0);
+                            r.add(0x15351, g15_eot_state_loader_reg_15351);
+                            r.add(0x15329, cmdbuf.depth.base);
+                            r.add(0x15331, cmdbuf.depth.base);
+                            r.add(0x15339, cmdbuf.stencil.base);
+                            r.add(0x15341, cmdbuf.stencil.base);
+                            r.add(0x15231, g15_native_resolve_reg_15231);
+                            r.add(0x15221, g15_depth_aux_reg_15221);
+                            r.add(0x15239, g15_depth_aux_reg_15239);
+                            r.add(0x15229, g15_stencil_aux_reg_15229);
+                            r.add(0x15401, cmdbuf.depth.stride as u64);
+                            r.add(0x15421, cmdbuf.depth.stride as u64);
+                            r.add(0x15409, cmdbuf.stencil.stride as u64);
+                            r.add(0x15429, cmdbuf.stencil.stride as u64);
+                            r.add(0x153c1, cmdbuf.depth.comp_base);
+                            r.add(0x15411, cmdbuf.depth.comp_stride as u64);
+                            r.add(0x153c9, cmdbuf.depth.comp_base);
+                            r.add(0x15431, cmdbuf.depth.comp_stride as u64);
+                            r.add(0x153d1, cmdbuf.stencil.comp_base);
+                            r.add(0x15419, cmdbuf.stencil.comp_stride as u64);
+                            r.add(0x153d9, cmdbuf.stencil.comp_base);
+                            r.add(0x15439, cmdbuf.stencil.comp_stride as u64);
+                            r.add(0x16429, inner.scene.tvb_tilemap_pointer().into());
+                            r.add(0x16060, inner.scene.tvb_layermeta_pointer().into());
+                            r.add(0x16431, g15_rgn_stride);
+                            r.add(0x10039, g15_tile_config);
+                            r.add(0x16020, 0);
+                            r.add(0x16451, 0);
+                            r.add(0x15359, 0);
+                            r.add(0x100b8, g15_reg_100b8);
+                            r.add(0x16461, g15_aux_fb);
+                            r.add(0x16090, g15_aux_fb);
+                            r.add(0x120a1, g15_raw600_reg_120a1);
+                            r.add(0x101e9, g15_raw600_reg_101e9);
+                            r.add(0x16068, g15_tilecfg);
+                            r.add(0x1a0a9, g15_clear_reg_1a0a9);
+                            r.add(0x1a0b1, g15_memoryless_reg_1a0b1);
+                            r.add(0x1a079, g15_vrs_reg_1a079);
+                            r.add(0x1a081, g15_vrs_reg_1a081);
+                            r.add(0x1a0d9, g15_vrs_reg_1a0d9);
+                            r.add(0x1a0e1, g15_vrs_reg_1a0e1);
+                            r.add(0x101c1, g15_vrs_reg_101c1);
+                            r.add(0x0d469, g15_vrs_reg_0d469);
+                            r.add(0x1a0f9, g15_sampled_reg_1a0f9);
+                            r.add(0x1c838, 0xffff_ffff);
+                            r.add(0x1ca28, g15_pm_scene_reg_1ca28);
+
                             let _ = (
                                 g15_fb_dimensions,
                                 g15_blocks_per_utile,
@@ -1338,6 +1434,7 @@ impl super::QueueInner::ver {
                                 g15_vrs_reg_1a0d9,
                                 g15_vrs_reg_1a0e1,
                                 g15_sampled_reg_1a0f9,
+                                g15_eot_state_loader_reg_15351,
                                 g15_pm_record_gpuva,
                                 g15_pm_page_metrics_gpuva,
                                 load_bgobjvals,

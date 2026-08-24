@@ -31,6 +31,22 @@
 	};
 };
 
+&uat_handoff {
+	reg = <0x103 0xfff70000 0x0 0x4000>;
+};
+
+&uat_pagetables {
+	reg = <0x103 0xfff78000 0x0 0x40000>;
+};
+
+&uat_ttbs {
+	reg = <0x103 0xfffb8000 0x0 0x4000>;
+};
+
+&gpu_preflight {
+	status = "okay";
+};
+
 &aop_mbox {
 	status = "okay";
 };

@@ -293,6 +293,21 @@ impl Resources {
         Ok(())
     }
 
+    /// Stop the ASC coprocessor CPU.
+    ///
+    /// Used by the fail-closed T8122 UAT-handoff preflight so the preloaded
+    /// firmware is explicitly stopped before platform genpd detaches/powers
+    /// the GPU domain off. This is the exact inverse of `start_cpu()`.
+    pub(crate) fn stop_cpu(pdev: &platform::Device<Core>) -> Result {
+        let asc_req = pdev.io_request_by_name(c_str!("asc")).ok_or(EINVAL)?;
+        let asc_iomem = KBox::pin_init(asc_req.iomap_sized::<ASC_CTL_SIZE>(), GFP_KERNEL)?;
+        let res = asc_iomem.access(pdev.as_ref())?.relaxed();
+
+        let val = res.read32(CPU_CONTROL);
+        res.write32(val & !CPU_RUN, CPU_CONTROL);
+        Ok(())
+    }
+
     /// Get the GPU identification info from registers.
     ///
     /// See [`hw::GpuIdConfig`] for the result.
@@ -333,6 +348,13 @@ impl Resources {
                 core_mask_regs.push(self.sgx_read32::<{ CORE_MASKS_G14X + 8 }>(), GFP_KERNEL)?;
                 // Clusters per die * num dies
                 ((id_counts_1 >> 8) & 0xff) * ((id_counts_1 >> 16) & 0xf)
+            }
+            7 => {
+                // G15: E007 static reconstruction + guarded E009 powered probe
+                // prove the packed core mask begins at SGX +0xe01500 and the
+                // exported topology count is the MGPU count from ID_COUNTS_1.
+                core_mask_regs.push(self.sgx_read32::<CORE_MASKS_G14X>(), GFP_KERNEL)?;
+                g15_mgpu_count_from_id_counts_1(id_counts_1)
             }
             a => {
                 dev_err!(self.dev.as_ref(), "Unknown GPU generation {}\n", a);
@@ -410,6 +432,7 @@ impl Resources {
                 4 => hw::GpuGen::G13,
                 5 => hw::GpuGen::G14,
                 6 => hw::GpuGen::G14, // G14X has a separate ID
+                7 => hw::GpuGen::G15,
                 a => {
                     dev_err!(self.dev.as_ref(), "Unknown GPU generation {}\n", a);
                     return Err(ENODEV);
