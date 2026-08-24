@@ -980,11 +980,11 @@ impl GpuManager::ver {
         }
     }
 
-    /// G15 bring-up checkpoint: allow only the standard RTKit management
-    /// handshake. App endpoints are discovered but never started, and MSG_INIT
-    /// is never sent. RTKit is destroyed again before ASC is stopped by the
-    /// caller.
-    pub(crate) fn rtkit_management_preflight(
+    /// G15 bring-up checkpoint: complete RTKit management, then start the
+    /// firmware and doorbell application endpoints without sending InitData,
+    /// device-control traffic, a doorbell, or MSG_INIT. RTKit is destroyed
+    /// again before ASC is stopped by the caller.
+    pub(crate) fn rtkit_endpoint_preflight(
         dev: &AsahiDevice,
         res: &regs::Resources,
         cfg: &'static hw::HwConfig,
@@ -1013,12 +1013,19 @@ impl GpuManager::ver {
                 let mut guard = mgr.rtkit.lock();
                 let mut rtk = guard.as_mut().as_pin_mut().ok_or(EIO)?;
 
-                // This performs only RTKit management/system-endpoint boot:
-                // HELLO/EPMAP negotiation, system endpoints and AP power-on.
-                // It does not start EP_FIRMWARE/EP_DOORBELL and sends no MSG_INIT.
+                // Complete RTKit management/system-endpoint boot first.
                 rtk.as_mut().boot()?;
                 let fw = rtk.as_mut().has_endpoint(EP_FIRMWARE);
                 let doorbell = rtk.as_mut().has_endpoint(EP_DOORBELL);
+                if !fw || !doorbell {
+                    return Err(EIO);
+                }
+
+                // m1n1 starts these endpoints before it builds InitData. The
+                // RTKit core sends only STARTEP management messages here; no
+                // InitData address or application payload is sent.
+                rtk.as_mut().start_endpoint(EP_FIRMWARE)?;
+                rtk.as_mut().start_endpoint(EP_DOORBELL)?;
                 (fw, doorbell)
             };
 
@@ -1032,7 +1039,7 @@ impl GpuManager::ver {
             if !fw_ep || !doorbell_ep || !q21_untouched || crashed {
                 dev_err!(
                     dev.as_ref(),
-                    "T8122 G15 RTKit management validation failed: fw_ep={} doorbell_ep={} q21_untouched={} crashed={}\n",
+                    "T8122 G15 RTKit endpoint-start validation failed: fw_ep={} doorbell_ep={} q21_untouched={} crashed={}\n",
                     fw_ep,
                     doorbell_ep,
                     q21_untouched,
@@ -1043,7 +1050,7 @@ impl GpuManager::ver {
 
             dev_info!(
                 dev.as_ref(),
-                "T8122 G15 RTKit management PASS (EP20 firmware + EP21 doorbell discovered; app endpoints not started; q21 untouched); destroying RTKit without MSG_INIT\n"
+                "T8122 G15 RTKit endpoint-start PASS (EP20 firmware + EP21 doorbell started; no InitData/device-control/doorbell/MSG_INIT; q21 untouched); destroying RTKit\n"
             );
 
             // Stop mailbox RX and release any RTKit system buffers before the
