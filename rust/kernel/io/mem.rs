@@ -21,6 +21,10 @@ use crate::{
         Mmio,
         MmioRaw, //
     },
+    iosys_map::{
+        IoSysMapRef,
+        RawIoSysMap, //
+    },
     prelude::*,
 };
 
@@ -372,11 +376,47 @@ impl Mem {
     /// allocated through the `dma` module.
     pub unsafe fn try_new(res: Resource, flags: MemFlags) -> Result<Self> {
         let size: usize = res.size().try_into()?;
+        // SAFETY: The caller of `try_new` guarantees the resource is safe to map,
+        // and the owned Resource prevents this specific resource value from being
+        // reused through this interface.
+        unsafe { Self::try_new_phys(res.start(), size, flags) }
+    }
 
-        let addr = unsafe { bindings::memremap(res.start(), size, flags.into()) };
+    /// Tries to map a physical non-MMIO memory range directly.
+    ///
+    /// This is the resource-less counterpart of [`Self::try_new`], for firmware
+    /// interfaces which provide a physical address dynamically rather than via
+    /// a firmware-described [`Resource`].
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `start..start + size` names ordinary memory
+    /// with no MMIO side effects, remains valid for the lifetime of the returned
+    /// mapping, and is not concurrently mapped with incompatible cache attributes.
+    pub unsafe fn try_new_phys(
+        start: io::resource::PhysAddr,
+        size: usize,
+        flags: MemFlags,
+    ) -> Result<Self> {
+        let addr = unsafe { bindings::memremap(start, size, flags.into()) };
         let ptr = NonNull::new(addr).ok_or(ENOMEM)?;
         // INVARIANT: `ptr` is non-null and was returned by `memremap`, so it is valid.
         Ok(Self { ptr, size })
+    }
+
+    /// Returns this memory mapping as an [`IoSysMapRef`] of bytes.
+    pub fn as_iosys_map(&mut self) -> IoSysMapRef<'_, u8> {
+        let map = RawIoSysMap::from_raw(bindings::iosys_map {
+            is_iomem: false,
+            __bindgen_anon_1: bindings::iosys_map__bindgen_ty_1 {
+                vaddr: self.ptr().cast(),
+            },
+        });
+
+        // SAFETY: `map` points to this `Mem` object's live memremap mapping and
+        // is valid for exactly `self.size` bytes. The returned lifetime is tied
+        // to the mutable borrow of `self`.
+        unsafe { IoSysMapRef::new(map, self.size) }
     }
 
     /// Returns the base address of the memory mapping as a raw pointer.

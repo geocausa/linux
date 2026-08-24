@@ -349,12 +349,29 @@ pub(crate) struct RtkitObject {
     mapping: mmu::KernelMapping,
 }
 
-impl rtkit::Buffer for RtkitObject {
+pub(crate) struct RtkitPrealloc {
+    phys: usize,
+    mem: Mem,
+}
+
+pub(crate) enum RtkitBuffer {
+    Allocated(RtkitObject),
+    Preallocated(RtkitPrealloc),
+}
+
+impl rtkit::Buffer for RtkitBuffer {
     fn iova(&self) -> Result<usize> {
-        Ok(self.mapping.iova() as usize)
+        Ok(match self {
+            Self::Allocated(obj) => obj.mapping.iova() as usize,
+            Self::Preallocated(obj) => obj.phys,
+        })
     }
+
     fn buf(&mut self) -> Result<IoSysMapRef<'_, u8>> {
-        Ok(self.vmap.get())
+        Ok(match self {
+            Self::Allocated(obj) => obj.vmap.get(),
+            Self::Preallocated(obj) => obj.mem.as_iosys_map(),
+        })
     }
 }
 
@@ -362,7 +379,7 @@ impl rtkit::Buffer for RtkitObject {
 #[vtable]
 impl rtkit::Operations for GpuManager::ver {
     type Data = Arc<GpuManager::ver>;
-    type Buffer = RtkitObject;
+    type Buffer = RtkitBuffer;
 
     fn recv_message(data: <Self::Data as ForeignOwnable>::Borrowed<'_>, ep: u8, msg: u64) {
         let dev = &data.dev;
@@ -418,59 +435,56 @@ impl rtkit::Operations for GpuManager::ver {
             true,
         )?;
         mod_dev_dbg!(dev, "shmem_alloc() -> VA {:#x}\n", mapping.iova());
-        Ok(RtkitObject { vmap, mapping })
+        Ok(RtkitBuffer::Allocated(RtkitObject { vmap, mapping }))
     }
 
-    /// G15 bring-up probe: record firmware-selected RTKit shared-memory IOVAs
-    /// without mapping or acknowledging them. Keep fail-closed until the exact
-    /// backing semantics are proven.
     fn shmem_map(
         data: <Self::Data as ForeignOwnable>::Borrowed<'_>,
         iova: usize,
         size: usize,
     ) -> Result<Self::Buffer> {
-        #[cfg(CONFIG_DEV_COREDUMP)]
+        #[ver(G != G15)]
         {
-            // m1n1 AGXASC::ioread/iowrite/iotranslate strips the upper DVA
-            // tag bits before walking the AGX UAT. Mirror that only for this
-            // read-only probe; no mapping or acknowledgement is performed.
-            let asc_dva = (iova as u64) & 0x0000_00ff_ffff_ffff;
-            match data.uat.probe_lower_page(asc_dva) {
-                Ok(Some((pte, phys, cpu_page))) => dev_info!(
-                    data.dev.as_ref(),
-                    "T8122 G15 RTKit shmem_map probe: tagged DVA {:#x}, masked DVA {:#x}, size {:#x}, PTE {:#x}, phys {:#x}, cpu_page={}; intentionally refusing\n",
-                    iova,
-                    asc_dva,
-                    size,
-                    pte,
-                    phys,
-                    cpu_page
-                ),
-                Ok(None) => dev_info!(
-                    data.dev.as_ref(),
-                    "T8122 G15 RTKit shmem_map probe: tagged DVA {:#x}, masked DVA {:#x}, size {:#x}, unmapped in TTBR0; intentionally refusing\n",
-                    iova,
-                    asc_dva,
-                    size
-                ),
-                Err(e) => dev_info!(
-                    data.dev.as_ref(),
-                    "T8122 G15 RTKit shmem_map probe: tagged DVA {:#x}, masked DVA {:#x}, size {:#x}, TTBR0 probe failed {:?}; intentionally refusing\n",
-                    iova,
-                    asc_dva,
-                    size,
-                    e
-                ),
-            }
+            let _ = (data, iova, size);
+            return Err(EINVAL);
         }
-        #[cfg(not(CONFIG_DEV_COREDUMP))]
-        dev_info!(
-            data.dev.as_ref(),
-            "T8122 G15 RTKit shmem_map probe: IOVA {:#x}, size {:#x}; intentionally refusing\n",
-            iova,
-            size
-        );
-        Err(EINVAL)
+
+        #[ver(G == G15)]
+        {
+            // G15 RTKit supplies its crashlog as a firmware-owned physical
+            // DRAM allocation. The exact J615 live ADT places the observed
+            // buffer inside a carveout, and live probing proves it has no AGX
+            // UAT PTE but is CPU-readable with a WB memremap.
+            //
+            // Keep this deliberately narrow during bring-up: only accept the
+            // high G15 DRAM aperture, page-aligned buffers, and a bounded size.
+            if (iova >> 40) != 1
+                || (iova & (mmu::UAT_PGSZ - 1)) != 0
+                || size == 0
+                || size > 0x0100_0000
+            {
+                dev_err!(
+                    data.dev.as_ref(),
+                    "G15 RTKit rejected preallocated buffer PA {:#x}, size {:#x}\n",
+                    iova,
+                    size
+                );
+                return Err(EINVAL);
+            }
+
+            // SAFETY: G15 firmware supplied this address as an RTKit
+            // preallocated ordinary-memory buffer. The aperture/alignment/size
+            // checks above keep MMIO and malformed requests out, and live J615
+            // evidence confirms the buffer resides in firmware-carved DRAM.
+            let mem = unsafe { Mem::try_new_phys(iova as u64, size, (MemFlag::WB).into())? };
+            mod_dev_dbg!(
+                data.dev.as_ref(),
+                "G15 RTKit mapped firmware-preallocated physical buffer {:#x}+{:#x}\n",
+                iova,
+                size
+            );
+            Ok(RtkitBuffer::Preallocated(RtkitPrealloc { phys: iova, mem }))
+        }
     }
 }
 
