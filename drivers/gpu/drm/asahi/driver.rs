@@ -349,7 +349,7 @@ impl platform::Driver for AsahiDriver {
 
             dev_info!(
                 pdev.as_ref(),
-                "T8122 G15 production new/init preflight PASS; ASC stopped; DRM registration and GPU work still blocked\n"
+                "T8122 G15 production new/init + normal RX preflight PASS; ASC stopped; DRM registration and GPU work still blocked\n"
             );
             return Err(ENODEV);
         }

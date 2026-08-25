@@ -410,6 +410,17 @@ impl rtkit::Operations for GpuManager::ver {
             return;
         }
 
+        #[ver(G == G15)]
+        {
+            if ep == EP_FIRMWARE && msg == MSG_RX_DOORBELL {
+                data.g15_preflight_rx_doorbells
+                    .fetch_add(1, Ordering::Relaxed);
+            } else {
+                data.g15_preflight_unknown_messages
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
         if ep != EP_FIRMWARE || msg != MSG_RX_DOORBELL {
             dev_err!(dev.as_ref(), "Unknown message: {:#x}:{:#x}\n", ep, msg);
             return;
@@ -1581,9 +1592,10 @@ impl GpuManager::ver {
         }
     }
 
-    /// G15 production-bootstrap checkpoint: exercise the normal GpuManager
-    /// new() -> init() pair, but keep RTKit RX side effects telemetry-only and
-    /// destroy the manager before DRM registration or any GPU work is possible.
+    /// G15 production-bootstrap/RX checkpoint: exercise the normal GpuManager
+    /// new() -> init() pair, then enable the real Event/FWLog/KTrace/Stats RX
+    /// callback path for a bounded idle window. Destroy the manager before DRM
+    /// registration or any GPU work is possible.
     pub(crate) fn production_init_preflight(
         dev: &AsahiDevice,
         res: &regs::Resources,
@@ -1618,9 +1630,37 @@ impl GpuManager::ver {
                 // sends only EP20 MSG_INIT and waits for q21 firmware_ready.
                 GpuManager::init(mgr.as_ref())?;
 
-                // Bound the observation tail. EP21 is registered by firmware
-                // after ready, but this checkpoint submits no EP21 traffic.
-                fsleep(Delta::from_millis(20));
+                // Drain any bootstrap RX records once while asynchronous RTKit
+                // callbacks are still telemetry-only. This exercises the exact
+                // G15 Event/FWLog/KTrace/Stats parsers without racing a callback.
+                {
+                    let mut ch = mgr.rx_channels.lock();
+                    ch.fw_log.poll();
+                    ch.ktrace.poll();
+                    ch.stats.poll();
+                    ch.event.poll();
+                }
+
+                mgr.g15_preflight_rx_doorbells.store(0, Ordering::Relaxed);
+                mgr.g15_preflight_unknown_messages.store(0, Ordering::Relaxed);
+
+                // E014 bounded normal-RX window. Firmware is idle and this
+                // checkpoint submits no EP21 traffic or GPU work; only the real
+                // production EP20 receive callback is enabled for 500 ms.
+                mgr.g15_init_preflight.store(false, Ordering::Release);
+                fsleep(Delta::from_millis(500));
+
+                // Quiesce new callbacks before the final snapshot/drain, then
+                // leave telemetry-only mode set until RTKit is destroyed.
+                mgr.g15_init_preflight.store(true, Ordering::Release);
+                fsleep(Delta::from_millis(5));
+                {
+                    let mut ch = mgr.rx_channels.lock();
+                    ch.fw_log.poll();
+                    ch.ktrace.poll();
+                    ch.stats.poll();
+                    ch.event.poll();
+                }
 
                 let (busy, ready, power_state) = mgr.initdata.g15_q21.with(|raw, _inner| {
                     (
@@ -1653,7 +1693,7 @@ impl GpuManager::ver {
                 Ok((initdata_va, rx_doorbells, busy, ready, power_state)) => {
                     dev_info!(
                         dev.as_ref(),
-                        "T8122 G15 production init PASS (InitData {:#x}; q21 busy={} ready={} power={}; EP20 RX doorbells={}; no EP21 TX/device-control/kick); RTKit destroyed\n",
+                        "T8122 G15 production init + normal RX PASS (InitData {:#x}; q21 busy={} ready={} power={}; normal EP20 RX doorbells={}; no unknown messages/EP21 TX/device-control/kick); RTKit destroyed\n",
                         initdata_va,
                         busy,
                         ready,
