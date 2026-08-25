@@ -247,9 +247,10 @@ impl drm::file::DriverFile for File {
 unsafe impl AnyBitPattern for uapi::drm_asahi_gem_bind_op {}
 
 impl File {
-    /// G15 userspace gate after the safe discovery/VM-lifecycle boundary.
-    /// File open, GET_PARAMS, GET_TIME, VM_CREATE and VM_DESTROY stay host-only;
-    /// GPU-visible mapping, GEM, queue and submission ioctls remain fail-closed.
+    /// G15 userspace gate after the safe discovery/VM/GEM host-only boundary.
+    /// File open, queries, VM lifecycle, GEM_CREATE and GEM_MMAP_OFFSET do not
+    /// publish GPU-visible mappings; VM bind, special bind, queues and submit
+    /// remain fail-closed.
     fn reject_g15_mutation(device: &AsahiDevice) -> Result<()> {
         if device.gpu.get_cfg().gpu_gen == hw::GpuGen::G15 {
             Err(ENODEV)
@@ -521,7 +522,6 @@ impl File {
         data: &mut uapi::drm_asahi_gem_create,
         file: &DrmFile,
     ) -> Result<u32> {
-        Self::reject_g15_mutation(device)?;
         mod_dev_dbg!(
             device,
             "[File {}]: IOCTL: gem_create size={:#x?}\n",
@@ -577,7 +577,6 @@ impl File {
         data: &mut uapi::drm_asahi_gem_mmap_offset,
         file: &DrmFile,
     ) -> Result<u32> {
-        Self::reject_g15_mutation(device)?;
         mod_dev_dbg!(
             device,
             "[File {}]: IOCTL: gem_mmap_offset handle={:#x?}\n",
