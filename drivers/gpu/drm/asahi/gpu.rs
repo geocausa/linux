@@ -2880,13 +2880,27 @@ impl GpuManager for GpuManager::ver {
     }
 
     fn free_context(&self, ctx: KBox<fw::types::GpuObject<fw::workqueue::GpuContextData>>) {
-        let mut garbage = self.garbage_contexts.lock();
+        #[ver(G == G15)]
+        {
+            // At the current G15 userspace boundary SUBMIT is rejected before
+            // Queue::submit(), so queue-owned GpuContexts can never be published
+            // to firmware. Do not enqueue these local-only contexts for the
+            // inherited deferred DestroyContext path: the next alloc() would
+            // otherwise ring legacy DEVCTRL (EP21 0x83...11), which is not a
+            // valid G15 context-invalidation transport.
+            core::mem::drop(ctx);
+        }
 
-        if garbage.push(ctx, GFP_KERNEL).is_err() {
-            dev_err!(
-                self.dev.as_ref(),
-                "Failed to reserve space for freed context, deadlock possible.\n"
-            );
+        #[ver(G != G15)]
+        {
+            let mut garbage = self.garbage_contexts.lock();
+
+            if garbage.push(ctx, GFP_KERNEL).is_err() {
+                dev_err!(
+                    self.dev.as_ref(),
+                    "Failed to reserve space for freed context, deadlock possible.\n"
+                );
+            }
         }
     }
 
