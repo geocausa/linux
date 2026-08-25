@@ -1076,7 +1076,23 @@ impl GpuManager::ver {
                     && raw.unk_45c == 4
                     && raw.base_clock_khz == 24_000
                     && raw.power_sample_period == 1
+                    // Exact G15 UAT/GPTBAT + core-config header consumed by
+                    // RTKit-2419 firmware. The GPTBAT base is dynamic but must
+                    // be the physical base of Linux's ttbs region and 16 KiB aligned.
+                    && raw.g15_zero_b38 == 0
+                    && raw.g15_zero_b3c == 0
+                    && raw.g15_uat_mode_b40 == 1
+                    && raw.uat_ttb_base.0 == mgr.dyncfg.uat_ttb_base
+                    && raw.uat_ttb_base.0 != 0
+                    && (raw.uat_ttb_base.0 & mmu::UAT_PGMSK as u64) == 0
+                    && raw.gpu_core_id == cfg.gpu_core as u32
+                    && raw.gpu_rev_id == hw::GpuRevisionID::C0 as u32
                     && raw.num_cores == mgr.dyncfg.id.num_cores * mgr.dyncfg.id.num_clusters
+                    // Physical HwDataB +0xad0 is source field unk_4f8 on G15.
+                    && raw.unk_4f8 == 1
+                    // Firmware pre-ready qword at +0x17e4 remains allocation-zero.
+                    && raw.unk_b1c == 0
+                    && raw.unk_b20 == 0
                     && raw.num_frags == mgr.dyncfg.id.num_frags * mgr.dyncfg.id.num_clusters
                     && perf_ok
                     && map_ok
@@ -1105,7 +1121,7 @@ impl GpuManager::ver {
 
             dev_info!(
                 dev.as_ref(),
-                "T8122 G15 pre-RTKit manager PASS (InitData {:#x}, wrapper {:#x}, q22 {:#x}, q22 ctl {:#x}/{:#x}; root + HwDataB scalars/perf + 31 MMIO records/13 maps + G15 startup exact; dropping before RtKit::new/MSG_INIT\n",
+                "T8122 G15 pre-RTKit manager PASS (InitData {:#x}, wrapper {:#x}, q22 {:#x}, q22 ctl {:#x}/{:#x}; root + HwDataB GPTBAT/core/scalars/perf + 31 MMIO records/13 maps + G15 startup exact; dropping before RtKit::new/MSG_INIT\n",
                 initdata_va,
                 wrapper_va,
                 q22_va,

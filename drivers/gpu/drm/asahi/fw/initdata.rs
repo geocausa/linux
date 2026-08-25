@@ -1306,6 +1306,19 @@ pub(crate) mod raw {
         pub(crate) unk_54c: u32,
         pub(crate) unk_550: u32,
         pub(crate) unk_554: u32,
+
+        // G15 inserts a 12-byte UAT/GPTBAT header ahead of the legacy
+        // uat_ttb_base/core tuple. Apple zeros +0xb38/+0xb3c, marks the
+        // non-legacy G15 UAT mode at +0xb40, then publishes the GPTBAT
+        // physical base at +0xb44. Keeping uat_ttb_base as the shared field
+        // name lets the builder use the same physical TTB/GPTBAT allocation.
+        #[ver(G == G15)]
+        pub(crate) g15_zero_b38: u32,
+        #[ver(G == G15)]
+        pub(crate) g15_zero_b3c: u32,
+        #[ver(G == G15)]
+        pub(crate) g15_uat_mode_b40: u32,
+
         pub(crate) uat_ttb_base: U64,
         pub(crate) gpu_core_id: u32,
         pub(crate) gpu_rev_id: u32,
@@ -1345,8 +1358,13 @@ pub(crate) mod raw {
         #[ver(V >= V13_0B4)]
         pub(crate) aux_ps: HwDataBAuxPStates,
 
-        #[ver(V >= V13_3)]
+        #[ver(V >= V13_3 && G != G15)]
         pub(crate) pad_ac4_0: Array<0x44c, u8>,
+        // The G15 perf-state copy starts at exact +0x134c and is 0x448 bytes.
+        // The inherited opaque span therefore loses the same 0xc bytes that
+        // G15 inserted before the perf arrays, keeping the proven suffix fixed.
+        #[ver(V >= V13_3 && G == G15)]
+        pub(crate) pad_ac4_0: Array<0x440, u8>,
 
         pub(crate) pad_ac4: Pad<0x8>,
         pub(crate) unk_acc: u32,
@@ -1949,6 +1967,20 @@ pub(crate) mod raw {
     const _: [(); 0xa30] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_458)];
     const _: [(); 0xa34] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_45c)];
     const _: [(); 0xa6c] = [(); core::mem::offset_of!(HwDataBG15V14_7, power_sample_period)];
+    // Exact J615/G15G UAT + core-config header and perf-table boundary.
+    const _: [(); 0xad0] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_4f8)];
+    const _: [(); 0xb38] = [(); core::mem::offset_of!(HwDataBG15V14_7, g15_zero_b38)];
+    const _: [(); 0xb3c] = [(); core::mem::offset_of!(HwDataBG15V14_7, g15_zero_b3c)];
+    const _: [(); 0xb40] = [(); core::mem::offset_of!(HwDataBG15V14_7, g15_uat_mode_b40)];
+    const _: [(); 0xb44] = [(); core::mem::offset_of!(HwDataBG15V14_7, uat_ttb_base)];
+    const _: [(); 0xb4c] = [(); core::mem::offset_of!(HwDataBG15V14_7, gpu_core_id)];
+    const _: [(); 0xb50] = [(); core::mem::offset_of!(HwDataBG15V14_7, gpu_rev_id)];
+    const _: [(); 0xb54] = [(); core::mem::offset_of!(HwDataBG15V14_7, num_cores)];
+    const _: [(); 0xb58] = [(); core::mem::offset_of!(HwDataBG15V14_7, max_pstate)];
+    const _: [(); 0xb5c] = [(); core::mem::offset_of!(HwDataBG15V14_7, frequencies)];
+    const _: [(); 0x134c] = [(); core::mem::offset_of!(HwDataBG15V14_7, pad_ac4_0)];
+    const _: [(); 0x17e4] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_b1c)];
+    const _: [(); 0x17e8] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_b20)];
     const _: [(); 0x17ec] = [(); core::mem::offset_of!(HwDataBG15V14_7, g15_startup_17ec)];
     const _: [(); 0x1860] = [(); core::mem::size_of::<HwDataBG15V14_7>()];
 

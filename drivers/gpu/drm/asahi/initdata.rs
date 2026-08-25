@@ -646,6 +646,8 @@ impl<'a> InitDataBuilder::ver<'a> {
                     unk_534: cfg.db.unk_534,
                     num_frags: dyncfg.id.num_frags * dyncfg.id.num_clusters,
                     unk_554: 0x1,
+                    #[ver(G == G15)]
+                    g15_uat_mode_b40: 1,
                     uat_ttb_base: U64(dyncfg.uat_ttb_base),
                     gpu_core_id: cfg.gpu_core as u32,
                     gpu_rev_id: dyncfg.id.gpu_rev_id as u32,
@@ -662,6 +664,8 @@ impl<'a> InitDataBuilder::ver<'a> {
                     #[ver(V < V13_0B4)]
                     unk_ac0: 0x1020,
 
+                    #[ver(G == G15)]
+                    unk_4f8: 1,
                     #[ver(V >= V13_0B4)]
                     unk_ae4: Array::new([0x0, 0x3, 0x7, 0x7]),
                     #[ver(V < V13_0B4)]
