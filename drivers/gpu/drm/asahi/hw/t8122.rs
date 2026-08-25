@@ -2,14 +2,70 @@
 
 //! Preflight-only hardware identity for T8122 (M3 / G15G).
 //!
-//! This is deliberately *not* a runtime HwConfig. The platform driver consumes
-//! only the identity/topology fields before returning ENODEV, prior to DMA/UAT,
-//! ASC firmware start, initdata construction, or DRM registration. Every field
-//! that belongs to those later lifecycles remains zero/empty rather than being
-//! inherited from an older SoC by analogy.
+//! This remains a staged bring-up HwConfig, not a production runtime enablement.
+//! Identity, power data, InitData, RTKit boot, endpoint start, and the J615 G15
+//! firmware MMIO descriptor set are independently reconstructed.  The driver
+//! still fails closed before InitData MSG_INIT and DRM registration.
 
 use crate::f32;
 use super::*;
+
+// Exact J615 / G15G firmware MMIO descriptor set reconstructed from
+// AGXAccelerator::configureDevice(), AGXAcceleratorG15::configureDevice(),
+// AGXAcceleratorG15G::configureDevice(), and the J615 ADT resource layout.
+//
+// G15 HwDataB has 31 I/O mapping records.  Apple gives names/RW defaults to
+// additional placeholder records, but only the entries below have a nonzero
+// physical source and element size on J615 and therefore reach
+// createFWPIOMapping().  Keep all other slots None so the raw array stays zero.
+const J615_G15_IO_MAPPINGS: [Option<IOMapping>; 0x1f] = [
+    //  0 FenderRegs.  G15 overrides the legacy 0x5000 window to 0x104000.
+    Some(IOMapping::new(0x290d00000, false, 1, 0x104000, 0, true)),
+    //  1 AICTimerRegs.  Apple aligns hard-coded 0x20e101000 to 16 KiB.
+    Some(IOMapping::new(0x20e100000, false, 1, 0x4000, 0, false)),
+    //  2 AICSWIntRegs.  J615 meta-sw-interrupt q0=0x2d1014048 -> 16 KiB base.
+    Some(IOMapping::new(0x2d1014000, false, 1, 0x4000, 0, true)),
+    //  3 RGXRegs: exact J615 GPU physical base.
+    Some(IOMapping::new(0x290000000, false, 1, 0x20000, 0, true)),
+    //  4 UVDRegs/UVWarn is disabled: the third resource selector remains 0xff.
+    None,
+    None, //  5 Unused
+    None, //  6 DisplayUnderrunWA
+    None, //  7 TempSensorRegs
+    None, //  8 PMPDoorbell
+    //  9 MetrologySensorRegs
+    Some(IOMapping::new(0x290e08000, false, 1, 0x8000, 0, true)),
+    // 10 GMGIFAFRegs
+    Some(IOMapping::new(0x290d0d000, false, 1, 0x1000, 0, true)),
+    // 11 MCache registers.  Apple supplies two physical bases,
+    //    0x220000000 and 0x222000000; each window is 0x58000 after 16 KiB
+    //    alignment, giving a 0x02000000 stride and 0xb0000 total payload.
+    Some(IOMapping::new(0x220000000, false, 2, 0x58000, 0x02000000, true)),
+    None, // 12 AICBankedRegisters
+    None, // 13 PMGRScratch
+    None, // 14 NIA special-agent idle die 0
+    None, // 15 NIA special-agent idle die 1
+    None, // 16 CRE registers
+    None, // 17 Streaming codec registers
+    // 18 PushTelemetryDashboardRegs
+    Some(IOMapping::new(0x2d03d0000, false, 1, 0x1000, 0, true)),
+    // 19 PushTelemetryDashboardReadRegs
+    Some(IOMapping::new(0x2d03c0000, false, 1, 0x2000, 0, false)),
+    None, // 20
+    None, // 21
+    None, // 22
+    None, // 23
+    None, // 24
+    // 25 ANE0Doorbell
+    Some(IOMapping::new(0x31145c000, false, 1, 0x4000, 0, true)),
+    // 26 PMSMetrologySensorRegs
+    Some(IOMapping::new(0x2d0280000, false, 1, 0x8000, 0, false)),
+    None, // 27
+    None, // 28
+    // 29 GFXCLKGEN_MGPU
+    Some(IOMapping::new(0x290e1c000, false, 1, 0x4000, 0, false)),
+    None, // 30
+];
 
 pub(crate) const HWCONFIG_PREFLIGHT: super::HwConfig = HwConfig {
     chip_id: 0x8122,
@@ -89,7 +145,7 @@ pub(crate) const HWCONFIG_PREFLIGHT: super::HwConfig = HwConfig {
     fast_sensor_mask: [0x4248, 0],
     fast_sensor_mask_alt: [0, 0],
     fast_die0_sensor_present: 0,
-    io_mappings: &[],
+    io_mappings: &J615_G15_IO_MAPPINGS,
     sram_base: None,
     sram_size: None,
 };
