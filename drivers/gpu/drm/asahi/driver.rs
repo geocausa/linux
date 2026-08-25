@@ -360,7 +360,7 @@ impl platform::Driver for AsahiDriver {
 
             dev_info!(
                 pdev.as_ref(),
-                "T8122 G15 persistent RTKit + DRM registration PASS; unbound range-0 VM mapping enabled, special bindings/queues/submissions blocked\n"
+                "T8122 G15 persistent RTKit + DRM registration PASS; unbound range-0 VM mapping + passive queue lifecycle enabled, special bindings/submissions blocked\n"
             );
             return Ok(Self { drm });
         }

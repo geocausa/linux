@@ -247,11 +247,11 @@ impl drm::file::DriverFile for File {
 unsafe impl AnyBitPattern for uapi::drm_asahi_gem_bind_op {}
 
 impl File {
-    /// G15 userspace gate after the unbound userspace-VM mapping boundary.
-    /// Range-0 VM_BIND edits only a private, unbound UAT root; firmware-visible
-    /// ASID/TTB publication happens later in the queue/submission path. Special
-    /// kernel bindings, queues and submit remain fail-closed.
-    fn reject_g15_mutation(device: &AsahiDevice) -> Result<()> {
+    /// G15 userspace gate for operations that cross the current safe boundary.
+    /// Normal VM_BIND remains private/unbound and queue construction is now
+    /// passive apart from the native q22 range-7 resource notifications. Keep
+    /// special kernel object bindings and all submission paths fail-closed.
+    fn reject_g15_runtime_mutation(device: &AsahiDevice) -> Result<()> {
         if device.gpu.get_cfg().gpu_gen == hw::GpuGen::G15 {
             Err(ENODEV)
         } else {
@@ -831,7 +831,7 @@ impl File {
         data: &mut uapi::drm_asahi_gem_bind_object,
         file: &DrmFile,
     ) -> Result<u32> {
-        Self::reject_g15_mutation(device)?;
+        Self::reject_g15_runtime_mutation(device)?;
         mod_dev_dbg!(
             device,
             "[File {} VM {}]: IOCTL: gem_bind_object op={:?} handle={:#x?} flags={:#x?} {:#x?}:{:#x?} object_handle={:#x?}\n",
@@ -959,7 +959,6 @@ impl File {
         data: &mut uapi::drm_asahi_queue_create,
         file: &DrmFile,
     ) -> Result<u32> {
-        Self::reject_g15_mutation(device)?;
         let file_id = file.inner().id;
 
         mod_dev_dbg!(
@@ -1015,11 +1014,10 @@ impl File {
 
     /// IOCTL: queue_destroy: Destroy a command submission queue.
     pub(crate) fn queue_destroy(
-        device: &AsahiDevice,
+        _device: &AsahiDevice,
         data: &mut uapi::drm_asahi_queue_destroy,
         file: &DrmFile,
     ) -> Result<u32> {
-        Self::reject_g15_mutation(device)?;
         // grab the queue so the xarray spinlock is dropped first
         let queue = file.inner().queues().remove(data.queue_id as usize);
         if queue.is_none() {
@@ -1035,7 +1033,7 @@ impl File {
         data: &mut uapi::drm_asahi_submit,
         file: &DrmFile,
     ) -> Result<u32> {
-        Self::reject_g15_mutation(device)?;
+        Self::reject_g15_runtime_mutation(device)?;
         debug::update_debug_flags();
 
         if data.flags != 0 || data.pad != 0 {
