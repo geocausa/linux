@@ -33,7 +33,7 @@ use crate::{
 };
 use core::any::Any;
 use core::num::NonZeroU64;
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicBool, Ordering};
 use kernel::{
     dma_fence,
     error::code::*,
@@ -69,7 +69,7 @@ const MAX_JOB_SLOTS: u32 = 127;
 /// counter used by the existing DRM_ASAHI_GET_TIME path has the same frequency
 /// and differs only by a constant offset from CNTVCT on bare metal.
 #[inline(always)]
-fn g15_submission_timestamp() -> u64 {
+pub(crate) fn g15_submission_timestamp() -> u64 {
     let raw: u64;
 
     // SAFETY: this only reads the architectural counter.
@@ -118,6 +118,11 @@ impl From<WorkError> for kernel::error::Error {
 pub(crate) struct GpuContext {
     dev: driver::AsahiDevRef,
     data: Option<KBox<GpuObject<fw::workqueue::GpuContextData>>>,
+    /// True from the first possible QueueInfo publication until the native
+    /// firmware ReleaseResource handshake completes. This is intentionally
+    /// conservative: an uncertain pipe-send outcome must never turn into a
+    /// host-only free of a context firmware may have observed.
+    published_to_firmware: AtomicBool,
 }
 no_debug!(GpuContext);
 
@@ -131,6 +136,7 @@ impl GpuContext {
         let is_g15 = dev.gpu.get_cfg().gpu_gen == hw::GpuGen::G15;
         Ok(GpuContext {
             dev: dev.into(),
+            published_to_firmware: AtomicBool::new(false),
             data: Some(KBox::new(
                 alloc.shared.new_object(
                     fw::workqueue::GpuContextData { _buffer: buffer },
@@ -151,13 +157,31 @@ impl GpuContext {
     pub(crate) fn gpu_pointer(&self) -> GpuPointer<'_, fw::workqueue::GpuContextData> {
         self.data.as_ref().unwrap().gpu_pointer()
     }
+
+    pub(crate) fn data(&self) -> &GpuObject<fw::workqueue::GpuContextData> {
+        self.data.as_ref().unwrap()
+    }
+
+    pub(crate) fn mark_published_to_firmware(&self) {
+        self.published_to_firmware.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn mark_released_from_firmware(&self) {
+        self.published_to_firmware.store(false, Ordering::Release);
+    }
+
+    pub(crate) fn is_published_to_firmware(&self) -> bool {
+        self.published_to_firmware.load(Ordering::Acquire)
+    }
 }
 
 impl Drop for GpuContext {
     fn drop(&mut self) {
         mod_dev_dbg!(self.dev, "GpuContext: Freeing GPU context\n");
         let data = self.data.take().unwrap();
-        (*self.dev).gpu.free_context(data);
+        (*self.dev)
+            .gpu
+            .free_context(data, self.is_published_to_firmware());
     }
 }
 
@@ -873,6 +897,74 @@ impl WorkQueue::ver {
 
     pub(crate) fn info_pointer(&self) -> GpuWeakPointer<QueueInfo::ver> {
         self.info_pointer
+    }
+
+    /// Bounded G15 publication probe: publish a freshly-created QueueInfo with
+    /// wptr=0 and Apple's untouched stamp-index sentinel (0x80), wait until
+    /// RTKit consumes the accelerator-ring entry, then retire the shared
+    /// scheduler/context resource synchronously before any queue backing can be
+    /// dropped. No command-ring entry is ever made visible.
+    pub(crate) fn g15_publish_empty(&self, gpu: &gpu::GpuManager::ver) -> Result {
+        #[ver(G != G15)]
+        {
+            let _ = gpu;
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            let (context, pipe_type, priority, info_pointer) = {
+                let mut inner = self.inner.lock();
+
+                if !inner.new
+                    || inner.wptr != 0
+                    || !inner.pending.is_empty()
+                    || inner.event.is_some()
+                    || inner.pending_jobs != 0
+                {
+                    return Err(EBUSY);
+                }
+
+                // The probe is deliberately one-shot even if transport fails.
+                // A second new-queue registration against a context whose first
+                // outcome is uncertain would be a strictly weaker safety model.
+                inner.new = false;
+                let context = inner
+                    .info
+                    .with(|_raw, info_inner| info_inner.gpu_context.clone());
+                (context, inner.pipe_type, inner.priority, self.info_pointer)
+            };
+
+            // Mark before the first possible transport side effect. A failed or
+            // timed-out send must be treated as potentially firmware-visible.
+            context.mark_published_to_firmware();
+
+            let publish_result =
+                gpu.g15_publish_empty_queue(pipe_type, priority, info_pointer);
+
+            let fields = context
+                .data()
+                .with(|raw, _inner| raw.g15_release_resource_fields());
+            mod_dev_dbg!(
+                context.dev,
+                "G15 empty QueueInfo publication result={:?}, context fields={:02x?}\n",
+                publish_result,
+                fields
+            );
+
+            // Opcode 0x11 is also a proven no-op when ctx0/ctx1 are still 0xff,
+            // so it is safe to issue after an uncertain publication attempt.
+            let release_result = gpu.release_context_now(context.data());
+            if release_result.is_ok() {
+                context.mark_released_from_firmware();
+            }
+
+            match (publish_result, release_result) {
+                (Ok(()), Ok(())) => Ok(()),
+                (Err(e), Ok(())) => Err(e),
+                (_, Err(e)) => Err(e),
+            }
+        }
     }
 }
 

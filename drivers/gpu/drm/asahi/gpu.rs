@@ -336,7 +336,11 @@ pub(crate) trait GpuManager: Send + Sync {
     /// Get the dynamic GPU configuration for this SoC.
     fn get_dyncfg(&self) -> &hw::DynConfig;
     /// Register an unused context as garbage
-    fn free_context(&self, data: KBox<fw::types::GpuObject<fw::workqueue::GpuContextData>>);
+    fn free_context(
+        &self,
+        data: KBox<fw::types::GpuObject<fw::workqueue::GpuContextData>>,
+        published_to_firmware: bool,
+    );
     /// Check whether the GPU is crashed
     fn is_crashed(&self) -> bool;
     /// Map a BO as a timestamp buffer
@@ -2271,6 +2275,88 @@ impl GpuManager::ver {
         self.dyncfg.id.core_masks_packed.as_slice()
     }
 
+    /// Publish a fresh G15 QueueInfo without publishing any command-ring
+    /// entry. RTKit-2419 copies wptr=0 into QueueInfo +0x28 and returns from the
+    /// scheduler walker immediately because QueueInfo +0x20 is also zero.
+    pub(crate) fn g15_publish_empty_queue(
+        &self,
+        pipe_type: PipeType,
+        priority: u32,
+        work_queue: fw::types::GpuWeakPointer<fw::workqueue::QueueInfo::ver>,
+    ) -> Result {
+        #[ver(G != G15)]
+        {
+            let _ = (pipe_type, priority, work_queue);
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            if self.is_crashed() {
+                return Err(ENODEV);
+            }
+
+            let pipes = match pipe_type {
+                PipeType::Vertex => &self.pipes.vtx,
+                PipeType::Fragment => &self.pipes.frag,
+                PipeType::Compute => &self.pipes.comp,
+            };
+            let index: usize = priority.try_into()?;
+            let mut pipe = pipes.get(index).ok_or(EINVAL)?.lock();
+
+            // Verify EP21 is present before committing a TX-ring entry. This
+            // cannot eliminate every transport failure, but avoids creating an
+            // unreachable stale pipe entry when the endpoint is absent.
+            {
+                let mut guard = self.rtkit.lock();
+                let mut rtk = guard.as_mut().as_pin_mut().ok_or(ENODEV)?;
+                if !rtk.as_mut().has_endpoint(EP_DOORBELL) {
+                    return Err(ENODEV);
+                }
+            }
+
+            let msg = fw::channels::RunWorkQueueMsg::ver {
+                g15_timestamp: U64(workqueue::g15_submission_timestamp()),
+                work_queue: Some(work_queue),
+                g15_pipe_type: pipe_type,
+                g15_wptr: 0,
+                // Exact untouched IOGPUChannel::stampIndex sentinel. Firmware
+                // has an explicit 0x80 path and no event object is allocated.
+                g15_event_slot: 0x80,
+                g15_is_new: true,
+            };
+
+            let token = pipe.send(&msg);
+            {
+                let mut guard = self.rtkit.lock();
+                let rtk = guard.as_mut().as_pin_mut().ok_or(ENODEV)?;
+                if let Err(e) = rtk.send_message(
+                    EP_DOORBELL,
+                    MSG_TX_DOORBELL | pipe_type as u64 | ((index as u64) << 2),
+                ) {
+                    // A TX entry exists but its delivery state is uncertain.
+                    // Fail-stop so no later host doorbell can accidentally
+                    // consume it after backing storage is retired.
+                    self.crashed.store(true, Ordering::Release);
+                    return Err(e);
+                }
+            }
+
+            if let Err(e) = pipe.wait_for(token) {
+                self.crashed.store(true, Ordering::Release);
+                return Err(e);
+            }
+            Ok(())
+        }
+    }
+
+    pub(crate) fn release_context_now(
+        &self,
+        context: &fw::types::GpuObject<fw::workqueue::GpuContextData>,
+    ) -> Result {
+        self.invalidate_context(context)
+    }
+
     /// Kick a submission pipe for a submitted job to tell the firmware to start processing it.
     pub(crate) fn run_job(&self, job: workqueue::JobSubmission::ver<'_>) -> Result {
         mod_dev_dbg!(self.dev, "GPU: run_job\n");
@@ -2907,28 +2993,33 @@ impl GpuManager for GpuManager::ver {
         &self.dyncfg
     }
 
-    fn free_context(&self, ctx: KBox<fw::types::GpuObject<fw::workqueue::GpuContextData>>) {
+    fn free_context(
+        &self,
+        ctx: KBox<fw::types::GpuObject<fw::workqueue::GpuContextData>>,
+        published_to_firmware: bool,
+    ) {
+        #[ver(G != G15)]
+        let _ = published_to_firmware;
+
         #[ver(G == G15)]
         {
-            // At the current G15 userspace boundary the only allowed SUBMIT
-            // shape stops after VM publication, so queue-owned GpuContexts can
-            // never be published to firmware. Keep these passive contexts local.
-            // invalidate_context() now knows the proven native G15 opcode 0x11
-            // ReleaseResource packet, but it must only be used after explicit
-            // QueueInfo/context publication tracking is added.
-            core::mem::drop(ctx);
+            if !published_to_firmware {
+                core::mem::drop(ctx);
+                return;
+            }
         }
 
-        #[ver(G != G15)]
-        {
-            let mut garbage = self.garbage_contexts.lock();
+        // Older generations always need the legacy deferred invalidation. G15
+        // reaches this path only if a publication attempt was not followed by a
+        // confirmed native ReleaseResource completion; retaining the object is
+        // safer than freeing a firmware-visible pointer.
+        let mut garbage = self.garbage_contexts.lock();
 
-            if garbage.push(ctx, GFP_KERNEL).is_err() {
-                dev_err!(
-                    self.dev.as_ref(),
-                    "Failed to reserve space for freed context, deadlock possible.\n"
-                );
-            }
+        if garbage.push(ctx, GFP_KERNEL).is_err() {
+            dev_err!(
+                self.dev.as_ref(),
+                "Failed to reserve space for freed context, deadlock possible.\n"
+            );
         }
     }
 

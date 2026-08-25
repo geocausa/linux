@@ -1063,7 +1063,7 @@ impl File {
             let slot = queue.lock().preflight_vm_bind()?;
             dev_info!(
                 device.as_ref(),
-                "T8122 G15 submit VM-bind preflight PASS (slot {}); command parsing/execution blocked\n",
+                "T8122 G15 VM bind + empty QueueInfo publish/release PASS (slot {}); command parsing/execution blocked\n",
                 slot
             );
             return Err(ENODEV);

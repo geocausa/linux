@@ -718,6 +718,29 @@ impl Queue for Queue::ver {
     fn preflight_vm_bind(&mut self) -> Result<u32> {
         let bind = (*self.dev).gpu.bind_vm(&self.vm)?;
         let slot = bind.slot();
+
+        #[ver(G == G15)]
+        {
+            let gpu = match (*self.dev)
+                .gpu
+                .clone()
+                .arc_as_any()
+                .downcast::<gpu::GpuManager::ver>()
+            {
+                Ok(gpu) => gpu,
+                Err(_) => return Err(EIO),
+            };
+
+            // Use the compute subqueue for the bounded publication probe. With
+            // wptr=0 the common scheduler path returns before any command entry
+            // is dereferenced, and this avoids render/TVB-specific work.
+            self.q_comp
+                .as_ref()
+                .ok_or(EIO)?
+                .wq
+                .g15_publish_empty(&gpu)?;
+        }
+
         core::mem::drop(bind);
         Ok(slot)
     }
@@ -1047,5 +1070,19 @@ impl Queue for Queue::ver {
 impl Drop for Queue::ver {
     fn drop(&mut self) {
         mod_dev_dbg!(self.dev, "[Queue {}] Dropping queue\n", self.inner.id);
+
+        #[ver(G == G15)]
+        if self.inner.gpu_context.is_published_to_firmware() {
+            // Publication/release did not complete with a known-good outcome.
+            // The compute WorkQueue owns the exact QueueInfo/ring/state backing
+            // firmware may still reference. Retain it until reboot rather than
+            // risking a firmware use-after-free from later scheduler activity.
+            dev_err!(
+                self.dev.as_ref(),
+                "G15 queue {} has uncertain firmware publication; retaining QueueInfo backing\n",
+                self.inner.id
+            );
+            core::mem::forget(self.q_comp.take());
+        }
     }
 }

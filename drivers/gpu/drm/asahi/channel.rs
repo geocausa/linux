@@ -277,10 +277,17 @@ impl PipeChannel::ver {
         self.ch.ring.to_raw_g15_tx()
     }
 
-    /// Submits a Pipe kick command to the firmware.
-    pub(crate) fn send(&mut self, msg: &PipeMsg::ver) {
+    /// Submits a Pipe kick command to the firmware and returns the TX ring
+    /// position that firmware must consume. Normal submission ignores the
+    /// token; bounded bring-up probes use it to prove the queue-registration
+    /// handler has returned before any backing object can be retired.
+    pub(crate) fn send(&mut self, msg: &PipeMsg::ver) -> u32 {
         cls_dev_dbg!(PipeCh, self.dev, "Pipe: {:?}\n", msg);
-        self.ch.put(msg);
+        self.ch.put(msg)
+    }
+
+    pub(crate) fn wait_for(&mut self, wptr: u32) -> Result {
+        self.ch.wait_for(wptr, 1000)
     }
 }
 
