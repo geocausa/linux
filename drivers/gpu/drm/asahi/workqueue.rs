@@ -64,6 +64,25 @@ const DEBUG_CLASS: DebugFlags = DebugFlags::WorkQueue;
 
 const MAX_JOB_SLOTS: u32 = 127;
 
+/// Apple writes mach_absolute_time() into G15 accelerator-ring entries. On
+/// Apple Silicon that is the architectural counter clock domain; the physical
+/// counter used by the existing DRM_ASAHI_GET_TIME path has the same frequency
+/// and differs only by a constant offset from CNTVCT on bare metal.
+#[inline(always)]
+fn g15_submission_timestamp() -> u64 {
+    let raw: u64;
+
+    // SAFETY: this only reads the architectural counter.
+    unsafe {
+        core::arch::asm!(
+            "mrs {x}, CNTPCT_EL0",
+            x = out(reg) raw
+        );
+    }
+
+    raw
+}
+
 /// An enum of possible errors that might cause a piece of work to fail execution.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum WorkError {
@@ -524,11 +543,26 @@ impl<'a> JobSubmission::ver<'a> {
         let event_slot = event.0.slot();
 
         let msg = fw::channels::RunWorkQueueMsg::ver {
+            #[ver(G == G15)]
+            g15_timestamp: U64(g15_submission_timestamp()),
+            #[ver(G != G15)]
             pipe_type: inner.pipe_type,
             work_queue: Some(inner.info.weak_pointer()),
+            #[ver(G != G15)]
             wptr: inner.wptr,
+            #[ver(G != G15)]
             event_slot,
+            #[ver(G != G15)]
             is_new: inner.new,
+            #[ver(G == G15)]
+            g15_pipe_type: inner.pipe_type,
+            #[ver(G == G15)]
+            g15_wptr: inner.wptr as u16,
+            #[ver(G == G15)]
+            g15_event_slot: event_slot as u8,
+            #[ver(G == G15)]
+            g15_is_new: inner.new,
+            #[ver(G != G15)]
             __pad: Default::default(),
         };
         channel.send(&msg);

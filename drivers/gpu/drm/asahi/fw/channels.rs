@@ -135,15 +135,30 @@ pub(crate) enum PipeType {
 #[derive(Debug, Copy, Clone, Default)]
 #[repr(C)]
 pub(crate) struct RunWorkQueueMsg {
+    // RTKit-2419 G15 replaced the inherited pipe-ring payload with a compact
+    // 0x18-byte scheduler entry. Apple AGXArmFirmware::encodeAcceleratorRingCommand()
+    // writes the fields in this exact order.
+    #[ver(G == G15)]
+    pub(crate) g15_timestamp: U64,
+    #[ver(G != G15)]
     pub(crate) pipe_type: PipeType,
     pub(crate) work_queue: Option<GpuWeakPointer<super::workqueue::QueueInfo::ver>>,
+    #[ver(G != G15)]
     pub(crate) wptr: u32,
+    #[ver(G != G15)]
     pub(crate) event_slot: u32,
+    #[ver(G != G15)]
     pub(crate) is_new: bool,
+    #[ver(G == G15)]
+    pub(crate) g15_pipe_type: PipeType,
+    #[ver(G == G15)]
+    pub(crate) g15_wptr: u16,
+    #[ver(G == G15)]
+    pub(crate) g15_event_slot: u8,
+    #[ver(G == G15)]
+    pub(crate) g15_is_new: bool,
     #[ver(V >= V13_2 && G == G14)]
     pub(crate) __pad: Pad<0x2b>,
-    #[ver(G == G15)]
-    pub(crate) __pad: Pad<0x3>,
     #[ver(V < V13_2 || (G != G14 && G != G15))]
     pub(crate) __pad: Pad<0x1b>,
 }
@@ -260,8 +275,14 @@ static_assert!(core::mem::size_of::<DeviceControlMsg::ver>() == 4 + DEVICECONTRO
 #[versions(AGX)]
 default_zeroed!(DeviceControlMsg::ver);
 
-// Exact RTKit-2419.140.12 G15 ring-walker element sizes.
+// Exact RTKit-2419.140.12 G15 ring-walker element sizes/layouts.
 const _: [(); 0x18] = [(); core::mem::size_of::<RunWorkQueueMsgG15V14_7>()];
+const _: [(); 0x00] = [(); core::mem::offset_of!(RunWorkQueueMsgG15V14_7, g15_timestamp)];
+const _: [(); 0x08] = [(); core::mem::offset_of!(RunWorkQueueMsgG15V14_7, work_queue)];
+const _: [(); 0x10] = [(); core::mem::offset_of!(RunWorkQueueMsgG15V14_7, g15_pipe_type)];
+const _: [(); 0x14] = [(); core::mem::offset_of!(RunWorkQueueMsgG15V14_7, g15_wptr)];
+const _: [(); 0x16] = [(); core::mem::offset_of!(RunWorkQueueMsgG15V14_7, g15_event_slot)];
+const _: [(); 0x17] = [(); core::mem::offset_of!(RunWorkQueueMsgG15V14_7, g15_is_new)];
 const _: [(); 0x38] = [(); core::mem::size_of::<DeviceControlMsgG15V14_7>()];
 
 #[derive(Copy, Clone, Default, Debug)]
