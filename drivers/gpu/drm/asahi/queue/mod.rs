@@ -61,6 +61,11 @@ mod render;
 
 /// Trait implemented by all versioned queues.
 pub(crate) trait Queue: Send + Sync {
+    /// Publish this queue's VM in a UAT user slot without constructing or
+    /// submitting any GPU work. This is used only by the bounded G15 bring-up
+    /// gate immediately before the real submission path.
+    fn preflight_vm_bind(&mut self) -> Result<u32>;
+
     fn submit(
         &mut self,
         id: u64,
@@ -710,6 +715,13 @@ fn build_attachments(reader: &mut Reader<'_>, size: usize) -> Result<microseq::A
 
 #[versions(AGX)]
 impl Queue for Queue::ver {
+    fn preflight_vm_bind(&mut self) -> Result<u32> {
+        let bind = (*self.dev).gpu.bind_vm(&self.vm)?;
+        let slot = bind.slot();
+        core::mem::drop(bind);
+        Ok(slot)
+    }
+
     fn submit(
         &mut self,
         id: u64,

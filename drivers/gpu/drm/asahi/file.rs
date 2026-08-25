@@ -1033,7 +1033,6 @@ impl File {
         data: &mut uapi::drm_asahi_submit,
         file: &DrmFile,
     ) -> Result<u32> {
-        Self::reject_g15_runtime_mutation(device)?;
         debug::update_debug_flags();
 
         if data.flags != 0 || data.pad != 0 {
@@ -1041,10 +1040,39 @@ impl File {
             return Err(EINVAL);
         }
 
+        if device.gpu.get_cfg().gpu_gen == hw::GpuGen::G15 {
+            // E021 is an explicit zero-payload probe, not a partial enablement
+            // of ordinary userspace submission. Real Mesa submissions remain
+            // rejected before queue lookup/VM publication.
+            if data.syncs != 0
+                || data.cmdbuf != 0
+                || data.in_sync_count != 0
+                || data.out_sync_count != 0
+                || data.cmdbuf_size != 0
+            {
+                return Err(ENODEV);
+            }
+
+            let queue: Arc<Mutex<KBox<dyn queue::Queue>>> = file
+                .inner()
+                .queues()
+                .lock()
+                .get(data.queue_id.try_into()?)
+                .ok_or(ENOENT)?
+                .into();
+            let slot = queue.lock().preflight_vm_bind()?;
+            dev_info!(
+                device.as_ref(),
+                "T8122 G15 submit VM-bind preflight PASS (slot {}); command parsing/execution blocked\n",
+                slot
+            );
+            return Err(ENODEV);
+        }
+
         let gpu = &device.gpu;
         gpu.update_globals();
 
-        // Upgrade to Arc<T> to drop the XArray lock early
+        // Upgrade to Arc<T> to drop the XArray lock early.
         let queue: Arc<Mutex<KBox<dyn queue::Queue>>> = file
             .inner()
             .queues()
