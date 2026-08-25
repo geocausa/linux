@@ -668,15 +668,41 @@ impl<'a> InitDataBuilder::ver<'a> {
                     unk_ae4: Array::new([0x0, 0xf, 0x3f, 0x3f]),
                     unk_b10: 0x1,
                     timer_offset: U64(0),
+                    #[ver(G != G15)]
                     unk_b24: 0x1,
+                    #[ver(G != G15)]
                     unk_b28: 0x1,
+                    #[ver(G != G15)]
                     unk_b2c: 0x1,
+                    #[ver(G != G15)]
                     unk_b30: cfg.db.unk_b30,
-                    #[ver(V >= V13_0B4)]
+                    #[ver(V >= V13_0B4 && G != G15)]
                     unk_b38_0: 1,
-                    #[ver(V >= V13_0B4)]
+                    #[ver(V >= V13_0B4 && G != G15)]
                     unk_b38_4: 1,
+                    #[ver(G != G15)]
                     unk_b38: Array::new([0xffffffff; 12]),
+                    #[ver(G == G15)]
+                    // Exact final J615/G15G image produced by Apple's
+                    // initFirmwareData() immediately before bootFirmware().
+                    g15_startup_17ec: raw::G15HwDataBStartup {
+                        zero_17ec: Array::new([0; 2]),
+                        flag_17f4: 1,
+                        one_17f8: 1,
+                        one_17fc: 1,
+                        flag_1800: 1,
+                        zero_1804: 0,
+                        one_1808: 1,
+                        one_180c: 1,
+                        flag_1810: 1,
+                        zero_1814: 0,
+                        sentinels_1818: Array::new([0xffff_ffff; 12]),
+                        zero_1848: 0,
+                        zero_184c: Array::new([0; 2]),
+                        zero_1854: 0,
+                        flag_1858: 1,
+                        zero_185c: 0,
+                    },
                     #[ver(V >= V13_0B4 && V < V13_3 && G != G15)]
                     unk_c3c: 0x19,
                     #[ver(V >= V13_3 && G != G15)]

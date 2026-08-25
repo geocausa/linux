@@ -1165,19 +1165,42 @@ pub(crate) mod raw {
         pub(crate) afr_unkpad: u32,
     }
 
-    /// Final G15 HwDataB trailer, replacing the larger V13.5 legacy tail.
+    /// Exact final J615/G15 HwDataB startup block written by Apple's
+    /// `AGXArmFirmware::initFirmwareData()` immediately before `bootFirmware()`.
+    ///
+    /// This starts at +0x17ec because Apple performs an 8-byte zero store there,
+    /// spanning the first firmware-imported dword at +0x17f0. Keeping the whole
+    /// suffix typed prevents legacy V13.x defaults from leaking into G15.
     #[derive(Debug)]
     #[repr(C)]
-    pub(crate) struct G15HwDataBTail {
-        pub(crate) pad_1840: Pad<0x18>,
-        // Apple host writes the inverse of accelerator-global flag bit 4 here;
-        // firmware imports this exact dword during early init.
-        pub(crate) flag_1858: u32,
-        pub(crate) pad_185c: Pad<0x04>,
+    pub(crate) struct G15HwDataBStartup {
+        pub(crate) zero_17ec: Array<2, u32>, // +0x17ec/+0x17f0
+        pub(crate) flag_17f4: u32,           // +0x17f4 = feature bit 36
+        pub(crate) one_17f8: u32,            // +0x17f8 = 1
+        pub(crate) one_17fc: u32,            // +0x17fc = 1
+        pub(crate) flag_1800: u32,           // +0x1800 = feature bit 37
+        pub(crate) zero_1804: u32,           // +0x1804 = 0 on J615
+        pub(crate) one_1808: u32,            // +0x1808 = low dword of 0x1_00000001
+        pub(crate) one_180c: u32,            // +0x180c = high dword of 0x1_00000001
+        pub(crate) flag_1810: u32,           // +0x1810 = feature bit 7
+        pub(crate) zero_1814: u32,           // +0x1814 = 0 in final init pass
+        pub(crate) sentinels_1818: Array<12, u32>, // +0x1818..+0x1847 = 0xffffffff
+        pub(crate) zero_1848: u32,           // +0x1848 = 0
+        pub(crate) zero_184c: Array<2, u32>, // +0x184c..+0x1853 = 0
+        pub(crate) zero_1854: u32,           // +0x1854 = 0
+        pub(crate) flag_1858: u32,           // +0x1858 = 1 on exact G15G path
+        pub(crate) zero_185c: u32,           // +0x185c = allocation zero
     }
-    default_zeroed!(G15HwDataBTail);
-    const _: [(); 0x20] = [(); core::mem::size_of::<G15HwDataBTail>()];
-    const _: [(); 0x18] = [(); core::mem::offset_of!(G15HwDataBTail, flag_1858)];
+    default_zeroed!(G15HwDataBStartup);
+    const _: [(); 0x74] = [(); core::mem::size_of::<G15HwDataBStartup>()];
+    const _: [(); 0x00] = [(); core::mem::offset_of!(G15HwDataBStartup, zero_17ec)];
+    const _: [(); 0x08] = [(); core::mem::offset_of!(G15HwDataBStartup, flag_17f4)];
+    const _: [(); 0x14] = [(); core::mem::offset_of!(G15HwDataBStartup, flag_1800)];
+    const _: [(); 0x1c] = [(); core::mem::offset_of!(G15HwDataBStartup, one_1808)];
+    const _: [(); 0x24] = [(); core::mem::offset_of!(G15HwDataBStartup, flag_1810)];
+    const _: [(); 0x2c] = [(); core::mem::offset_of!(G15HwDataBStartup, sentinels_1818)];
+    const _: [(); 0x5c] = [(); core::mem::offset_of!(G15HwDataBStartup, zero_1848)];
+    const _: [(); 0x6c] = [(); core::mem::offset_of!(G15HwDataBStartup, flag_1858)];
 
     #[versions(AGX)]
     #[derive(Debug)]
@@ -1344,22 +1367,29 @@ pub(crate) mod raw {
         pub(crate) timer_offset: U64,
         pub(crate) unk_b1c: u32,
         pub(crate) unk_b20: u32,
+        #[ver(G != G15)]
         pub(crate) unk_b24: u32,
+        #[ver(G != G15)]
         pub(crate) unk_b28: u32,
+        #[ver(G != G15)]
         pub(crate) unk_b2c: u32,
+        #[ver(G != G15)]
         pub(crate) unk_b30: u32,
+        #[ver(G != G15)]
         pub(crate) unk_b34: u32,
 
-        #[ver(V >= V13_0B4)]
+        #[ver(V >= V13_0B4 && G != G15)]
         pub(crate) unk_b38_0: u32,
 
-        #[ver(V >= V13_0B4)]
+        #[ver(V >= V13_0B4 && G != G15)]
         pub(crate) unk_b38_4: u32,
 
-        #[ver(V >= V13_3)]
+        #[ver(V >= V13_3 && G != G15)]
         pub(crate) unk_b38_8: u32,
 
+        #[ver(G != G15)]
         pub(crate) unk_b38: Array<0xc, u32>,
+        #[ver(G != G15)]
         pub(crate) unk_b68: u32,
 
         #[ver(V >= V13_0B4 && G != G15)]
@@ -1377,12 +1407,10 @@ pub(crate) mod raw {
         #[ver(V >= V13_0B4 && G != G15)]
         pub(crate) unk_c3c: u32,
 
-        // G15 keeps the inherited layout byte-exact through +0x183f
-        // (`unk_b68` at +0x183c), then replaces the old 0x104-byte V13.5
-        // trailer with an exact 0x20-byte tail. Apple's allocation is 0x1860
-        // and firmware directly reads the final active word at +0x1858.
+        // G15 replaces the legacy suffix beginning at exact +0x17ec with the
+        // final Apple startup image. The block runs to the exact 0x1860 end.
         #[ver(G == G15)]
-        pub(crate) g15_tail_1840: G15HwDataBTail,
+        pub(crate) g15_startup_17ec: G15HwDataBStartup,
     }
     #[versions(AGX)]
     default_zeroed!(HwDataB::ver);
@@ -1921,9 +1949,8 @@ pub(crate) mod raw {
     const _: [(); 0xa30] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_458)];
     const _: [(); 0xa34] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_45c)];
     const _: [(); 0xa6c] = [(); core::mem::offset_of!(HwDataBG15V14_7, power_sample_period)];
+    const _: [(); 0x17ec] = [(); core::mem::offset_of!(HwDataBG15V14_7, g15_startup_17ec)];
     const _: [(); 0x1860] = [(); core::mem::size_of::<HwDataBG15V14_7>()];
-    const _: [(); 0x183c] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_b68)];
-    const _: [(); 0x1840] = [(); core::mem::offset_of!(HwDataBG15V14_7, g15_tail_1840)];
 
     #[derive(Debug)]
     #[repr(C)]
