@@ -373,13 +373,23 @@ impl EventChannel::ver {
 
                     cls_dev_dbg!(EventCh, self.dev, "Event: {:?}\n", msg);
                     match msg {
-                        EventMsg::Fault => match self.gpu.as_ref() {
-                            Some(gpu) => gpu.handle_fault(),
-                            None => {
-                                dev_crit!(
-                                    self.dev.as_ref(),
-                                    "EventChannel: No GPU manager available!\n"
-                                )
+                        EventMsg::Fault => {
+                            #[ver(G == G15)]
+                            {
+                                // Exact RTKit-2419 G15 Apple host behavior: event tag 0
+                                // dispatches AGXArmFirmware::handleFirmwareControllerEvent(),
+                                // whose G15 implementation is an empty `bti; ret`. Do not
+                                // inherit the pre-G15 GPU-fault/recovery action here.
+                            }
+                            #[ver(G != G15)]
+                            match self.gpu.as_ref() {
+                                Some(gpu) => gpu.handle_fault(),
+                                None => {
+                                    dev_crit!(
+                                        self.dev.as_ref(),
+                                        "EventChannel: No GPU manager available!\n"
+                                    )
+                                }
                             }
                         },
                         EventMsg::Timeout {

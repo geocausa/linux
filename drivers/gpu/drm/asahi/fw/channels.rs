@@ -74,6 +74,10 @@ impl GpuStruct for FwLogChannelState {
     type Raw<'a> = Array<6, raw::ChannelState<'a>>;
 }
 
+// Exact RTKit-2419 G15 FWLog producer uses six adjacent 0x30-byte
+// ChannelState records at wrapper +0x1c8.
+static_assert!(core::mem::size_of::<Array<6, raw::ChannelState<'static>>>() == 0x120);
+
 impl RxChannelState for FwLogChannelState {
     const SUB_CHANNELS: usize = 6;
 
@@ -350,6 +354,13 @@ pub(crate) struct RawKTraceMsg {
     pub(crate) unk_flag: U64,
 }
 
+// Exact RTKit-2419 G15 producer strides. U64 is intentionally unaligned,
+// matching firmware's packed message accesses.
+static_assert!(core::mem::size_of::<RawEventMsg>() == 0x38);
+static_assert!(core::mem::size_of::<RawFwLogMsg>() == 0x38);
+static_assert!(core::mem::size_of::<RawFwLogPayloadMsg>() == 0xd8);
+static_assert!(core::mem::size_of::<RawKTraceMsg>() == 0x38);
+
 #[versions(AGX)]
 pub(crate) const STATS_SZ: usize = {
     #[ver(V < V13_0B4)]
@@ -449,6 +460,11 @@ static_assert!(core::mem::size_of::<StatsMsg::ver>() == 4 + STATS_SZ::ver);
 
 #[versions(AGX)]
 pub(crate) const STATS_MAX: u32 = 0xe;
+
+// RTKit-2419 G15 produces 0x40-byte statistics records. It also has a
+// valid tag 0x0f; keep that tag on the raw/unknown path until its semantic
+// variant is reconstructed instead of widening STATS_MAX unsafely.
+const _: [(); 0x40] = [(); core::mem::size_of::<RawStatsMsgG15V14_7>()];
 
 #[versions(AGX)]
 #[derive(Copy, Clone)]
