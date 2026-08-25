@@ -1079,10 +1079,7 @@ impl core::fmt::Debug for G15MappingNotifierHandle {
 
 impl G15MappingNotifier {
     const RING_LEN: u32 = 0x100;
-    // Apple issues its firmware-pressure kick once the current occupancy has
-    // both 0x40 and 0x80 set (>= 0xc0 in the non-wrapped normal range). Until
-    // that exact kick transport is wired, do not cross that native boundary.
-    const NO_KICK_MAX_OCCUPANCY: u32 = 0xbf;
+    const PRESSURE_MASK: u32 = 0xc0;
 
     pub(crate) fn new(
         dev: &driver::AsahiDevice,
@@ -1107,36 +1104,64 @@ impl G15MappingNotifier {
     }
 
     fn publish_pages(&mut self, base: u64, phys_pages: &[u64], mapping: bool) -> Result {
-        let count: u32 = phys_pages.len().try_into()?;
+        // The DRM device reference pins the same device/manager lifetime as every
+        // queue-owned range-7 mapping. No manager backlink is stored in q22, so
+        // this does not introduce another ownership edge into InitData.
+        let dev = self.dev.clone();
         self.backing.with_mut(|raw, _inner| -> Result {
-            let read = raw.state.read_idx.load(Ordering::Relaxed);
             let mut write = raw.state.write_idx.load(Ordering::Relaxed);
-            if read >= Self::RING_LEN || write >= Self::RING_LEN {
+            if write >= Self::RING_LEN {
                 dev_err!(
-                    self.dev.as_ref(),
-                    "MMU: invalid G15 q22 ring cursors ({}, {})\n",
-                    read,
+                    dev.as_ref(),
+                    "MMU: invalid G15 q22 write cursor {}\n",
                     write
                 );
                 return Err(EIO);
             }
 
-            let occupancy = write.wrapping_sub(read) & 0xff;
-            if occupancy.saturating_add(count) > Self::NO_KICK_MAX_OCCUPANCY {
-                dev_err!(
-                    self.dev.as_ref(),
-                    "MMU: G15 q22 mapping ring reached native pressure-kick boundary ({:#x}+{:#x}); refusing speculative insertion\n",
-                    occupancy,
-                    count
-                );
-                return Err(EBUSY);
-            }
-
             for (i, phys) in phys_pages.iter().enumerate() {
-                let next = (write + 1) & 0xff;
-                if next == read {
-                    return Err(EBUSY);
+                let mut read = raw.state.read_idx.load(Ordering::Relaxed);
+                if read >= Self::RING_LEN {
+                    dev_err!(
+                        dev.as_ref(),
+                        "MMU: invalid G15 q22 read cursor {}\n",
+                        read
+                    );
+                    return Err(EIO);
                 }
+
+                // Exact AGXArmFirmware::insertNewMappingEntry() threshold:
+                // `bics wzr, 0xc0, write-read` falls through to the RTBuddy
+                // async note only when both occupancy bits 0x80 and 0x40 are
+                // set. Apple sends the note before attempting this insertion
+                // and may therefore send it repeatedly while occupancy stays
+                // in the 0xc0..0xff modulo-256 range.
+                let occupancy = write.wrapping_sub(read) & 0xff;
+                if occupancy & Self::PRESSURE_MASK == Self::PRESSURE_MASK {
+                    dev.gpu.g15_mapping_pressure_kick()?;
+                }
+
+                let next = (write + 1) & 0xff;
+                while next == read {
+                    // Apple calls its 10-ms sleep wrapper and reloads read_idx
+                    // until firmware consumes at least one q22 entry. Preserve
+                    // that blocking producer behavior, but fail closed if the
+                    // firmware has crashed instead of sleeping forever.
+                    if dev.gpu.is_crashed() {
+                        return Err(ENODEV);
+                    }
+                    fsleep(Delta::from_millis(10));
+                    read = raw.state.read_idx.load(Ordering::Relaxed);
+                    if read >= Self::RING_LEN {
+                        dev_err!(
+                            dev.as_ref(),
+                            "MMU: invalid G15 q22 read cursor {} while waiting for ring space\n",
+                            read
+                        );
+                        return Err(EIO);
+                    }
+                }
+
                 raw.ring[write as usize] = fw::initdata::raw::G15CacheFlushEntry {
                     addr: fw::types::U64(base + (i * UAT_PGSZ) as u64),
                     phys_page_4k: fw::types::U32((phys >> 12).try_into()?),
@@ -1256,10 +1281,17 @@ impl Drop for G15SharedBank1Mapping {
         if let Some(notifier) = self.notifier.as_ref() {
             if notifier.lock().publish_unmapping(iova, &self.phys_pages).is_err() {
                 pr_err!(
-                    "MMU: failed to publish G15 shared bank-1 unmapping {:#x}:{:#x}\n",
+                    "MMU: failed to publish G15 shared bank-1 unmapping {:#x}:{:#x}; preserving PTE and VA reservation\n",
                     iova,
                     size
                 );
+                // Apple publishes the q22 unmap record before AGXSecureGart::unmap().
+                // If that publication cannot be completed, removing the PTE would
+                // leave firmware with stale mapping state. Leak the reservation and
+                // its GEM reference instead of making the VA reusable underneath
+                // firmware. This is a terminal fail-closed path (RTKit loss/crash).
+                core::mem::forget(node);
+                return;
             }
         }
         {
@@ -1375,7 +1407,33 @@ impl G15SharedBank1 {
         mem::sync();
 
         if let Some(q22) = notifier.as_ref() {
-            q22.lock().publish_mapping(base, &phys_pages)?;
+            if let Err(err) = q22.lock().publish_mapping(base, &phys_pages) {
+                // Native G15 ordering is secure-GART map first, q22 publication
+                // second. If publication fails, undo the just-created PTEs before
+                // allowing the VA reservation to be released/reused.
+                let rollback = {
+                    let mut shared = self.inner.lock();
+                    match shared.g15_shared_bank1.as_mut() {
+                        Some(bank1) => bank1
+                            .page_table
+                            .unmap_pages(base..(base + size as u64)),
+                        None => Err(EINVAL),
+                    }
+                };
+                fence(Ordering::SeqCst);
+                mem::tlbi_all();
+                mem::sync();
+                if rollback.is_err() {
+                    dev_err!(
+                        self.dev.as_ref(),
+                        "MMU: failed to roll back unpublished G15 shared bank-1 mapping {:#x}:{:#x}; leaking VA reservation\n",
+                        base,
+                        size
+                    );
+                    core::mem::forget(node);
+                }
+                return Err(err);
+            }
         }
 
         Ok(G15SharedBank1Mapping {

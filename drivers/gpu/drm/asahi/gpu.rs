@@ -309,6 +309,8 @@ pub(crate) trait GpuManager: Send + Sync {
     /// This should be useful to reduce latency on work submission, so we can ask the firmware to
     /// wake up while we do some preparatory work for the work submission.
     fn kick_firmware(&self) -> Result;
+    /// Send the native G15 q22 mapping-ring pressure async note on EP21.
+    fn g15_mapping_pressure_kick(&self) -> Result;
     /// Flush the entire firmware cache.
     ///
     /// TODO: Does this actually work?
@@ -2600,6 +2602,30 @@ impl GpuManager for GpuManager::ver {
         rtk.send_message(EP_DOORBELL, MSG_TX_DOORBELL | DOORBELL_KICKFW)?;
 
         Ok(())
+    }
+
+    fn g15_mapping_pressure_kick(&self) -> Result {
+        #[ver(G != G15)]
+        {
+            return Err(EINVAL);
+        }
+        #[ver(G == G15)]
+        {
+            if self.is_crashed() {
+                return Err(ENODEV);
+            }
+
+            let mut guard = self.rtkit.lock();
+            let mut rtk = guard.as_mut().as_pin_mut().ok_or(ENODEV)?;
+            if !rtk.as_mut().has_endpoint(EP_DOORBELL) {
+                return Err(ENODEV);
+            }
+            // Exact AGXFirmwareKextRTBuddy::sendAsyncNoteToFirmware()
+            // message used by insertNewMappingEntry() once q22 occupancy has
+            // both the 0x80 and 0x40 bits set. On G15 this is the same EP21
+            // 0x84 message class represented by MSG_FWCTL.
+            rtk.send_message(EP_DOORBELL, MSG_FWCTL)
+        }
     }
 
     fn flush_fw_cache(&self) -> Result {
