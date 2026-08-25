@@ -889,16 +889,63 @@ impl GpuManager::ver {
             let mgr = Self::build_pre_rtkit(dev, res, cfg)?;
 
             let initdata_va = mgr.initdata.gpu_va().get();
+            let init_sequence_va = mgr.initdata.g15_init_sequence.gpu_va().get();
             let wrapper_va = mgr.initdata.runtime_pointers.gpu_va().get();
+            let globals_va = mgr.initdata.g15_globals.gpu_va().get();
+            let q21_va = mgr.initdata.g15_q21.gpu_va().get();
             let q22_va = mgr.initdata.g15_q22.gpu_va().get();
+            let q23_va = mgr.initdata.g15_q23.gpu_va().get();
             let q22_state_va = mgr.initdata.g15_cache_flush_state.gpu_va().get();
             let q22_ring_va = mgr.initdata.g15_cache_flush_ring.gpu_va().get();
 
+            // Validate every populated qword in the exact 24-qword G15 root.
+            // q2 is allocation-zero; q19/q20 are the trailing zero pad of the
+            // compact UAT descriptor. The level geometry is exact for J615.
             let root_ok = mgr.initdata.with(|raw, _inner| {
+                let uat = &raw.g15_q6_q20_uat;
+                let uat_bytes = unsafe {
+                    core::slice::from_raw_parts(
+                        uat as *const _ as *const u8,
+                        core::mem::size_of_val(uat),
+                    )
+                };
+                let mut expected_uat = [0u8; 0x78];
+                expected_uat[0..2].copy_from_slice(&0x4000u16.to_le_bytes());
+                expected_uat[2] = 14;
+                expected_uat[3] = 3;
+                let oas_mask = ((1u64 << cfg.uat_oas) - 1) & !(mmu::UAT_PGMSK as u64);
+                for (i, (shift, entries)) in [(36u8, 64u16), (25, 2048), (14, 2048)]
+                    .into_iter()
+                    .enumerate()
+                {
+                    let off = 4 + i * 0x20;
+                    expected_uat[off] = 8;
+                    expected_uat[off + 1] = 14;
+                    expected_uat[off + 2] = 14;
+                    expected_uat[off + 3] = shift;
+                    expected_uat[off + 4..off + 6]
+                        .copy_from_slice(&entries.to_le_bytes());
+                    expected_uat[off + 6..off + 8]
+                        .copy_from_slice(&0x4000u16.to_le_bytes());
+                    expected_uat[off + 8..off + 16]
+                        .copy_from_slice(&1u64.to_le_bytes());
+                    expected_uat[off + 16..off + 24]
+                        .copy_from_slice(&oas_mask.to_le_bytes());
+                    let index_mask = ((entries as u64 - 1) << shift) as u64;
+                    expected_uat[off + 24..off + 32]
+                        .copy_from_slice(&index_mask.to_le_bytes());
+                }
+
                 raw.g15_q0_signature.0 == 0x0c08_e21e_8380_0490
+                    && raw.g15_q1_init_sequence.0 == init_sequence_va
+                    && raw.g15_q2.0 == 0
                     && raw.g15_q3_runtime_pointers.0 == wrapper_va
+                    && raw.g15_q4_globals.0 == globals_va
                     && raw.g15_q5_host_mapped.0 == 0x0000_0001_0000_0000
+                    && uat_bytes == expected_uat
+                    && raw.g15_q21.0 == q21_va
                     && raw.g15_q22.0 == q22_va
+                    && raw.g15_q23.0 == q23_va
             });
 
             let q22_ok = mgr.initdata.g15_q22.with(|raw, _inner| {
@@ -944,22 +991,113 @@ impl GpuManager::ver {
                     .buffer_mgr_ctl_high_mapping
                     .is_some();
 
-            // J615/T8122 currently has no static HwConfig MMIO or SRAM mapping
-            // entries. Keep this explicit so a later table addition cannot
-            // silently bypass the preflight's mapping validation.
-            let mappings_ok = cfg.io_mappings.is_empty()
+            // Validate the complete first-read HwDataB image that is known
+            // mechanically for J615: chip identity, live ADT perf-state tables,
+            // all 31 firmware MMIO descriptors, and the exact G15 startup suffix.
+            let expected_io_mapping_count: usize = cfg
+                .io_mappings
+                .iter()
+                .filter_map(|map| map.as_ref())
+                .map(|map| {
+                    let dies = if map.per_die { cfg.num_dies as usize } else { 1 };
+                    map.count * dies
+                })
+                .sum();
+
+            let hwdatab_ok = mgr.initdata.runtime_pointers.hwdata_b.with(|raw, _inner| {
+                let pwr = &mgr.dyncfg.pwr;
+                let mut perf_ok = raw.max_pstate as usize + 1 == pwr.perf_states.len();
+
+                for i in 0..raw.frequencies.len() {
+                    if i < pwr.perf_states.len() {
+                        let ps = &pwr.perf_states[i];
+                        perf_ok &= raw.frequencies[i] == ps.freq_hz / 1_000_000;
+                        for j in 0..raw.voltages[i].len() {
+                            let mv = if j < ps.volt_mv.len() {
+                                ps.volt_mv[j]
+                            } else {
+                                ps.volt_mv[0]
+                            };
+                            let sram_mv = mv.max(pwr.min_sram_microvolt / 1000);
+                            perf_ok &= raw.voltages[i][j] == mv;
+                            perf_ok &= raw.voltages_sram[i][j] == sram_mv;
+                        }
+                    } else {
+                        perf_ok &= raw.frequencies[i] == 0;
+                        perf_ok &= raw.voltages[i].iter().all(|v| *v == 0);
+                        perf_ok &= raw.voltages_sram[i].iter().all(|v| *v == 0);
+                    }
+                }
+
+                let mut map_ok = raw.io_mappings.len() == cfg.io_mappings.len();
+                for (i, rec) in raw.io_mappings.iter().enumerate() {
+                    if let Some(map) = cfg.io_mappings[i].as_ref() {
+                        let dies = if map.per_die { cfg.num_dies as usize } else { 1 };
+                        let expected_total = map.size * map.count * dies;
+                        let off = map.base & mmu::UAT_PGMSK;
+                        map_ok &= rec.phys_addr.0 == map.base as u64;
+                        map_ok &= rec.virt_addr.0 != 0;
+                        map_ok &= (rec.virt_addr.0 & mmu::UAT_PGMSK as u64) == off as u64;
+                        map_ok &= rec.total_size as usize == expected_total;
+                        map_ok &= rec.element_size as usize == map.size;
+                        map_ok &= rec.readwrite.0 == map.writable as u64;
+                    } else {
+                        map_ok &= rec.phys_addr.0 == 0;
+                        map_ok &= rec.virt_addr.0 == 0;
+                        map_ok &= rec.total_size == 0;
+                        map_ok &= rec.element_size == 0;
+                        map_ok &= rec.readwrite.0 == 0;
+                    }
+                }
+
+                let tail = &raw.g15_startup_17ec;
+                let tail_bytes = unsafe {
+                    core::slice::from_raw_parts(
+                        tail as *const _ as *const u8,
+                        core::mem::size_of_val(tail),
+                    )
+                };
+                let expected_tail_words: [u32; 29] = [
+                    0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 0,
+                    0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff,
+                    0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff,
+                    0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff,
+                    0, 0, 0, 0, 1, 0,
+                ];
+                let mut expected_tail = [0u8; 0x74];
+                for (i, word) in expected_tail_words.into_iter().enumerate() {
+                    expected_tail[i * 4..i * 4 + 4].copy_from_slice(&word.to_le_bytes());
+                }
+                let tail_ok = tail_bytes == expected_tail;
+
+                raw.chip_id == 0x8122
+                    && raw.unk_454 == 2
+                    && raw.unk_458 == 0
+                    && raw.unk_45c == 4
+                    && raw.base_clock_khz == 24_000
+                    && raw.power_sample_period == 1
+                    && raw.num_cores == mgr.dyncfg.id.num_cores * mgr.dyncfg.id.num_clusters
+                    && raw.num_frags == mgr.dyncfg.id.num_frags * mgr.dyncfg.id.num_clusters
+                    && perf_ok
+                    && map_ok
+                    && tail_ok
+            });
+
+            let mappings_ok = cfg.io_mappings.len() == 0x1f
                 && cfg.sram_base.is_none()
                 && cfg.sram_size.is_none()
-                && mgr.io_mappings.is_empty();
+                && expected_io_mapping_count == 13
+                && mgr.io_mappings.len() == expected_io_mapping_count;
 
-            if !(root_ok && q22_ok && wrapper_ok && bufmgr_ok && mappings_ok) {
+            if !(root_ok && q22_ok && wrapper_ok && bufmgr_ok && hwdatab_ok && mappings_ok) {
                 dev_err!(
                     dev.as_ref(),
-                    "T8122 G15 pre-RTKit manager validation failed: root={} q22={} wrapper={} bufmgr={} mappings={}\n",
+                    "T8122 G15 pre-RTKit manager validation failed: root={} q22={} wrapper={} bufmgr={} hwdatab={} mappings={}\n",
                     root_ok,
                     q22_ok,
                     wrapper_ok,
                     bufmgr_ok,
+                    hwdatab_ok,
                     mappings_ok
                 );
                 return Err(EIO);
@@ -967,7 +1105,7 @@ impl GpuManager::ver {
 
             dev_info!(
                 dev.as_ref(),
-                "T8122 G15 pre-RTKit manager PASS (InitData {:#x}, wrapper {:#x}, q22 {:#x}, q22 ctl {:#x}/{:#x}; 12 pipe TX + device-control + RX/log/stats wired); dropping before RtKit::new/MSG_INIT\n",
+                "T8122 G15 pre-RTKit manager PASS (InitData {:#x}, wrapper {:#x}, q22 {:#x}, q22 ctl {:#x}/{:#x}; root + HwDataB scalars/perf + 31 MMIO records/13 maps + G15 startup exact; dropping before RtKit::new/MSG_INIT\n",
                 initdata_va,
                 wrapper_va,
                 q22_va,
