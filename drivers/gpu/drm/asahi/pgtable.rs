@@ -164,12 +164,12 @@ pub(crate) mod prot {
     /// `PROT_GPU_FW_PRIV_RW`, which would add PXN/UXN bits not present here.
     pub(crate) const PROT_G15_RANGE5_CACHED: Prot =
         PROT_FW_GPU_NA.memattr(MEMATTR_CACHED);
-    /// Exact non-legacy G15 eGartRange-7 protection shape used by both the
-    /// firmware-owned PMPageMetricsBuffer stack and the independent 0x80
-    /// Parameter Scene statistics resource. Apple maps both with option word
-    /// 0x700000007; SecureGart produces compact 0x007 and the UAT encoder emits
-    /// AP=1, device memattr, UXN=1, GPU-access=1, PXN=0.
-    pub(crate) const PROT_G15_RANGE7_PM: Prot =
+    /// Exact non-legacy G15 eGartRange-7 firmware-shared protection shape.
+    /// Apple uses option word 0x700000007 for the q22 mapping-control state/ring,
+    /// PMPageMetricsBuffer, and Parameter Scene statistics resources. SecureGart
+    /// produces compact 0x007 and the UAT encoder emits AP=1, device memattr,
+    /// UXN=1, GPU-access=1, PXN=0.
+    pub(crate) const PROT_G15_RANGE7_FW: Prot =
         PROT_FW_RW.memattr(MEMATTR_DEV);
     /// Firmware/GPU shared (private) RW
     pub(crate) const PROT_GPU_FW_PRIV_RW: Prot = PROT_FW_GPU_RW.memattr(MEMATTR_CACHED);
@@ -191,9 +191,9 @@ const _: [(); 1] = [(); ((prot::PROT_G15_RANGE5_UNCACHED.as_pte() & UAT_PROT_BIT
 // with no PXN/UXN bits.
 const _: [(); 1] = [(); ((prot::PROT_G15_RANGE5_CACHED.as_pte() & UAT_PROT_BITS)
     == 0x0080_0000_0000_0000) as usize];
-// Range-7 PM resources: compact 0x007 -> AP=1, device memattr,
+// Range-7 FW-shared resources: compact 0x007 -> AP=1, device memattr,
 // UXN + GPU-access high bits.
-const _: [(); 1] = [(); ((prot::PROT_G15_RANGE7_PM.as_pte() & UAT_PROT_BITS)
+const _: [(); 1] = [(); ((prot::PROT_G15_RANGE7_FW.as_pte() & UAT_PROT_BITS)
     == 0x00c0_0000_0000_0044) as usize];
 
 impl Prot {

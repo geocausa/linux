@@ -472,6 +472,7 @@ impl Queue::ver {
         _g15_ualloc_range5_uncached: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
         _g15_ualloc_range5_cached: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
         _g15_shared_bank1: Option<mmu::G15SharedBank1>,
+        _g15_mapping_notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
         event_manager: Arc<event::EventManager>,
         mgr: &buffer::BufferManager::ver,
         id: u64,
@@ -532,8 +533,9 @@ impl Queue::ver {
             dev,
             _g15_shared_bank1.ok_or(EINVAL)?,
             buffer::PAGE_SIZE,
-            mmu::PROT_G15_RANGE7_PM,
+            mmu::PROT_G15_RANGE7_FW,
             true,
+            _g15_mapping_notifier,
         );
         #[ver(G == G15)]
         let g15_pm_page_metrics = g15_bank1_alloc.array_empty_tagged(

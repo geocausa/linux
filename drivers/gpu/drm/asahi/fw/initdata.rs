@@ -298,6 +298,23 @@ pub(crate) mod raw {
     const _: [(); 0x10] = [(); core::mem::offset_of!(G15CacheFlushEntry, fw_page_count)];
     const _: [(); 0x12] = [(); core::mem::offset_of!(G15CacheFlushEntry, mapping_flags)];
     const _: [(); 0x14] = [(); core::mem::offset_of!(G15CacheFlushEntry, reserved_14)];
+    // SAFETY: every field has an all-zero valid representation.
+    unsafe impl Zeroable for G15CacheFlushEntry {}
+
+    /// Exact packed backing produced by AGXFirmware::allocateSharedData() for
+    /// the q22 mapping-control state/ring subdescriptor pair. Apple places the
+    /// 0x20 state at +0x00, aligns the second child to 0x40, then places the
+    /// 0x1800 ring at +0x40, for 0x1840 bytes before page rounding.
+    #[derive(Debug)]
+    #[repr(C)]
+    pub(crate) struct G15MappingRingBacking {
+        pub(crate) state: G15CacheFlushState,
+        pub(crate) pad_020: Pad<0x20>,
+        pub(crate) ring: Array<0x100, G15CacheFlushEntry>,
+    }
+    default_zeroed!(G15MappingRingBacking);
+    const _: [(); 0x1840] = [(); core::mem::size_of::<G15MappingRingBacking>()];
+    const _: [(); 0x40] = [(); core::mem::offset_of!(G15MappingRingBacking, ring)];
 
     /// G15 root q22: exact 0xc3d0-byte host/FW shared object.
     ///
@@ -2394,7 +2411,7 @@ trivial_gpustruct!(G15FirmwareTimeState);
 trivial_gpustruct!(G15InitSequencePage);
 trivial_gpustruct!(G15ControlState);
 trivial_gpustruct!(G15Q4Config);
-trivial_gpustruct!(G15CacheFlushState);
+trivial_gpustruct!(G15MappingRingBacking);
 trivial_gpustruct!(G15Q22Shared);
 trivial_gpustruct!(G15Q23Shared);
 trivial_gpustruct!(G15StatsVtx);
@@ -2488,9 +2505,7 @@ pub(crate) struct InitData {
     #[ver(G == G15)]
     pub(crate) g15_q21: GpuObject<G15SharedStatus>,
     #[ver(G == G15)]
-    pub(crate) g15_cache_flush_state: GpuObject<G15CacheFlushState>,
-    #[ver(G == G15)]
-    pub(crate) g15_cache_flush_ring: GpuArray<raw::G15CacheFlushEntry>,
+    pub(crate) g15_mapping_notifier: mmu::G15MappingNotifierHandle,
     #[ver(G == G15)]
     pub(crate) g15_q22: GpuObject<G15Q22Shared>,
     #[ver(G == G15)]

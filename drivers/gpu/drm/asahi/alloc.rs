@@ -16,7 +16,8 @@ use kernel::{
     drm::mm,
     error::Result,
     prelude::*,
-    str::CString, //
+    str::CString,
+    sync::{Arc, Mutex}, //
 };
 
 use crate::debug::*;
@@ -443,6 +444,8 @@ impl RawAllocation for G15SharedBank1Allocation {
     fn device(&self) -> &AsahiDevice { &self.dev }
 }
 
+pub(crate) type G15SharedGpuObject<T> =
+    GpuObject<T, GenericAlloc<T, G15SharedBank1Allocation>>;
 pub(crate) type G15SharedGpuArray<T> =
     GpuArray<T, GenericAlloc<T, G15SharedBank1Allocation>>;
 
@@ -453,6 +456,7 @@ pub(crate) struct G15SharedBank1Allocator {
     prot: mmu::Prot,
     min_align: usize,
     cpu_maps: bool,
+    notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
 }
 
 impl G15SharedBank1Allocator {
@@ -462,9 +466,10 @@ impl G15SharedBank1Allocator {
         min_align: usize,
         prot: mmu::Prot,
         mut cpu_maps: bool,
+        notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
     ) -> Self {
         if debug_enabled(DebugFlags::ForceCPUMaps) { cpu_maps = true; }
-        Self { dev: dev.into(), bank1, prot, min_align, cpu_maps }
+        Self { dev: dev.into(), bank1, prot, min_align, cpu_maps, notifier }
     }
 }
 
@@ -486,6 +491,7 @@ impl Allocator for G15SharedBank1Allocator {
             self.min_align.max(mmu::UAT_PGSZ) as u64,
             self.prot,
             true,
+            self.notifier.clone(),
         )?;
         let iova = mapping.iova();
         let ptr = unsafe { p.add(offset) };

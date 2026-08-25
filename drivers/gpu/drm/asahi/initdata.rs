@@ -16,6 +16,7 @@ use crate::fw::initdata::*;
 use crate::fw::types::*;
 use crate::module_parameters;
 use crate::{
+    alloc,
     driver::AsahiDevice,
     gem,
     gpu,
@@ -29,6 +30,7 @@ use kernel::error::{
 use kernel::macros::versions;
 use kernel::prelude::*;
 use kernel::try_init;
+use kernel::{new_mutex, sync::Arc};
 
 use ::pin_init;
 use ::pin_init::Init;
@@ -40,6 +42,7 @@ pub(crate) struct InitDataBuilder<'a> {
     alloc: &'a mut gpu::KernelAllocators,
     cfg: &'static hw::HwConfig,
     dyncfg: &'a hw::DynConfig,
+    g15_shared_bank1: Option<mmu::G15SharedBank1>,
 }
 
 #[versions(AGX)]
@@ -50,12 +53,14 @@ impl<'a> InitDataBuilder::ver<'a> {
         alloc: &'a mut gpu::KernelAllocators,
         cfg: &'static hw::HwConfig,
         dyncfg: &'a hw::DynConfig,
+        g15_shared_bank1: Option<mmu::G15SharedBank1>,
     ) -> InitDataBuilder::ver<'a> {
         InitDataBuilder::ver {
             dev,
             alloc,
             cfg,
             dyncfg,
+            g15_shared_bank1,
         }
     }
 
@@ -1476,20 +1481,45 @@ impl<'a> InitDataBuilder::ver<'a> {
             },
         )?;
         #[ver(G == G15)]
-        let g15_cache_flush_state = self.alloc.shared.new_default::<G15CacheFlushState>()?;
+        let mut g15_q22_alloc = alloc::G15SharedBank1Allocator::new(
+            self.dev,
+            self.g15_shared_bank1.clone().ok_or(EINVAL)?,
+            mmu::UAT_PGSZ,
+            mmu::PROT_G15_RANGE7_FW,
+            true,
+            None,
+        );
         #[ver(G == G15)]
-        let g15_cache_flush_ring = self
-            .alloc
-            .shared
-            .array_empty::<raw::G15CacheFlushEntry>(0x100)?;
+        let g15_mapping_ring_backing =
+            g15_q22_alloc.new_default::<G15MappingRingBacking>()?;
+        #[ver(G == G15)]
+        let g15_mapping_notifier = mmu::G15MappingNotifierHandle::new(Arc::pin_init(
+            new_mutex!(
+                mmu::G15MappingNotifier::new(
+                    self.dev,
+                    g15_mapping_ring_backing,
+                ),
+                "g15_mapping_notifier"
+            ),
+            GFP_KERNEL,
+        )?);
+        #[ver(G == G15)]
+        let (g15_cache_flush_state_va, g15_cache_flush_ring_va) = {
+            let notifier = g15_mapping_notifier.lock();
+            (notifier.state_gpu_va(), notifier.ring_gpu_va())
+        };
         #[ver(G == G15)]
         let g15_q22 = self.alloc.shared.new_object(
             Default::default(),
             |_inner| raw::G15Q22Shared {
-                // Apple maps the exact 0x20 control block and 0x1800 ring at
-                // q22 +0x4568/+0x4570. Firmware consumes 0x18-byte entries.
-                shared_ptr_4568: U64(g15_cache_flush_state.gpu_va().get()),
-                shared_ptr_4570: U64(g15_cache_flush_ring.gpu_va().get()),
+                // Apple allocFirmwareData() calls allocateSharedData(..., true,
+                // false) with eGartRange=7, zero extra options, and exact 0x20 /
+                // 0x1800 suballocations. That is option word 0x700000007, so
+                // these bootstrap objects use the same shared bank-1 PTE class
+                // as later range-7 PM resources. The q22 producer is not yet
+                // attached while these two self-hosting mappings are created.
+                shared_ptr_4568: U64(g15_cache_flush_state_va),
+                shared_ptr_4570: U64(g15_cache_flush_ring_va),
                 // Apple sets +0x45c4 to one before firmware starts. G15's
                 // accelerator configure path clears feature bit 28 before the
                 // const smart-idle query, so +0xc3cc is exactly zero on J615.
@@ -1546,9 +1576,7 @@ impl<'a> InitDataBuilder::ver<'a> {
                 #[ver(G == G15)]
                 g15_q21,
                 #[ver(G == G15)]
-                g15_cache_flush_state,
-                #[ver(G == G15)]
-                g15_cache_flush_ring,
+                g15_mapping_notifier,
                 #[ver(G == G15)]
                 g15_q22,
                 #[ver(G == G15)]

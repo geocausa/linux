@@ -622,7 +622,7 @@ impl GpuManager::ver {
         };
 
         let event_manager = Self::make_event_manager(&mut alloc)?;
-        let mut initdata = Self::make_initdata(dev, cfg, &dyncfg, &mut alloc)?;
+        let mut initdata = Self::make_initdata(dev, cfg, &dyncfg, &mut alloc, uat.g15_shared_bank1())?;
 
         initdata.runtime_pointers.buffer_mgr_ctl_low_mapping =
             Some(initdata.runtime_pointers.buffer_mgr_ctl.map_at(
@@ -841,7 +841,7 @@ impl GpuManager::ver {
                 )?,
             };
 
-            let initdata = Self::make_initdata(dev, cfg, &dyncfg, &mut alloc)?;
+            let initdata = Self::make_initdata(dev, cfg, &dyncfg, &mut alloc, uat.g15_shared_bank1())?;
             let hwdata_a_va = initdata.runtime_pointers.hwdata_a.gpu_va().get();
             let initdata_va = initdata.gpu_va().get();
 
@@ -934,8 +934,14 @@ impl GpuManager::ver {
             let q21_va = mgr.initdata.g15_q21.gpu_va().get();
             let q22_va = mgr.initdata.g15_q22.gpu_va().get();
             let q23_va = mgr.initdata.g15_q23.gpu_va().get();
-            let q22_state_va = mgr.initdata.g15_cache_flush_state.gpu_va().get();
-            let q22_ring_va = mgr.initdata.g15_cache_flush_ring.gpu_va().get();
+            let (q22_state_va, q22_ring_va, q22_ring_empty) = {
+                let notifier = mgr.initdata.g15_mapping_notifier.lock();
+                (
+                    notifier.state_gpu_va(),
+                    notifier.ring_gpu_va(),
+                    notifier.is_empty(),
+                )
+            };
             let hwdata_a_va = mgr.initdata.runtime_pointers.hwdata_a.gpu_va().get();
             let hwdata_b_va = mgr.initdata.runtime_pointers.hwdata_b.gpu_va().get();
             let persistent_time_va = mgr.initdata.runtime_pointers.g15_persistent_time.gpu_va().get();
@@ -1000,6 +1006,9 @@ impl GpuManager::ver {
                     && raw.host_zero_0008.0 == 0
                     && raw.shared_ptr_4568.0 == q22_state_va
                     && raw.shared_ptr_4570.0 == q22_ring_va
+                    && mmu::G15_GART_RANGE7.contains(&q22_state_va)
+                    && mmu::G15_GART_RANGE7.contains(&q22_ring_va)
+                    && q22_ring_empty
                     && raw.host_flag_45c4.0 == 1
                     && raw.kick_channel_qos_valid_c3c8.0 == 0
                     && raw.feature_c3cc.0 == 0
@@ -1341,6 +1350,17 @@ impl GpuManager::ver {
         cfg: &'static hw::HwConfig,
     ) -> Result<()> {
         let mgr = Self::build_validated_pre_rtkit(dev, res, cfg)?;
+        #[ver(G == G15)]
+        {
+            mgr.initdata
+                .g15_mapping_notifier
+                .lock()
+                .preflight_roundtrip()?;
+            dev_info!(
+                dev.as_ref(),
+                "T8122 G15 q22 native mapping encoder PASS (map/unmap bytes + DMB-before-write-index publication; ring restored empty)\n"
+            );
+        }
         core::mem::drop(mgr);
         Ok(())
     }
@@ -1771,8 +1791,15 @@ impl GpuManager::ver {
         cfg: &'static hw::HwConfig,
         dyncfg: &hw::DynConfig,
         alloc: &mut KernelAllocators,
+        g15_shared_bank1: Option<mmu::G15SharedBank1>,
     ) -> Result<KBox<fw::types::GpuObject<fw::initdata::InitData::ver>>> {
-        let mut builder = initdata::InitDataBuilder::ver::new(dev, alloc, cfg, dyncfg);
+        let mut builder = initdata::InitDataBuilder::ver::new(
+            dev,
+            alloc,
+            cfg,
+            dyncfg,
+            g15_shared_bank1,
+        );
         builder.build()
     }
 
@@ -2538,6 +2565,10 @@ impl GpuManager for GpuManager::ver {
     ) -> Result<KBox<dyn queue::Queue>> {
         let mut kalloc = self.alloc();
         let id = self.ids.queue.next();
+        #[ver(G == G15)]
+        let g15_mapping_notifier = Some(self.initdata.g15_mapping_notifier.arc());
+        #[ver(G != G15)]
+        let g15_mapping_notifier = None;
         Ok(KBox::new(
             queue::Queue::ver::new(
                 &self.dev,
@@ -2548,6 +2579,7 @@ impl GpuManager for GpuManager::ver {
                 g15_ualloc_range5_uncached,
                 g15_ualloc_range5_cached,
                 self.uat.g15_shared_bank1(),
+                g15_mapping_notifier,
                 self.event_manager.clone(),
                 &self.buffer_mgr,
                 id,

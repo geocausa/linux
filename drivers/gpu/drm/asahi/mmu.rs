@@ -60,6 +60,7 @@ use crate::debug::*;
 use crate::module_parameters;
 use crate::no_debug;
 use crate::{
+    alloc,
     driver,
     fw,
     gem,
@@ -1030,6 +1031,203 @@ impl G15SharedBank1State {
     }
 }
 
+/// Host producer for the native G15 q22 mapping-notification ring.
+///
+/// The state and ring themselves are bootstrap range-7 mappings created before
+/// this producer is handed to any later range-7 allocation. Holding this object
+/// strongly therefore keeps both q22 backings alive for every mapping that may
+/// need to publish its eventual unmap record.
+pub(crate) struct G15MappingNotifier {
+    dev: driver::AsahiDevRef,
+    backing: alloc::G15SharedGpuObject<fw::initdata::G15MappingRingBacking>,
+}
+
+/// Cloneable, debug-safe strong owner for the q22 producer. Kernel Mutex does
+/// not implement Debug, while InitData does; keep formatting intentionally
+/// opaque rather than exposing synchronization internals or raw pointers.
+pub(crate) struct G15MappingNotifierHandle(Arc<Mutex<G15MappingNotifier>>);
+
+impl G15MappingNotifierHandle {
+    pub(crate) fn new(inner: Arc<Mutex<G15MappingNotifier>>) -> Self {
+        Self(inner)
+    }
+
+    pub(crate) fn arc(&self) -> Arc<Mutex<G15MappingNotifier>> {
+        self.0.clone()
+    }
+}
+
+impl Clone for G15MappingNotifierHandle {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl core::ops::Deref for G15MappingNotifierHandle {
+    type Target = Arc<Mutex<G15MappingNotifier>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl core::fmt::Debug for G15MappingNotifierHandle {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("G15MappingNotifierHandle")
+    }
+}
+
+impl G15MappingNotifier {
+    const RING_LEN: u32 = 0x100;
+    // Apple issues its firmware-pressure kick once the current occupancy has
+    // both 0x40 and 0x80 set (>= 0xc0 in the non-wrapped normal range). Until
+    // that exact kick transport is wired, do not cross that native boundary.
+    const NO_KICK_MAX_OCCUPANCY: u32 = 0xbf;
+
+    pub(crate) fn new(
+        dev: &driver::AsahiDevice,
+        backing: alloc::G15SharedGpuObject<fw::initdata::G15MappingRingBacking>,
+    ) -> Self {
+        Self { dev: dev.into(), backing }
+    }
+
+    pub(crate) fn state_gpu_va(&self) -> u64 {
+        self.backing.gpu_va().get()
+    }
+
+    pub(crate) fn ring_gpu_va(&self) -> u64 {
+        self.backing.gpu_va().get() + 0x40
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.backing.with(|raw, _inner| {
+            raw.state.read_idx.load(Ordering::Relaxed) == 0
+                && raw.state.write_idx.load(Ordering::Relaxed) == 0
+        })
+    }
+
+    fn publish_pages(&mut self, base: u64, phys_pages: &[u64], mapping: bool) -> Result {
+        let count: u32 = phys_pages.len().try_into()?;
+        self.backing.with_mut(|raw, _inner| -> Result {
+            let read = raw.state.read_idx.load(Ordering::Relaxed);
+            let mut write = raw.state.write_idx.load(Ordering::Relaxed);
+            if read >= Self::RING_LEN || write >= Self::RING_LEN {
+                dev_err!(
+                    self.dev.as_ref(),
+                    "MMU: invalid G15 q22 ring cursors ({}, {})\n",
+                    read,
+                    write
+                );
+                return Err(EIO);
+            }
+
+            let occupancy = write.wrapping_sub(read) & 0xff;
+            if occupancy.saturating_add(count) > Self::NO_KICK_MAX_OCCUPANCY {
+                dev_err!(
+                    self.dev.as_ref(),
+                    "MMU: G15 q22 mapping ring reached native pressure-kick boundary ({:#x}+{:#x}); refusing speculative insertion\n",
+                    occupancy,
+                    count
+                );
+                return Err(EBUSY);
+            }
+
+            for (i, phys) in phys_pages.iter().enumerate() {
+                let next = (write + 1) & 0xff;
+                if next == read {
+                    return Err(EBUSY);
+                }
+                raw.ring[write as usize] = fw::initdata::raw::G15CacheFlushEntry {
+                    addr: fw::types::U64(base + (i * UAT_PGSZ) as u64),
+                    phys_page_4k: fw::types::U32((phys >> 12).try_into()?),
+                    secure_context_id: fw::types::U32(if mapping { 0 } else { u32::MAX }),
+                    fw_page_count: 1,
+                    mapping_flags: if mapping { fw::initdata::raw::G15_MAP_FLAG_MAP } else { 0 },
+                    reserved_14: fw::types::U32(0),
+                };
+                // Exact Apple publication order: copy the complete 0x18-byte entry,
+                // DMB ISH, then publish state+0x10. SeqCst fence is the kernel-Rust
+                // ARM64 DMB class used elsewhere in this driver and is at least as strong.
+                fence(Ordering::SeqCst);
+                raw.state.write_idx.store(next, Ordering::Relaxed);
+                write = next;
+            }
+            Ok(())
+        })
+    }
+
+    /// CPU-only reversible check of the exact q22 encoder and publication
+    /// cursors. This is called only by the manager preflight before RTKit or
+    /// firmware construction, and restores both touched slots and cursors to
+    /// their allocation-zero bootstrap state before returning.
+    pub(crate) fn preflight_roundtrip(&mut self) -> Result {
+        if !self.is_empty() {
+            return Err(EBUSY);
+        }
+
+        let base = G15_GART_RANGE7.start + 0x0040_0000;
+        let phys = 0x0000_0008_1234_0000u64;
+        let pages = [phys];
+
+        let result = (|| -> Result {
+            self.publish_mapping(base, &pages)?;
+            let map_ok = self.backing.with(|raw, _inner| {
+                let e = raw.ring[0];
+                raw.state.read_idx.load(Ordering::Relaxed) == 0
+                    && raw.state.write_idx.load(Ordering::Relaxed) == 1
+                    && e.addr.0 == base
+                    && e.phys_page_4k.0 == (phys >> 12) as u32
+                    && e.secure_context_id.0 == 0
+                    && e.fw_page_count == 1
+                    && e.mapping_flags == fw::initdata::raw::G15_MAP_FLAG_MAP
+                    && e.reserved_14.0 == 0
+            });
+            if !map_ok {
+                return Err(EIO);
+            }
+
+            self.publish_unmapping(base, &pages)?;
+            let unmap_ok = self.backing.with(|raw, _inner| {
+                let e = raw.ring[1];
+                raw.state.read_idx.load(Ordering::Relaxed) == 0
+                    && raw.state.write_idx.load(Ordering::Relaxed) == 2
+                    && e.addr.0 == base
+                    && e.phys_page_4k.0 == (phys >> 12) as u32
+                    && e.secure_context_id.0 == u32::MAX
+                    && e.fw_page_count == 1
+                    && e.mapping_flags == 0
+                    && e.reserved_14.0 == 0
+            });
+            if !unmap_ok {
+                return Err(EIO);
+            }
+            Ok(())
+        })();
+
+        self.backing.with_mut(|raw, _inner| {
+            raw.ring[0] = Default::default();
+            raw.ring[1] = Default::default();
+            raw.state.read_idx.store(0, Ordering::Relaxed);
+            raw.state.write_idx.store(0, Ordering::Relaxed);
+        });
+        fence(Ordering::SeqCst);
+
+        result?;
+        if !self.is_empty() {
+            return Err(EIO);
+        }
+        Ok(())
+    }
+
+    fn publish_mapping(&mut self, base: u64, phys_pages: &[u64]) -> Result {
+        self.publish_pages(base, phys_pages, true)
+    }
+
+    fn publish_unmapping(&mut self, base: u64, phys_pages: &[u64]) -> Result {
+        self.publish_pages(base, phys_pages, false)
+    }
+}
+
 struct G15SharedBank1MappingInner {
     _gem: ARef<gem::Object>,
     mapped_size: usize,
@@ -1039,6 +1237,8 @@ struct G15SharedBank1MappingInner {
 pub(crate) struct G15SharedBank1Mapping {
     node: Option<mm::Node<(), G15SharedBank1MappingInner>>,
     inner: Arc<UatInner>,
+    notifier: Option<Arc<Mutex<G15MappingNotifier>>>,
+    phys_pages: KVec<u64>,
 }
 
 impl G15SharedBank1Mapping {
@@ -1053,6 +1253,15 @@ impl Drop for G15SharedBank1Mapping {
         let node = self.node.take().unwrap();
         let iova = node.start();
         let size = node.mapped_size;
+        if let Some(notifier) = self.notifier.as_ref() {
+            if notifier.lock().publish_unmapping(iova, &self.phys_pages).is_err() {
+                pr_err!(
+                    "MMU: failed to publish G15 shared bank-1 unmapping {:#x}:{:#x}\n",
+                    iova,
+                    size
+                );
+            }
+        }
         {
             let mut shared = self.inner.lock();
             if let Some(bank1) = shared.g15_shared_bank1.as_mut() {
@@ -1095,9 +1304,14 @@ impl G15SharedBank1 {
         alignment: u64,
         prot: Prot,
         guard: bool,
+        notifier: Option<Arc<Mutex<G15MappingNotifier>>>,
     ) -> Result<G15SharedBank1Mapping> {
         let sgt = gem.owned_sg_table()?;
+        if size & UAT_PGMSK != 0 {
+            return Err(EINVAL);
+        }
         let reserve_size = size + if guard { UAT_PGSZ } else { 0 };
+        let mut phys_pages = KVec::with_capacity(size / UAT_PGSZ, GFP_KERNEL)?;
         let mut shared = self.inner.lock();
         let bank1 = shared.g15_shared_bank1.as_mut().ok_or(EINVAL)?;
         let node = bank1.mm.insert_node_in_range(
@@ -1133,6 +1347,11 @@ impl G15SharedBank1 {
                 );
                 return Err(EINVAL);
             }
+            for page_off in (0..len).step_by(UAT_PGSZ) {
+                phys_pages
+                    .push((addr + page_off) as u64, GFP_KERNEL)
+                    .expect("G15 phys_pages push failed after reserve");
+            }
             bank1.page_table.map_pages(
                 iova..(iova + len as u64),
                 addr as PhysicalAddr,
@@ -1155,9 +1374,15 @@ impl G15SharedBank1 {
         mem::tlbi_all();
         mem::sync();
 
+        if let Some(q22) = notifier.as_ref() {
+            q22.lock().publish_mapping(base, &phys_pages)?;
+        }
+
         Ok(G15SharedBank1Mapping {
             node: Some(node),
             inner: self.inner.clone(),
+            notifier,
+            phys_pages,
         })
     }
 }
