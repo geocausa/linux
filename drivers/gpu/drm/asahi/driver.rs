@@ -333,15 +333,15 @@ impl platform::Driver for AsahiDriver {
 
             dev_info!(
                 pdev.as_ref(),
-                "T8122 G15 PwrConfig PASS (14 OPPs, leak 1644/60, SRAM floor 790mV, max 21405mW); starting byte-exact pre-MSG_INIT manager preflight\n"
+                "T8122 G15 PwrConfig PASS (14 OPPs, leak 1644/60, SRAM floor 790mV, max 21405mW); starting isolated first-MSG_INIT preflight\n"
             );
 
             regs::Resources::start_cpu(pdev)?;
-            let initdata_result = gpu::GpuManagerG15V14_7::manager_preflight(&drm, &res, cfg);
+            let initdata_result = gpu::GpuManagerG15V14_7::first_msg_init_preflight(&drm, &res, cfg);
             let stop_result = regs::Resources::stop_cpu(pdev);
 
             if let Err(e) = initdata_result {
-                dev_err!(pdev.as_ref(), "T8122 G15 pre-MSG_INIT manager preflight failed: {:?}\n", e);
+                dev_err!(pdev.as_ref(), "T8122 G15 first-MSG_INIT preflight failed: {:?}\n", e);
                 let _ = stop_result;
                 return Err(e);
             }
@@ -349,7 +349,7 @@ impl platform::Driver for AsahiDriver {
 
             dev_info!(
                 pdev.as_ref(),
-                "T8122 G15 byte-exact pre-MSG_INIT manager PASS; ASC stopped; RTKit/InitData/device-control/doorbell/MSG_INIT intentionally blocked\n"
+                "T8122 G15 first-MSG_INIT preflight PASS; ASC stopped; no EP21 TX/device-control/kick, DRM registration, or GPU work\n"
             );
             return Err(ENODEV);
         }
