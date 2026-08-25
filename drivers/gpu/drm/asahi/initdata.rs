@@ -1396,6 +1396,12 @@ impl<'a> InitDataBuilder::ver<'a> {
                 clvr_engagement_enabled_7d4: U32(1),
                 gpu_keepalive_perf_mode_threshold_7d8: U32(100),
                 gpu_keepalive_off_mode_threshold_7dc: U32(100),
+                // AGXArmFirmware::init() explicitly clears the entire q4
+                // register-patch staging span through +0x96b. Firmware later
+                // reads +0x964 as the record count for entries at +0x7f4;
+                // exact J615 bootstrap therefore takes the zero-count path.
+                boot_patch_record_count_964: U32(0),
+                boot_patch_count_zero_968: U32(0),
                 // These are runtime inputs from the IOGPU
                 // set_display_params_for_gpu user-client method. Apple starts
                 // the zeroed q4 block with no display override; firmware falls

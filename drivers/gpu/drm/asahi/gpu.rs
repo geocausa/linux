@@ -952,6 +952,112 @@ impl GpuManager::ver {
                 raw.shared_ptr_4568.0 == q22_state_va
                     && raw.shared_ptr_4570.0 == q22_ring_va
                     && raw.host_flag_45c4.0 == 1
+                    && raw.kick_channel_qos_valid_c3c8.0 == 0
+                    && raw.feature_c3cc.0 == 0
+            });
+
+            // Exact fields consumed while q21 +0x14 (firmware_ready) is still 0.
+            // G15/G15G's host init-sequence callback is a no-op, so q1 starts
+            // with the type-0 terminator. q4 +0x964 is an explicitly zeroed
+            // patch-record count, disabling the +0x7f4 register-patch loop.
+            // q23 +0x1e8 is likewise explicitly host-zero and gates its only
+            // direct pre-ready branch observed in the boot consumer sweep.
+            let pre_ready_ok = mgr.initdata.g15_init_sequence.with(|raw, _inner| {
+                raw.terminator.value.0 == 0
+                    && raw.terminator.register_offset.0 == 0
+                    && raw.terminator.shift.0 == 0
+                    && raw.terminator.kind.0 == 0
+                    && raw.terminator.reserved.0 == 0
+            }) && mgr.initdata.g15_globals.with(|raw, _inner| {
+                raw.flags_000.0 == 0
+                    && raw.zero_004.0 == 0
+                    && raw.zero_008.0 == 0
+                    && raw.zero_00c.0 == 0
+                    && raw.zero_010.0 == 0
+                    && raw.zero_014.0 == 0
+                    && raw.zero_018.0 == 0
+                    && raw.unk_01c.0 == 0
+                    && raw.relaxed_cl_kill_timeout_020.0 == 3000
+                    && raw.frg_task_timeout_024.0 == 0
+                    && raw.accelerator_config_660_028.0 == 0
+                    && raw.accelerator_config_bit0_02c.0 == 1
+                    && raw.smart_idle_off_enabled_030.0 == 1
+                    && raw.zero_034.0 == 0
+                    && raw.constant_038.0 == 0x78
+                    && raw.cpms_window_size_03c.0 == 0
+                    && raw.cpms_tfca_size_040.0 == 0
+                    && raw.zero_044.0 == 0
+                    && raw.kick_channel_qos_arg2_048.0 == 0
+                    && raw.kick_channel_qos_arg1_04c.0 == 0
+                    && raw.unk_050 == 0xffff
+                    && raw.unk_052 == 0x28
+                    && raw.unk_054 == 0xffff
+                    && raw.zero_056.0 == 0
+                    && raw.low2_clear_05a.0 == 1
+                    && raw.cswitch_timer_multiplier_05e.0 == 1
+                    && raw.cdm_cswitch_mode_change_062.0 == 0
+                    && raw.command_submission_enabled_070.0 == 0
+                    && raw.zero_074.0 == 0
+                    && raw.gpu_max_power_078.0 == 4070
+                    && raw.power_interface_1_target_07c.0 == 100
+                    && raw.power_interface_2_target_080.0 == 100
+                    && raw.perf_state_cap_x100_08c.0 == 100
+                    && raw.performance_target_090.0 == 0
+                    && raw.performance_transfer_output_094.0 == 0
+                    && raw.performance_boost_min_util_098.0 == 0
+                    && raw.performance_boost_ce_step_09c.0 == 0
+                    && raw.performance_reset_iters_0a0.0 == 0
+                    && raw.performance_boost_min_util_valid_0a4 == 0
+                    && raw.conflict_scan_enable_26f == 0
+                    && raw.smart_idle_standby_timer_us_7a8.0 == 700
+                    && raw.smart_idle_prob_init_val_7ac.to_bits() == 1.0f32.to_bits()
+                    && raw.smart_idle_fn_hit_7b0.to_bits() == 0.8f32.to_bits()
+                    && raw.smart_idle_fi_hit_7b4.to_bits() == 0.2f32.to_bits()
+                    && raw.smart_idle_fn_miss_7b8.to_bits() == 0.9f32.to_bits()
+                    && raw.smart_idle_fi_miss_7bc.to_bits() == 0.1f32.to_bits()
+                    && raw.smart_idle_nei_hit_7c0.to_bits() == 0.25f32.to_bits()
+                    && raw.smart_idle_min_confidence_7c4.to_bits() == 0.7f32.to_bits()
+                    && raw.smart_idle_high_confidence_7c8.to_bits() == 0.9f32.to_bits()
+                    && raw.smart_idle_reset_iterations_7cc.0 == 6
+                    && raw.ut_engagement_enabled_7d0.0 == 1
+                    && raw.clvr_engagement_enabled_7d4.0 == 1
+                    && raw.gpu_keepalive_perf_mode_threshold_7d8.0 == 100
+                    && raw.gpu_keepalive_off_mode_threshold_7dc.0 == 100
+                    && raw.boot_patch_record_count_964.0 == 0
+                    && raw.boot_patch_count_zero_968.0 == 0
+                    && raw.display_pm_timestamp_96c.0 == 0
+                    && raw.display_pm_interval_974.0 == 0
+                    && raw.progress_check_interval_3d_97c.0 == 40
+                    && raw.progress_check_interval_ta_980.0 == 10
+                    && raw.progress_check_interval_cl_984.0 == 250
+                    && raw.unk_988.0 == 1
+                    && raw.unk_98c.0 == 1
+                    && raw.unk_990.0 == 100
+                    && raw.unk_994.0 == 1
+                    && raw.gpu_idle_off_delay_ms_9a0.0 == 2
+                    && raw.fender_idle_off_delay_ms_9a4.0 == 40
+                    && raw.fw_early_wake_timeout_ms_9a8.0 == 5
+                    && raw.gvdm_timer_interval_9ac.0 == 0
+                    && raw.cl_context_switch_timeout_9b0.0 == 0x28
+                    && raw.cl_kill_timeout_9b4.0 == 0x32
+                    && raw.zero_9b8.0 == 0
+                    && raw.cdm_backoff_timeout_9bc == 4
+                    && raw.table_selector_9dd.0 == 0
+                    && raw.zero_de5.0 == 0
+                    && raw.gpu_keepalive_override_de9.0 == 0
+                    && raw.gfxc_keepalive_override_ded.0 == 0
+                    && raw.gpu_keepalive_perf_mode_threshold_override_df1.0 == 0
+                    && raw.gpu_keepalive_off_mode_threshold_override_df5.0 == 0
+                    && raw.soft_fault_settings_df9.0 == 1
+            }) && mgr.initdata.g15_q21.with(|raw, _inner| {
+                raw.host_flags == 0
+                    && raw.banner_guard.load(Ordering::Relaxed) == 1
+                    && raw.busy.load(Ordering::Relaxed) == 0
+                    && raw.firmware_ready.load(Ordering::Relaxed) == 0
+                    && raw.power_state.load(Ordering::Relaxed) == 0
+            }) && mgr.initdata.g15_q23.with(|raw, _inner| {
+                raw.tuning_update_1d0 == 0
+                    && raw.host_zero_1e8.0 == 0
             });
 
             let tx_ring_ok = |r: &fw::initdata::raw::G15TxChannelRing| {
@@ -1105,12 +1211,13 @@ impl GpuManager::ver {
                 && expected_io_mapping_count == 13
                 && mgr.io_mappings.len() == expected_io_mapping_count;
 
-            if !(root_ok && q22_ok && wrapper_ok && bufmgr_ok && hwdatab_ok && mappings_ok) {
+            if !(root_ok && q22_ok && pre_ready_ok && wrapper_ok && bufmgr_ok && hwdatab_ok && mappings_ok) {
                 dev_err!(
                     dev.as_ref(),
-                    "T8122 G15 pre-RTKit manager validation failed: root={} q22={} wrapper={} bufmgr={} hwdatab={} mappings={}\n",
+                    "T8122 G15 pre-RTKit manager validation failed: root={} q22={} pre_ready={} wrapper={} bufmgr={} hwdatab={} mappings={}\n",
                     root_ok,
                     q22_ok,
+                    pre_ready_ok,
                     wrapper_ok,
                     bufmgr_ok,
                     hwdatab_ok,
@@ -1121,7 +1228,7 @@ impl GpuManager::ver {
 
             dev_info!(
                 dev.as_ref(),
-                "T8122 G15 pre-RTKit manager PASS (InitData {:#x}, wrapper {:#x}, q22 {:#x}, q22 ctl {:#x}/{:#x}; root + HwDataB GPTBAT/core/scalars/perf + 31 MMIO records/13 maps + G15 startup exact; dropping before RtKit::new/MSG_INIT\n",
+                "T8122 G15 pre-RTKit manager PASS (InitData {:#x}, wrapper {:#x}, q22 {:#x}, q22 ctl {:#x}/{:#x}; root + pre-ready q1/q4/q21/q23 gates + HwDataB GPTBAT/core/scalars/perf + 31 MMIO records/13 maps + G15 startup exact; dropping before RtKit::new/MSG_INIT\n",
                 initdata_va,
                 wrapper_va,
                 q22_va,
