@@ -897,6 +897,12 @@ impl GpuManager::ver {
             let q23_va = mgr.initdata.g15_q23.gpu_va().get();
             let q22_state_va = mgr.initdata.g15_cache_flush_state.gpu_va().get();
             let q22_ring_va = mgr.initdata.g15_cache_flush_ring.gpu_va().get();
+            let hwdata_a_va = mgr.initdata.runtime_pointers.hwdata_a.gpu_va().get();
+            let hwdata_b_va = mgr.initdata.runtime_pointers.hwdata_b.gpu_va().get();
+            let persistent_time_va = mgr.initdata.runtime_pointers.g15_persistent_time.gpu_va().get();
+            let hwds_va = mgr.initdata.runtime_pointers.g15_hwds_counters.gpu_va().get();
+            let pb_desc_va = mgr.initdata.runtime_pointers.g15_pb_desc_table.gpu_va().get();
+            let uma_desc_va = mgr.initdata.runtime_pointers.g15_uma_page_pool_desc_table.gpu_va().get();
 
             // Validate every populated qword in the exact 24-qword G15 root.
             // q2 is allocation-zero; q19/q20 are the trailing zero pad of the
@@ -949,7 +955,11 @@ impl GpuManager::ver {
             });
 
             let q22_ok = mgr.initdata.g15_q22.with(|raw, _inner| {
-                raw.shared_ptr_4568.0 == q22_state_va
+                // Root importer FUN_fffffc00000066dc snapshots q22 +0x008
+                // before firmware_ready. Apple clears both bootstrap words.
+                raw.host_zero_0000.0 == 0
+                    && raw.host_zero_0008.0 == 0
+                    && raw.shared_ptr_4568.0 == q22_state_va
                     && raw.shared_ptr_4570.0 == q22_ring_va
                     && raw.host_flag_45c4.0 == 1
                     && raw.kick_channel_qos_valid_c3c8.0 == 0
@@ -1068,12 +1078,38 @@ impl GpuManager::ver {
                     && r.ring.0 != 0
             };
 
+            let persistent_time_ok = mgr
+                .initdata
+                .runtime_pointers
+                .g15_persistent_time
+                .with(|raw, _inner| {
+                    raw.initialized.load(Ordering::Relaxed) == 0
+                        && raw.values.iter().all(|v| v.0 == 0)
+                        && raw.tail_84.0 == 0
+                });
+
             let wrapper_ok = mgr.initdata.runtime_pointers.with(|raw, _inner| {
                 let pipes_ok = raw.pipes.iter().all(|p| {
                     tx_ring_ok(&p.vtx) && tx_ring_ok(&p.frag) && tx_ring_ok(&p.comp)
                 });
 
-                pipes_ok
+                // Consumer-driven pre-ready wrapper invariants. The root importer
+                // binds q3 as this 0x490-byte object; nested boot helpers consume
+                // these fields before q21 +0x14 becomes firmware_ready=1.
+                // Read the packed GPU pointers exactly as firmware-visible qwords.
+                let wrapper_base = raw as *const _ as *const u8;
+                let ptr_000 = u64::from_le(unsafe {
+                    core::ptr::read_unaligned(wrapper_base.add(0x000) as *const u64)
+                });
+                let ptr_010 = u64::from_le(unsafe {
+                    core::ptr::read_unaligned(wrapper_base.add(0x010) as *const u64)
+                });
+
+                ptr_000 == hwdata_b_va
+                    && raw.g15_fwbrn_table.0 == 0
+                    && ptr_010 == persistent_time_va
+                    && persistent_time_ok
+                    && pipes_ok
                     && tx_ring_ok(&raw.device_control)
                     && raw.event.state.is_some()
                     && raw.event.ring.is_some()
@@ -1084,6 +1120,25 @@ impl GpuManager::ver {
                     && raw.stats.state.is_some()
                     && raw.stats.ring.is_some()
                     && raw.fwlog_buf.is_some()
+                    // FUN_fffffc000003da5c exits before touching FWLog backing
+                    // while this Apple-explicit bootstrap gate is zero.
+                    && raw.fwlog_enabled_230 == 0
+                    && raw.g15_hwds_counters.0 == hwds_va
+                    // FUN_fffffc000000f34c directly consumes +0x2b0 and +0x2c0.
+                    // The adjacent FW-VA aliases are exact host-image invariants;
+                    // convertGPUVAToFWVA() is identity on this G15 host.
+                    && raw.g15_pb_desc_addr.0 == pb_desc_va
+                    && raw.g15_pb_desc_fw_addr.0 == pb_desc_va
+                    && raw.g15_uma_page_pool_desc_addr.0 == uma_desc_va
+                    && raw.g15_uma_page_pool_desc_fw_addr.0 == uma_desc_va
+                    // FUN_fffffc000000f34c indexes wrapper[0x5a] == +0x2d0;
+                    // FUN_fffffc0000018864 directly reads +0x2d4.
+                    && raw.g15_usc_max_tgmem == 4
+                    && raw.g15_zero_2d4 == 0
+                    // FUN_fffffc0000006908 dereferences +0x441 as HwDataA.
+                    && raw.g15_ptr_441.0 == hwdata_a_va
+                    && raw.g15_zero_449.0 == 0
+                    && raw.g15_zero_451.0 == 0
             });
 
             let bufmgr_ok = mgr
