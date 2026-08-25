@@ -333,25 +333,36 @@ impl platform::Driver for AsahiDriver {
 
             dev_info!(
                 pdev.as_ref(),
-                "T8122 G15 PwrConfig PASS (14 OPPs, leak 1644/60, SRAM floor 790mV, max 21405mW); starting production new/init preflight\n"
+                "T8122 G15 PwrConfig PASS (14 OPPs, leak 1644/60, SRAM floor 790mV, max 21405mW); starting persistent manager/DRM checkpoint\n"
             );
 
+            // E015: transition from the bounded teardown checkpoint to the
+            // normal persistent manager/RTKit lifetime, but keep userspace
+            // completely below File::open() so no GPU-visible command path is
+            // reachable yet.
             regs::Resources::start_cpu(pdev)?;
-            let initdata_result = gpu::GpuManagerG15V14_7::production_init_preflight(&drm, &res, cfg);
-            let stop_result = regs::Resources::stop_cpu(pdev);
+            let gpu = gpu::GpuManagerG15V14_7::new(&drm, &res, cfg)?
+                as Arc<dyn gpu::GpuManager>;
 
-            if let Err(e) = initdata_result {
-                dev_err!(pdev.as_ref(), "T8122 G15 production init preflight failed: {:?}\n", e);
-                let _ = stop_result;
-                return Err(e);
+            let data = try_pin_init!(AsahiData {
+                gpu,
+                pdev: pdev.into(),
+                resources: res,
+            });
+
+            let ptr: *const AsahiData = &raw const **drm;
+            unsafe {
+                data.__pinned_init(ptr as *mut AsahiData)?;
             }
-            stop_result?;
+
+            (*drm).gpu.init()?;
+            drm::driver::Registration::new_foreign_owned(&drm, pdev.as_ref(), 0)?;
 
             dev_info!(
                 pdev.as_ref(),
-                "T8122 G15 production new/init + normal RX preflight PASS; ASC stopped; DRM registration and GPU work still blocked\n"
+                "T8122 G15 persistent RTKit + DRM registration PASS; all G15 DRM file opens blocked, GPU submissions unreachable\n"
             );
-            return Err(ENODEV);
+            return Ok(Self { drm });
         }
 
         unsafe { pdev.dma_set_mask_and_coherent(DmaMask::try_new(cfg.uat_oas)?)? };

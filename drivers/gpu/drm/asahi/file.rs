@@ -14,6 +14,7 @@ use crate::{
     buffer,
     driver,
     gem,
+    hw,
     mmu,
     module_parameters,
     queue,
@@ -231,6 +232,14 @@ impl drm::file::DriverFile for File {
         debug::update_debug_flags();
 
         let gpu = &device.gpu;
+        if gpu.get_cfg().gpu_gen == hw::GpuGen::G15 {
+            // E015 registration checkpoint: expose the DRM/render nodes while
+            // keeping every userspace entry point below open() unreachable.
+            // This guarantees no VM bind, queue, fwctl, doorbell, or GPU work
+            // can be initiated by userspace while persistent RTKit/RX lifetime
+            // is validated on J615.
+            return Err(ENODEV);
+        }
         let id = gpu.ids().file.next();
 
         mod_dev_dbg!(device, "[File {}]: DRM device opened\n", id);
