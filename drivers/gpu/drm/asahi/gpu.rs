@@ -522,6 +522,9 @@ impl GpuManager::ver {
         res: &regs::Resources,
         cfg: &'static hw::HwConfig,
     ) -> Result<Arc<GpuManager::ver>> {
+        #[ver(G == G15)]
+        let mgr = Self::build_validated_pre_rtkit(dev, res, cfg)?;
+        #[ver(G != G15)]
         let mgr = Self::build_pre_rtkit(dev, res, cfg)?;
         let mgr = Arc::from(mgr);
 
@@ -1563,6 +1566,121 @@ impl GpuManager::ver {
                     dev_err!(
                         dev.as_ref(),
                         "T8122 G15 first MSG_INIT preflight failed: {:?} (q21 busy={} ready={} power={}; EP20 RX doorbells={}; unknown={}; crashed={})\n",
+                        e,
+                        busy,
+                        ready,
+                        power_state,
+                        rx_doorbells,
+                        unknown,
+                        crashed
+                    );
+                    core::mem::drop(mgr);
+                    Err(e)
+                }
+            }
+        }
+    }
+
+    /// G15 production-bootstrap checkpoint: exercise the normal GpuManager
+    /// new() -> init() pair, but keep RTKit RX side effects telemetry-only and
+    /// destroy the manager before DRM registration or any GPU work is possible.
+    pub(crate) fn production_init_preflight(
+        dev: &AsahiDevice,
+        res: &regs::Resources,
+        cfg: &'static hw::HwConfig,
+    ) -> Result<()> {
+        #[ver(G != G15)]
+        {
+            let _ = (dev, res, cfg);
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            let mgr = Self::new(dev, res, cfg)?;
+            mgr.g15_init_preflight.store(true, Ordering::Relaxed);
+            mgr.g15_preflight_rx_doorbells.store(0, Ordering::Relaxed);
+            mgr.g15_preflight_unknown_messages.store(0, Ordering::Relaxed);
+
+            let probe_result = (|| -> Result<(u64, u64, u32, u32, u32)> {
+                let initdata_va = mgr.initdata.gpu_va().get();
+                let bootstrap_ok = mgr.initdata.g15_q21.with(|raw, _inner| {
+                    raw.banner_guard.load(Ordering::Relaxed) == 1
+                        && raw.busy.load(Ordering::Relaxed) == 0
+                        && raw.firmware_ready.load(Ordering::Relaxed) == 0
+                        && raw.power_state.load(Ordering::Relaxed) == 0
+                });
+                if !bootstrap_ok || mgr.crashed.load(Ordering::Relaxed) {
+                    return Err(EIO);
+                }
+
+                // Exercise the actual production initializer. Its G15 branch
+                // sends only EP20 MSG_INIT and waits for q21 firmware_ready.
+                GpuManager::init(mgr.as_ref())?;
+
+                // Bound the observation tail. EP21 is registered by firmware
+                // after ready, but this checkpoint submits no EP21 traffic.
+                fsleep(Delta::from_millis(20));
+
+                let (busy, ready, power_state) = mgr.initdata.g15_q21.with(|raw, _inner| {
+                    (
+                        raw.busy.load(Ordering::Relaxed),
+                        raw.firmware_ready.load(Ordering::Relaxed),
+                        raw.power_state.load(Ordering::Relaxed),
+                    )
+                });
+                let rx_doorbells = mgr
+                    .g15_preflight_rx_doorbells
+                    .load(Ordering::Relaxed);
+                let unknown = mgr
+                    .g15_preflight_unknown_messages
+                    .load(Ordering::Relaxed);
+
+                if ready != 1 || mgr.crashed.load(Ordering::Relaxed) || unknown != 0 {
+                    return Err(EIO);
+                }
+
+                Ok((initdata_va, rx_doorbells, busy, ready, power_state))
+            })();
+
+            // Always stop mailbox RX/release RTKit buffers before the manager
+            // and its UAT allocations disappear. The caller stops ASC next.
+            let rtkit = mgr.rtkit.lock().take();
+            core::mem::drop(rtkit);
+            mgr.g15_init_preflight.store(false, Ordering::Relaxed);
+
+            match probe_result {
+                Ok((initdata_va, rx_doorbells, busy, ready, power_state)) => {
+                    dev_info!(
+                        dev.as_ref(),
+                        "T8122 G15 production init PASS (InitData {:#x}; q21 busy={} ready={} power={}; EP20 RX doorbells={}; no EP21 TX/device-control/kick); RTKit destroyed\n",
+                        initdata_va,
+                        busy,
+                        ready,
+                        power_state,
+                        rx_doorbells
+                    );
+                    core::mem::drop(mgr);
+                    Ok(())
+                }
+                Err(e) => {
+                    let (busy, ready, power_state) = mgr.initdata.g15_q21.with(|raw, _inner| {
+                        (
+                            raw.busy.load(Ordering::Relaxed),
+                            raw.firmware_ready.load(Ordering::Relaxed),
+                            raw.power_state.load(Ordering::Relaxed),
+                        )
+                    });
+                    let rx_doorbells = mgr
+                        .g15_preflight_rx_doorbells
+                        .load(Ordering::Relaxed);
+                    let unknown = mgr
+                        .g15_preflight_unknown_messages
+                        .load(Ordering::Relaxed);
+                    let crashed = mgr.crashed.load(Ordering::Relaxed);
+                    dev_err!(
+                        dev.as_ref(),
+                        "T8122 G15 production init preflight failed: {:?} (q21 busy={} ready={} power={}; EP20 RX doorbells={}; unknown={}; crashed={})\n",
                         e,
                         busy,
                         ready,
