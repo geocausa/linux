@@ -232,14 +232,6 @@ impl drm::file::DriverFile for File {
         debug::update_debug_flags();
 
         let gpu = &device.gpu;
-        if gpu.get_cfg().gpu_gen == hw::GpuGen::G15 {
-            // E015 registration checkpoint: expose the DRM/render nodes while
-            // keeping every userspace entry point below open() unreachable.
-            // This guarantees no VM bind, queue, fwctl, doorbell, or GPU work
-            // can be initiated by userspace while persistent RTKit/RX lifetime
-            // is validated on J615.
-            return Err(ENODEV);
-        }
         let id = gpu.ids().file.next();
 
         mod_dev_dbg!(device, "[File {}]: DRM device opened\n", id);
@@ -255,6 +247,17 @@ impl drm::file::DriverFile for File {
 unsafe impl AnyBitPattern for uapi::drm_asahi_gem_bind_op {}
 
 impl File {
+    /// E016 discovery-only userspace gate for J615/G15. Opening the DRM file,
+    /// GET_PARAMS and GET_TIME are CPU/cached-state only; every Asahi ioctl
+    /// that can create/mutate GPU-visible state remains fail-closed.
+    fn reject_g15_mutation(device: &AsahiDevice) -> Result<()> {
+        if device.gpu.get_cfg().gpu_gen == hw::GpuGen::G15 {
+            Err(ENODEV)
+        } else {
+            Ok(())
+        }
+    }
+
     fn new(id: u64) -> impl PinInit<Self, Error> {
         unsafe {
             pin_init::pin_init_from_closure(move |slot: *mut Self| {
@@ -368,6 +371,7 @@ impl File {
         data: &mut uapi::drm_asahi_vm_create,
         file: &DrmFile,
     ) -> Result<u32> {
+        Self::reject_g15_mutation(device)?;
         let kernel_range = data.kernel_start..data.kernel_end;
 
         // Validate requested kernel range
@@ -500,10 +504,11 @@ impl File {
 
     /// IOCTL: vm_destroy: Destroy a `Vm`.
     pub(crate) fn vm_destroy(
-        _device: &AsahiDevice,
+        device: &AsahiDevice,
         data: &mut uapi::drm_asahi_vm_destroy,
         file: &DrmFile,
     ) -> Result<u32> {
+        Self::reject_g15_mutation(device)?;
         let vm = file.inner().vms().remove(data.vm_id as usize);
         if vm.is_none() {
             Err(ENOENT)
@@ -518,6 +523,7 @@ impl File {
         data: &mut uapi::drm_asahi_gem_create,
         file: &DrmFile,
     ) -> Result<u32> {
+        Self::reject_g15_mutation(device)?;
         mod_dev_dbg!(
             device,
             "[File {}]: IOCTL: gem_create size={:#x?}\n",
@@ -573,6 +579,7 @@ impl File {
         data: &mut uapi::drm_asahi_gem_mmap_offset,
         file: &DrmFile,
     ) -> Result<u32> {
+        Self::reject_g15_mutation(device)?;
         mod_dev_dbg!(
             device,
             "[File {}]: IOCTL: gem_mmap_offset handle={:#x?}\n",
@@ -596,6 +603,7 @@ impl File {
         data: &uapi::drm_asahi_vm_bind,
         file: &DrmFile,
     ) -> Result<u32> {
+        Self::reject_g15_mutation(device)?;
         mod_dev_dbg!(
             device,
             "[File {} VM {}]: IOCTL: vm_bind\n",
@@ -827,6 +835,7 @@ impl File {
         data: &mut uapi::drm_asahi_gem_bind_object,
         file: &DrmFile,
     ) -> Result<u32> {
+        Self::reject_g15_mutation(device)?;
         mod_dev_dbg!(
             device,
             "[File {} VM {}]: IOCTL: gem_bind_object op={:?} handle={:#x?} flags={:#x?} {:#x?}:{:#x?} object_handle={:#x?}\n",
@@ -954,6 +963,7 @@ impl File {
         data: &mut uapi::drm_asahi_queue_create,
         file: &DrmFile,
     ) -> Result<u32> {
+        Self::reject_g15_mutation(device)?;
         let file_id = file.inner().id;
 
         mod_dev_dbg!(
@@ -1009,10 +1019,11 @@ impl File {
 
     /// IOCTL: queue_destroy: Destroy a command submission queue.
     pub(crate) fn queue_destroy(
-        _device: &AsahiDevice,
+        device: &AsahiDevice,
         data: &mut uapi::drm_asahi_queue_destroy,
         file: &DrmFile,
     ) -> Result<u32> {
+        Self::reject_g15_mutation(device)?;
         // grab the queue so the xarray spinlock is dropped first
         let queue = file.inner().queues().remove(data.queue_id as usize);
         if queue.is_none() {
@@ -1028,6 +1039,7 @@ impl File {
         data: &mut uapi::drm_asahi_submit,
         file: &DrmFile,
     ) -> Result<u32> {
+        Self::reject_g15_mutation(device)?;
         debug::update_debug_flags();
 
         if data.flags != 0 || data.pad != 0 {
