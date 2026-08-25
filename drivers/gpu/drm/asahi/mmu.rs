@@ -1019,9 +1019,20 @@ struct G15SharedBank1State {
 }
 
 impl G15SharedBank1State {
-    fn new(cfg: &'static hw::HwConfig) -> Result<Self> {
+    fn new(cfg: &'static hw::HwConfig, ttb: PhysicalAddr) -> Result<Self> {
+        // Apple kernel-task/accelerator UAT owns both G15 banks locally, and
+        // normal clients import that accelerator-owned bank-1 state.  Range 7
+        // must therefore extend the existing slot-0/kernel TTB1 root rather
+        // than live in a second independently allocated root.  This view owns
+        // only the disjoint range-7 subtree; the physical root itself remains
+        // bootloader-owned through the kernel Vm.
         Ok(Self {
-            page_table: UatPageTable::new_global(G15_HW_UAT_IAS, cfg.uat_oas)?,
+            page_table: UatPageTable::new_with_ttb(
+                ttb,
+                G15_GART_RANGE7.clone(),
+                G15_HW_UAT_IAS,
+                cfg.uat_oas,
+            )?,
             mm: mm::Allocator::new(G15_GART_RANGE7.start, G15_GART_RANGE7.range(), ())?,
         })
     }
@@ -2247,10 +2258,7 @@ impl Uat {
 
     /// Creates the reference-counted inner data for a new `Uat` instance.
     #[inline(never)]
-    fn make_inner(
-        dev: &driver::AsahiDevice,
-        g15_shared_bank1: Option<G15SharedBank1State>,
-    ) -> Result<Arc<UatInner>> {
+    fn make_inner(dev: &driver::AsahiDevice) -> Result<Arc<UatInner>> {
         let handoff_rgn = Self::map_region(dev.as_ref(), c_str!("handoff"), HANDOFF_SIZE, true)?;
         let ttbs_rgn = Self::map_region(dev.as_ref(), c_str!("ttbs"), SLOTS_SIZE, true)?;
 
@@ -2269,7 +2277,7 @@ impl Uat {
                     UatShared {
                         kernel_ttb1: 0,
                         map_kernel_to_user: false,
-                        g15_shared_bank1,
+                        g15_shared_bank1: None,
                         handoff_rgn,
                         ttbs_rgn,
                     },
@@ -2289,15 +2297,11 @@ impl Uat {
     ) -> Result<Self> {
         dev_info!(dev.as_ref(), "MMU: Initializing...\n");
 
-        // G15 has two 42-bit bank-local roots. Normal clients allocate bank 0
-        // privately and import accelerator-shared bank 1. Current G13/G14
-        // configs are all 39-bit, so this allocation is unreachable there.
-        let g15_shared_bank1 = if cfg.uat_ias >= G15_HW_UAT_IAS {
-            Some(G15SharedBank1State::new(cfg)?)
-        } else {
-            None
-        };
-        let inner = Self::make_inner(dev, g15_shared_bank1)?;
+        // G15 has two 42-bit bank-local roots.  The accelerator/kernel UAT
+        // owns both roots; normal clients import its bank 1.  Construct the
+        // shared range-7 view only after the existing kernel TTB1 root is
+        // known, so slot 0 and every client use one physical bank-1 root.
+        let inner = Self::make_inner(dev)?;
 
         let of_node = dev.as_ref().of_node().ok_or(EINVAL)?;
         let res = of_node.reserved_mem_region_to_resource_byname(c_str!("pagetables"))?;
@@ -2312,6 +2316,15 @@ impl Uat {
         dev_info!(dev.as_ref(), "MMU: Creating kernel page tables\n");
         let kernel_lower_vm = Vm::new(dev, inner.clone(), IOVA_USER_RANGE, cfg, None, 1)?;
         let kernel_vm = Vm::new(dev, inner.clone(), IOVA_KERN_RANGE, cfg, Some(ttb1), 0)?;
+
+        // On G15, range 7 and the established high firmware/kernel mappings
+        // are separate subtrees of the same accelerator-owned bank-1 root.
+        // E024 proved that a second root leaves the firmware's global q22
+        // consumer unmapped even when client GPTBAT publication succeeds.
+        if cfg.uat_ias >= G15_HW_UAT_IAS {
+            let bank1 = G15SharedBank1State::new(cfg, kernel_vm.ttb())?;
+            inner.lock().g15_shared_bank1 = Some(bank1);
+        }
 
         dev_info!(dev.as_ref(), "MMU: Kernel page tables created\n");
 
