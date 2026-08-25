@@ -210,7 +210,21 @@ pub(crate) enum DeviceControlMsg {
         __pad: Pad<{ DEVICECONTROL_SZ::ver - 0x4 }>,
     },
     Unk10(Array<DEVICECONTROL_SZ::ver, u8>),
+    #[ver(G != G15)]
     Unk11(Array<DEVICECONTROL_SZ::ver, u8>),
+    // G15 native context/scheduler-resource retirement. Apple constructs this
+    // in AGXArmFirmware::submitReleaseResource() and firmware consumes opcode
+    // 0x11 with the unaligned context pointer at +0x0c.
+    #[ver(G == G15)]
+    ReleaseResource {
+        unk_4: u32,
+        ctx_27: u8,
+        ctx_0: u8,
+        ctx_1: u8,
+        ctx_4: u8,
+        gpu_context: Option<GpuWeakPointer<super::workqueue::GpuContextData>>,
+        __pad: Pad<{ DEVICECONTROL_SZ::ver - 0x10 }>,
+    },
     Unk12(Array<DEVICECONTROL_SZ::ver, u8>),
     Unk13(Array<DEVICECONTROL_SZ::ver, u8>),
     Unk14(Array<DEVICECONTROL_SZ::ver, u8>), // Init?

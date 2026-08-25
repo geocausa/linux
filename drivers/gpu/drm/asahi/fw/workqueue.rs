@@ -97,6 +97,44 @@ pub(crate) mod raw {
         }
     }
 
+    impl GpuContextData {
+        /// Exact G15 scheduler/context resource bootstrap reconstructed from
+        /// AGXCommandQueue::init(). The G15 firmware-visible object is 0x38
+        /// bytes; this shared raw type retains the inherited 0x40 allocation
+        /// size for older generations, but the first 0x38 bytes match Apple.
+        pub(crate) fn g15() -> Self {
+            // Apple zeroes exactly 0x38 bytes, then writes:
+            //   +0x00/+0x01 = 0xff, +0x05 = 1, +0x22 = 0xff,
+            //   +0x23..+0x26 = 0, +0x27 = AGXShared+0x100 = 2.
+            let mut s = Self {
+                unk_0: 0xff,
+                unk_1: 0xff,
+                unk_2: Default::default(),
+                unk_4: 0,
+                unk_5: 1,
+                unk_6: Default::default(),
+                unk_1e: 0,
+                unk_1f: 0,
+                unk_20: Default::default(),
+                unk_23: 0,
+                unk_24: Default::default(),
+            };
+            s.unk_20[2] = 0xff; // +0x22
+            s.unk_24[3] = 2; // +0x27
+            s
+        }
+
+        /// Fields consumed by G15 DeviceControl opcode 0x11
+        /// (AGXArmFirmware::submitReleaseResource()).
+        pub(crate) fn g15_release_resource_fields(&self) -> (u8, u8, u8, u8) {
+            (self.unk_24[3], self.unk_0, self.unk_1, self.unk_4)
+        }
+    }
+
+    const _: [(); 0x40] = [(); core::mem::size_of::<GpuContextData>()];
+    const _: [(); 0x20] = [(); core::mem::offset_of!(GpuContextData, unk_20)];
+    const _: [(); 0x24] = [(); core::mem::offset_of!(GpuContextData, unk_24)];
+
     #[derive(Debug)]
     #[repr(C)]
     pub(crate) struct RingState {

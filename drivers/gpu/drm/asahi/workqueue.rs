@@ -28,6 +28,7 @@ use crate::{
     event,
     fw,
     gpu,
+    hw,
     regs, //
 };
 use core::any::Any;
@@ -108,12 +109,19 @@ impl GpuContext {
         alloc: &mut gpu::KernelAllocators,
         buffer: Arc<dyn core::any::Any + Send + Sync>,
     ) -> Result<GpuContext> {
+        let is_g15 = dev.gpu.get_cfg().gpu_gen == hw::GpuGen::G15;
         Ok(GpuContext {
             dev: dev.into(),
             data: Some(KBox::new(
                 alloc.shared.new_object(
                     fw::workqueue::GpuContextData { _buffer: buffer },
-                    |_inner| Default::default(),
+                    move |_inner| {
+                        if is_g15 {
+                            fw::workqueue::raw::GpuContextData::g15()
+                        } else {
+                            Default::default()
+                        }
+                    },
                 )?,
                 GFP_KERNEL,
             )?),

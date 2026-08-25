@@ -2345,25 +2345,41 @@ impl GpuManager::ver {
         let (garbage_count, _) = guard.private.garbage();
         let (garbage_count_gpuro, _) = guard.gpu_ro.garbage();
 
-        let dc = context.with(
-            |raw, _inner| fw::channels::DeviceControlMsg::ver::DestroyContext {
-                unk_4: 0,
-                ctx_23: raw.unk_23,
-                #[ver(V < V13_3)]
-                __pad0: Default::default(),
-                unk_c: U32(0),
-                unk_10: U32(0),
-                ctx_0: raw.unk_0,
-                ctx_1: raw.unk_1,
-                ctx_4: raw.unk_4,
-                #[ver(V < V13_3)]
-                __pad1: Default::default(),
-                #[ver(V < V13_3)]
-                unk_18: 0,
-                gpu_context: Some(context.weak_pointer()),
-                __pad2: Default::default(),
-            },
-        );
+        let dc = context.with(|raw, _inner| {
+            #[ver(G == G15)]
+            {
+                let (ctx_27, ctx_0, ctx_1, ctx_4) = raw.g15_release_resource_fields();
+                fw::channels::DeviceControlMsg::ver::ReleaseResource {
+                    unk_4: 0,
+                    ctx_27,
+                    ctx_0,
+                    ctx_1,
+                    ctx_4,
+                    gpu_context: Some(context.weak_pointer()),
+                    __pad: Default::default(),
+                }
+            }
+            #[ver(G != G15)]
+            {
+                fw::channels::DeviceControlMsg::ver::DestroyContext {
+                    unk_4: 0,
+                    ctx_23: raw.unk_23,
+                    #[ver(V < V13_3)]
+                    __pad0: Default::default(),
+                    unk_c: U32(0),
+                    unk_10: U32(0),
+                    ctx_0: raw.unk_0,
+                    ctx_1: raw.unk_1,
+                    ctx_4: raw.unk_4,
+                    #[ver(V < V13_3)]
+                    __pad1: Default::default(),
+                    #[ver(V < V13_3)]
+                    unk_18: 0,
+                    gpu_context: Some(context.weak_pointer()),
+                    __pad2: Default::default(),
+                }
+            }
+        });
 
         mod_dev_dbg!(self.dev, "Context invalidation command: {:?}\n", &dc);
 
@@ -2635,40 +2651,52 @@ impl GpuManager for GpuManager::ver {
             return Err(ENODEV);
         }
 
-        // ctx_0 == 0xff or ctx_1 == 0xff cause no effect on context,
-        // but this command does a full cache flush too, so abuse it
-        // for that.
-
-        let dc = fw::channels::DeviceControlMsg::ver::DestroyContext {
-            unk_4: 0,
-
-            ctx_23: 0,
-            #[ver(V < V13_3)]
-            __pad0: Default::default(),
-            unk_c: U32(0),
-            unk_10: U32(0),
-            ctx_0: 0xff,
-            ctx_1: 0xff,
-            ctx_4: 0,
-            #[ver(V < V13_3)]
-            __pad1: Default::default(),
-            #[ver(V < V13_3)]
-            unk_18: 0,
-            gpu_context: None,
-            __pad2: Default::default(),
-        };
-
-        let mut txch = self.tx_channels.lock();
-
-        let token = txch.device_control.send(&dc);
+        #[ver(G == G15)]
         {
-            let mut guard = self.rtkit.lock();
-            let rtk = guard.as_mut().as_pin_mut().unwrap();
-            rtk.send_message(EP_DOORBELL, MSG_TX_DOORBELL | DOORBELL_DEVCTRL)?;
+            // The inherited cache-flush trick used DeviceControl opcode 0x17
+            // with invalid context IDs. RTKit-2419 G15 has a different 0x38-byte
+            // device-control ABI and native context retirement is opcode 0x11
+            // ReleaseResource. Do not emit 0x17 on G15 until an exact standalone
+            // cache-flush producer is mechanically identified.
+            return Err(ENODEV);
         }
 
-        txch.device_control.wait_for(token)?;
-        Ok(())
+        #[ver(G != G15)]
+        {
+            // ctx_0 == 0xff or ctx_1 == 0xff cause no effect on context,
+            // but this command does a full cache flush too, so abuse it
+            // for that.
+            let dc = fw::channels::DeviceControlMsg::ver::DestroyContext {
+                unk_4: 0,
+
+                ctx_23: 0,
+                #[ver(V < V13_3)]
+                __pad0: Default::default(),
+                unk_c: U32(0),
+                unk_10: U32(0),
+                ctx_0: 0xff,
+                ctx_1: 0xff,
+                ctx_4: 0,
+                #[ver(V < V13_3)]
+                __pad1: Default::default(),
+                #[ver(V < V13_3)]
+                unk_18: 0,
+                gpu_context: None,
+                __pad2: Default::default(),
+            };
+
+            let mut txch = self.tx_channels.lock();
+
+            let token = txch.device_control.send(&dc);
+            {
+                let mut guard = self.rtkit.lock();
+                let rtk = guard.as_mut().as_pin_mut().unwrap();
+                rtk.send_message(EP_DOORBELL, MSG_TX_DOORBELL | DOORBELL_DEVCTRL)?;
+            }
+
+            txch.device_control.wait_for(token)?;
+            Ok(())
+        }
     }
 
     fn ids(&self) -> &SequenceIDs {
@@ -2882,12 +2910,12 @@ impl GpuManager for GpuManager::ver {
     fn free_context(&self, ctx: KBox<fw::types::GpuObject<fw::workqueue::GpuContextData>>) {
         #[ver(G == G15)]
         {
-            // At the current G15 userspace boundary SUBMIT is rejected before
-            // Queue::submit(), so queue-owned GpuContexts can never be published
-            // to firmware. Do not enqueue these local-only contexts for the
-            // inherited deferred DestroyContext path: the next alloc() would
-            // otherwise ring legacy DEVCTRL (EP21 0x83...11), which is not a
-            // valid G15 context-invalidation transport.
+            // At the current G15 userspace boundary the only allowed SUBMIT
+            // shape stops after VM publication, so queue-owned GpuContexts can
+            // never be published to firmware. Keep these passive contexts local.
+            // invalidate_context() now knows the proven native G15 opcode 0x11
+            // ReleaseResource packet, but it must only be used after explicit
+            // QueueInfo/context publication tracking is added.
             core::mem::drop(ctx);
         }
 
