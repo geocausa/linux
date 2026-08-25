@@ -360,7 +360,7 @@ impl platform::Driver for AsahiDriver {
 
             dev_info!(
                 pdev.as_ref(),
-                "T8122 G15 persistent RTKit + DRM registration PASS; all G15 DRM file opens blocked, GPU submissions unreachable\n"
+                "T8122 G15 persistent RTKit + DRM registration PASS; userspace discovery/VM lifecycle enabled, GPU mappings/queues/submissions blocked\n"
             );
             return Ok(Self { drm });
         }
