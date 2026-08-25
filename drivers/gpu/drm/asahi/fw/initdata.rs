@@ -1914,6 +1914,12 @@ pub(crate) mod raw {
     // from V13.5 +0x960 to the exact G15 host/firmware offset +0xa20.
     const _: [(); 0x28] = [(); core::mem::offset_of!(HwDataBG15V14_7, timestamp_area_base)];
     const _: [(); 0xa20] = [(); core::mem::offset_of!(HwDataBG15V14_7, sgx_sram_ptr)];
+    // J615/G15G firmware imports this four-word chip identity block during
+    // first init; keep the exact host/firmware offsets mechanically pinned.
+    const _: [(); 0xa28] = [(); core::mem::offset_of!(HwDataBG15V14_7, chip_id)];
+    const _: [(); 0xa2c] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_454)];
+    const _: [(); 0xa30] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_458)];
+    const _: [(); 0xa34] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_45c)];
     const _: [(); 0xa6c] = [(); core::mem::offset_of!(HwDataBG15V14_7, power_sample_period)];
     const _: [(); 0x1860] = [(); core::mem::size_of::<HwDataBG15V14_7>()];
     const _: [(); 0x183c] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_b68)];

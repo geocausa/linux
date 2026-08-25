@@ -613,7 +613,14 @@ impl<'a> InitDataBuilder::ver<'a> {
                     // TODO: yuv matrices
                     chip_id: cfg.chip_id,
                     unk_454: cfg.db.unk_454,
+                    #[ver(G != G15)]
                     unk_458: 0x1,
+                    #[ver(G == G15)]
+                    // Exact J615/G15G chip-info revision-low word at HwDataB +0xa30.
+                    unk_458: 0x0,
+                    #[ver(G == G15)]
+                    // Exact J615/G15G process-node word at HwDataB +0xa34.
+                    unk_45c: 0x4,
                     unk_460: 0x1,
                     unk_464: 0x1,
                     unk_468: 0x1,
