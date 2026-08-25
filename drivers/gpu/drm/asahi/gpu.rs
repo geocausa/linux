@@ -2243,6 +2243,13 @@ impl GpuManager for GpuManager::ver {
     }
 
     fn init(&self) -> Result {
+        // Pre-G15 firmware expects a legacy device-control Initialize record as
+        // part of startup. Exact RTKit-2419 G15 host/firmware evidence proves
+        // there is no corresponding boot-time device-control producer: the G15
+        // 0x38-byte ring is used only for real runtime commands, and opcode 0x1a
+        // carries a non-null object pointer. Never enqueue the inherited zeroed
+        // Initialize record on G15.
+        #[ver(G != G15)]
         self.tx_channels.lock().device_control.send(
             &fw::channels::DeviceControlMsg::ver::Initialize(Default::default()),
         );
@@ -2256,11 +2263,39 @@ impl GpuManager for GpuManager::ver {
         rtk.as_mut().start_endpoint(EP_DOORBELL)?;
         rtk.as_mut()
             .send_message(EP_FIRMWARE, MSG_INIT | (initdata & INIT_DATA_MASK))?;
+        #[ver(G != G15)]
         rtk.as_mut()
             .send_message(EP_DOORBELL, MSG_TX_DOORBELL | DOORBELL_DEVCTRL)?;
         core::mem::drop(guard);
 
+        #[ver(G != G15)]
         self.kick_firmware()?;
+
+        #[ver(G == G15)]
+        {
+            // J615/RTKit-2419 reaches its first stable bootstrap boundary by
+            // consuming MSG_INIT and publishing q21.firmware_ready. EP21 is
+            // registered by firmware only after this transition, so neither a
+            // DEVCTRL doorbell nor an unconditional KICKFW is part of G15 boot.
+            let start = Instant::<Monotonic>::now();
+            const READY_TIMEOUT: Delta = Delta::from_millis(1000);
+            loop {
+                if self.crashed.load(Ordering::Relaxed) {
+                    return Err(EIO);
+                }
+                let ready = self.initdata.g15_q21.with(|raw, _inner| {
+                    raw.firmware_ready.load(Ordering::Relaxed)
+                });
+                if ready == 1 {
+                    break;
+                }
+                if start.elapsed() >= READY_TIMEOUT {
+                    return Err(ETIMEDOUT);
+                }
+                fsleep(Delta::from_millis(1));
+            }
+        }
+
         Ok(())
     }
 
