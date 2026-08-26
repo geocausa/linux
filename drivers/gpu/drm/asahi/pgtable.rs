@@ -251,7 +251,7 @@ impl Prot {
         Self { memattr, ..*self }
     }
 
-    const fn as_pte(&self) -> u64 {
+    pub(crate) const fn as_pte(&self) -> u64 {
         (self.ap as u64) << UAT_AP_SHIFT
             | (self.high_bits as u64) << UAT_HIGH_BITS_SHIFT
             | (self.memattr as u64) << UAT_MEMATTR_SHIFT

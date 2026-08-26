@@ -229,13 +229,13 @@ impl platform::Driver for AsahiDriver {
             regs::Resources::stop_cpu(pdev)?;
             dev_info!(pdev.as_ref(), "T8122 G15 ASC stopped after UAT preflight\n");
 
-            // E028 is deliberately narrower than the persistent runtime path:
-            // validate one reversible range-7 leaf PTE beneath the E027 L3
-            // tables, then stop with ASC off. InitData/RTKit/DRM, q22
-            // notification, QueueInfo publication, and GPU work stay unreachable.
+            // E029 is deliberately still below the persistent runtime path:
+            // exercise the owned shared-bank1 backend through its real
+            // alloc/map/unmap entry points, then tear the UAT down with ASC off.
+            // InitData/RTKit/DRM/q22/QueueInfo/GPU work remain unreachable.
             dev_info!(
                 pdev.as_ref(),
-                "T8122 G15 E028 range-7 leaf PTE preflight PASS; persistent manager/RTKit/DRM blocked\n"
+                "T8122 G15 E029 shared bank-1 backend preflight PASS; persistent manager/RTKit/DRM blocked\n"
             );
             return Err(ENODEV);
 
