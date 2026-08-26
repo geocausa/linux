@@ -1122,31 +1122,21 @@ impl G15SharedBank1PageTable {
         self.ttb
     }
 
-    /// E027-only bounded mutation proof for the firmware-owned range-7 L2.
+    /// E028-only bounded leaf-PTE proof beneath the firmware-owned range-7 L2.
     ///
-    /// Apple AGXUnifiedAddressTranslator::encodePCEFlags() returns literal 3,
-    /// so newly allocated L3 tables are published as `phys | 3`.  The firmware
-    /// bootstrap root[2] happens to carry AF as `phys | 0x403`; that stronger
-    /// root encoding is not the host child-table ABI.
-    fn e027_preflight_leaf_tables(&mut self, dev: &driver::AsahiDevice) -> Result {
+    /// The matching AGX host returns literal 3 from encodePCEFlags(), and its
+    /// range-7 compact flag 0x007 encodes to exact leaf bits
+    /// 0x00c0000000000447. No firmware consumer is started in this checkpoint.
+    fn e028_preflight_leaf_mapping(&mut self, dev: &driver::AsahiDevice) -> Result {
         const DESC_BITS: u64 = 0x3;
+        const RANGE7_LEAF_BITS: u64 = 0x00c0_0000_0000_0447;
         const L3_QWORDS: usize = UAT_PGSZ / core::mem::size_of::<u64>();
 
-        // Allocate and fully validate all backing pages before the first write
-        // into the firmware-owned shared-L2 carveout.
-        let mut leaves: KVec<Owned<Page>> =
-            KVec::with_capacity(Self::RANGE7_L2_ENTRIES, GFP_KERNEL)?;
-        let mut desc = [0u64; Self::RANGE7_L2_ENTRIES];
-        for idx in 0..Self::RANGE7_L2_ENTRIES {
-            let page = Page::alloc_page(GFP_KERNEL | __GFP_ZERO)?;
-            let phys = page.phys();
-            if phys & UAT_PGMSK as u64 != 0 {
-                return Err(EIO);
-            }
-            let zero = page.with_page_mapped(|ptr| {
+        let page_is_zero = |page: &Page| {
+            page.with_page_mapped(|ptr| {
                 for q in 0..L3_QWORDS {
-                    // SAFETY: with_page_mapped supplies a mapping of the full
-                    // 16-KiB page and q stays within that mapping.
+                    // SAFETY: with_page_mapped supplies the complete 16-KiB
+                    // backing and q is bounded by the page qword count.
                     let v = unsafe {
                         core::ptr::read_volatile(
                             ptr.add(q * core::mem::size_of::<u64>()).cast::<u64>(),
@@ -1157,16 +1147,33 @@ impl G15SharedBank1PageTable {
                     }
                 }
                 true
-            });
-            if !zero {
-                dev_err!(dev.as_ref(), "MMU: E027 L3 page {} is not zeroed\n", idx);
+            })
+        };
+
+        // Allocate and validate every Linux-owned object before touching the
+        // firmware carveout, so allocation failure cannot leave a descriptor.
+        let mut leaves: KVec<Owned<Page>> =
+            KVec::with_capacity(Self::RANGE7_L2_ENTRIES, GFP_KERNEL)?;
+        let mut desc = [0u64; Self::RANGE7_L2_ENTRIES];
+        for idx in 0..Self::RANGE7_L2_ENTRIES {
+            let page = Page::alloc_page(GFP_KERNEL | __GFP_ZERO)?;
+            let phys = page.phys();
+            if phys & UAT_PGMSK as u64 != 0 || !page_is_zero(&page) {
+                dev_err!(dev.as_ref(), "MMU: E028 invalid L3 page {}\n", idx);
                 return Err(EIO);
             }
             desc[idx] = phys | DESC_BITS;
             leaves.push(page, GFP_KERNEL)?;
         }
+        let data = Page::alloc_page(GFP_KERNEL | __GFP_ZERO)?;
+        let data_phys = data.phys();
+        if data_phys & UAT_PGMSK as u64 != 0 || !page_is_zero(&data) {
+            dev_err!(dev.as_ref(), "MMU: E028 invalid range-7 data page\n");
+            return Err(EIO);
+        }
+        let leaf_expected = data_phys | RANGE7_LEAF_BITS;
 
-        // Recheck the ownership boundary immediately before publication.
+        // Recheck E026/E027 ownership immediately before mutation.
         for idx in 0..Self::RANGE7_L2_ENTRIES {
             let pte = unsafe {
                 core::ptr::read_volatile(
@@ -1179,7 +1186,7 @@ impl G15SharedBank1PageTable {
             if pte != 0 {
                 dev_err!(
                     dev.as_ref(),
-                    "MMU: E027 shared-L2[{}] changed before publication: {:#x}\n",
+                    "MMU: E028 shared-L2[{}] changed before publication: {:#x}\n",
                     idx,
                     pte
                 );
@@ -1188,8 +1195,8 @@ impl G15SharedBank1PageTable {
         }
 
         for idx in 0..Self::RANGE7_L2_ENTRIES {
-            // SAFETY: E026 proved these six qwords are the empty range-7 slots
-            // in the explicitly mapped firmware-owned shared-L2 carveout.
+            // SAFETY: E026 proved these are exactly the six empty range-7
+            // shared-L2 slots and E027 live-proved this descriptor operation.
             unsafe {
                 core::ptr::write_volatile(
                     self._shared_l2
@@ -1218,7 +1225,7 @@ impl G15SharedBank1PageTable {
                 publish_ok = false;
                 dev_err!(
                     dev.as_ref(),
-                    "MMU: E027 shared-L2[{}] descriptor mismatch: got={:#x} expected={:#x}\n",
+                    "MMU: E028 shared-L2[{}] descriptor mismatch: got={:#x} expected={:#x}\n",
                     idx,
                     pte,
                     desc[idx]
@@ -1226,8 +1233,47 @@ impl G15SharedBank1PageTable {
             }
         }
 
-        // Teardown is deliberately compare-before-clear. If anything has
-        // replaced one of our descriptors, do not clobber the new value.
+        // Range-7 starts at bank-local top index 2, L2 index 0, L3 index 0.
+        // Publish exactly one data PTE; nothing points at this VA in firmware.
+        leaves[0].with_page_mapped(|ptr| unsafe {
+            core::ptr::write_volatile(ptr.cast::<u64>(), leaf_expected)
+        });
+        fence(Ordering::SeqCst);
+        mem::tlbi_all();
+        mem::sync();
+        let leaf_published = leaves[0].with_page_mapped(|ptr| unsafe {
+            core::ptr::read_volatile(ptr.cast::<u64>())
+        });
+        let leaf_publish_ok = leaf_published == leaf_expected;
+        if !leaf_publish_ok {
+            dev_err!(
+                dev.as_ref(),
+                "MMU: E028 range-7 leaf mismatch: got={:#x} expected={:#x}\n",
+                leaf_published,
+                leaf_expected
+            );
+        }
+
+        // Clear the leaf first, invalidate, and prove the L3 is detached from
+        // data before removing its parent descriptor.
+        leaves[0].with_page_mapped(|ptr| unsafe {
+            if core::ptr::read_volatile(ptr.cast::<u64>()) == leaf_expected {
+                core::ptr::write_volatile(ptr.cast::<u64>(), 0);
+            }
+        });
+        fence(Ordering::SeqCst);
+        mem::tlbi_all();
+        mem::sync();
+        let leaf_cleared = leaves[0].with_page_mapped(|ptr| unsafe {
+            core::ptr::read_volatile(ptr.cast::<u64>()) == 0
+        });
+        if !leaf_cleared {
+            dev_err!(dev.as_ref(), "MMU: E028 range-7 leaf failed to clear\n");
+        }
+
+        // Parent teardown remains compare-before-clear so an unexpected writer
+        // cannot be clobbered. The page owners are released only after every
+        // shared-L2 slot is proven back at the E026 zero baseline.
         for idx in 0..Self::RANGE7_L2_ENTRIES {
             let slot = unsafe {
                 self._shared_l2
@@ -1258,7 +1304,7 @@ impl G15SharedBank1PageTable {
                 clear_ok = false;
                 dev_err!(
                     dev.as_ref(),
-                    "MMU: E027 shared-L2[{}] failed to return to zero: {:#x}\n",
+                    "MMU: E028 shared-L2[{}] failed to return to zero: {:#x}\n",
                     idx,
                     pte
                 );
@@ -1266,18 +1312,19 @@ impl G15SharedBank1PageTable {
         }
 
         if !clear_ok {
-            // A nonzero shared descriptor may still point at one of these
-            // Linux pages. Retain all six until reboot rather than risk UAF.
+            // A parent may still reference an L3, which may still reference the
+            // data page. Keep all Linux ownership alive until reboot.
+            core::mem::forget(data);
             core::mem::forget(leaves);
             return Err(EIO);
         }
-        if !publish_ok {
+        if !(publish_ok && leaf_publish_ok && leaf_cleared) {
             return Err(EIO);
         }
 
         dev_info!(
             dev.as_ref(),
-            "MMU: G15 E027 range-7 L3 publication PASS (6 x 16KiB, descriptor phys|0x3, clean teardown)\n"
+            "MMU: G15 E028 range-7 leaf PTE PASS (VA 0xfffffc2000000000, bits 0x00c0000000000447, clean teardown)\n"
         );
         Ok(())
     }
@@ -2639,9 +2686,9 @@ impl Uat {
         if cfg.uat_ias >= G15_HW_UAT_IAS {
             core::mem::drop(inner);
             let mut bank1 = G15SharedBank1State::new(dev, cfg, ttb1)?;
-            // E027 mutates only the six proven-empty range-7 child slots, then
-            // restores them to zero before any InitData/RTKit path is reachable.
-            bank1.page_table.e027_preflight_leaf_tables(dev)?;
+            // E028 adds one exact range-7 leaf below the E027 child tables, then
+            // restores leaf and parent slots before any InitData/RTKit path.
+            bank1.page_table.e028_preflight_leaf_mapping(dev)?;
             inner = uat.inner.lock();
             inner.g15_shared_bank1 = Some(bank1);
         }
