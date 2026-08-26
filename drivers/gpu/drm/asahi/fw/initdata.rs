@@ -1136,6 +1136,13 @@ pub(crate) mod raw {
     no_debug!(HwDataA::ver);
 
     const _: [(); 0x4360] = [(); core::mem::size_of::<HwDataAG15V14_7>()];
+    // J615 G15 MTR state lives inside the opaque +0x1640 block. Keep the
+    // absolute producer/consumer offsets mechanically tied to this layout.
+    const _: [(); 0x1a94] = [(); core::mem::offset_of!(HwDataAG15V14_7, unk_1640)];
+    const _: [(); 0x1a98] =
+        [(); core::mem::offset_of!(HwDataAG15V14_7, unk_1640) + 0x04];
+    const _: [(); 0x1aa4] =
+        [(); core::mem::offset_of!(HwDataAG15V14_7, unk_1640) + 0x10];
     const _: [(); 0x3a94] = [(); core::mem::offset_of!(HwDataAG15V14_7, unk_3640)];
     const _: [(); 0x3a9c] = [(); core::mem::offset_of!(HwDataAG15V14_7, g15_pretail_3a9c)];
     const _: [(); 0x421c] = [(); core::mem::offset_of!(HwDataAG15V14_7, g15_tail_421c)];

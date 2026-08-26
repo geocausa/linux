@@ -498,6 +498,48 @@ impl<'a> InitDataBuilder::ver<'a> {
                     ..Zeroable::init_zeroed()
                 })
                 .chain(|raw| {
+                    #[ver(G == G15)]
+                    {
+                        // J615/T8122 MTR sensor topology imported by
+                        // AGXArmFirmware::initPowerAndPerformanceData(). Apple's
+                        // MtrPolynomGFX records select sensors 3, 6, 8, 9, 11,
+                        // and 14, so accelerator +0x1a08 and HwDataA +0x1a98
+                        // contain the exact bitmap 0x4b48. Firmware's MTR alarm
+                        // handler treats a zero bitmap as fatal before it can
+                        // match/acknowledge the hardware alarm.
+                        const G15_MTR_SENSOR_MASK: u64 = 0x4b48;
+                        const G15_MTR_POLYNOMS: [(usize, [u32; 4]); 6] = [
+                            (3, [0x0000_860c, 0x0000_eed1, 0x01ff_f024, 0x01ff_fc00]),
+                            (6, [0x0000_850a, 0x0000_ef64, 0x01ff_f00e, 0x01ff_fbf8]),
+                            (8, [0x0000_862f, 0x0000_efe1, 0x01ff_effe, 0x01ff_fbf2]),
+                            (9, [0x0000_85c2, 0x0000_f00d, 0x01ff_eff8, 0x01ff_fbf0]),
+                            (11, [0x0000_8448, 0x0000_f00d, 0x01ff_eff8, 0x01ff_fbf0]),
+                            (14, [0x0000_84ee, 0x0000_efbc, 0x01ff_f008, 0x01ff_fbf4]),
+                        ];
+
+                        // In the generated G15 layout `unk_1640` begins at
+                        // HwDataA +0x1a94. Apple lays out the MTR bitmap at
+                        // +0x1a98, a second bitmap word at +0x1aa0
+                        // (zero on J615), then one 0x78-byte sensor record from
+                        // +0x1aa4. Each J615 property carries four u32 values;
+                        // the optional word at record +0x58 stays allocation-zero.
+                        for (i, byte) in G15_MTR_SENSOR_MASK.to_le_bytes().iter().enumerate() {
+                            raw.unk_1640[0x04 + i] = *byte;
+                        }
+                        for (sensor, coeffs) in G15_MTR_POLYNOMS {
+                            let base = 0x10 + sensor * 0x78;
+                            for (i, byte) in 4u32.to_le_bytes().iter().enumerate() {
+                                raw.unk_1640[base + i] = *byte;
+                            }
+                            for (word_index, word) in coeffs.iter().enumerate() {
+                                let off = base + 4 + word_index * 4;
+                                for (i, byte) in word.to_le_bytes().iter().enumerate() {
+                                    raw.unk_1640[off + i] = *byte;
+                                }
+                            }
+                        }
+                    }
+
                     for i in 0..self.dyncfg.pwr.perf_states.len() {
                         raw.sram_k[i] = self.cfg.sram_k;
                     }
