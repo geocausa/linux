@@ -229,15 +229,14 @@ impl platform::Driver for AsahiDriver {
             regs::Resources::stop_cpu(pdev)?;
             dev_info!(pdev.as_ref(), "T8122 G15 ASC stopped after UAT preflight\n");
 
-            // E029 is deliberately still below the persistent runtime path:
-            // exercise the owned shared-bank1 backend through its real
-            // alloc/map/unmap entry points, then tear the UAT down with ASC off.
-            // InitData/RTKit/DRM/q22/QueueInfo/GPU work remain unreachable.
+            // E030: E029 closed the shared bank-1 ownership/backend boundary.
+            // Continue through the already-proven persistent manager/RTKit/DRM
+            // path so the existing zero-payload submit gate can retry only the
+            // E024 empty QueueInfo publication. No command work is enabled.
             dev_info!(
                 pdev.as_ref(),
-                "T8122 G15 E029 shared bank-1 backend preflight PASS; persistent manager/RTKit/DRM blocked\n"
+                "T8122 G15 E030 shared bank-1 backend PASS; continuing to bounded persistent runtime\n"
             );
-            return Err(ENODEV);
 
             // The next checkpoint is deliberately CPU/DT-only. Parse the
             // complete J615 power configuration after the ASC is stopped,
