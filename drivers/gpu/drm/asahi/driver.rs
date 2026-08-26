@@ -229,6 +229,16 @@ impl platform::Driver for AsahiDriver {
             regs::Resources::stop_cpu(pdev)?;
             dev_info!(pdev.as_ref(), "T8122 G15 ASC stopped after UAT preflight\n");
 
+            // E026 is deliberately narrower than the persistent runtime path:
+            // validate only the firmware-owned bank-1 root/shared-L2 spine,
+            // then stop with the ASC off.  GpuManager/initdata/RTKit/DRM and all
+            // range-7 leaf mutation remain unreachable in this checkpoint.
+            dev_info!(
+                pdev.as_ref(),
+                "T8122 G15 E026 shared-L2 read-only preflight PASS; persistent manager/RTKit/DRM blocked\n"
+            );
+            return Err(ENODEV);
+
             // The next checkpoint is deliberately CPU/DT-only. Parse the
             // complete J615 power configuration after the ASC is stopped,
             // validate every machine-specific input we recovered, then return

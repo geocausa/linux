@@ -1011,28 +1011,147 @@ impl Drop for KernelMapping {
 
 
 /// Address-space bookkeeping for the accelerator-shared G15 UAT bank 1.
-/// Canonical G15 range-7 VAs are retained in the allocator; UatPageTable masks
-/// them to the low 42 bank-local bits when walking the actual page tables.
+/// Canonical G15 range-7 VAs are retained in the allocator and reduced to the
+/// bank-local low-42-bit indices by this generation-specific page-table view.
+/// Read-only E026 view of G15's accelerator-owned bank-1 page-table spine.
+///
+/// The bank-1 root and its range-7 L2 table are firmware carveout pages, not
+/// ordinary Linux pages.  They therefore must never pass through Page::borrow_phys()
+/// or Page::from_phys().  E026 maps both carveouts explicitly and validates the
+/// exact root/L2 geometry after the UAT handoff has completed.  Leaf-table
+/// mutation remains deliberately unavailable until this ownership boundary has
+/// passed one-shot live validation.
+struct G15SharedBank1PageTable {
+    ttb: PhysicalAddr,
+    shared_l2_phys: PhysicalAddr,
+    _root: io::mem::Mem,
+    _shared_l2: io::mem::Mem,
+}
+
+impl G15SharedBank1PageTable {
+    const RANGE7_TOP_INDEX: usize = 2;
+    const RANGE7_L2_ENTRIES: usize = 6;
+    const TABLE_TYPE_BITS: u64 = 3;
+
+    fn new(dev: &driver::AsahiDevice, cfg: &'static hw::HwConfig, ttb: PhysicalAddr) -> Result<Self> {
+        if cfg.uat_ias < G15_HW_UAT_IAS || ttb & UAT_PGMSK as u64 != 0 {
+            return Err(EINVAL);
+        }
+
+        // J615's live Apple ADT places gfx-shared-l2 immediately before
+        // gfx-shared-region.  More importantly, the post-handoff root PTE at
+        // bank-local top index 2 must point there.  Derive from the PTE and
+        // cross-check the adjacency rather than blindly trusting either value.
+        let root = unsafe {
+            io::mem::Mem::try_new_phys(ttb, UAT_PGSZ, (io::mem::MemFlag::WB).into())?
+        };
+        let root_pte = unsafe {
+            core::ptr::read_volatile(
+                root.ptr()
+                    .add(Self::RANGE7_TOP_INDEX * core::mem::size_of::<u64>())
+                    .cast::<u64>(),
+            )
+        };
+        let oas_mask = if cfg.uat_oas >= 64 {
+            return Err(EINVAL);
+        } else {
+            (1u64 << cfg.uat_oas) - 1
+        };
+        let shared_l2_phys = root_pte & oas_mask & !(UAT_PGMSK as u64);
+        let expected_l2_phys = ttb.checked_sub(UAT_PGSZ as u64).ok_or(EINVAL)?;
+
+        if root_pte & Self::TABLE_TYPE_BITS != Self::TABLE_TYPE_BITS
+            || shared_l2_phys != expected_l2_phys
+        {
+            dev_err!(
+                dev.as_ref(),
+                "MMU: G15 bank-1 root[2] mismatch: pte={:#x} child={:#x} expected={:#x}\n",
+                root_pte,
+                shared_l2_phys,
+                expected_l2_phys
+            );
+            return Err(EIO);
+        }
+
+        let shared_l2 = unsafe {
+            io::mem::Mem::try_new_phys(
+                shared_l2_phys,
+                UAT_PGSZ,
+                (io::mem::MemFlag::WB).into(),
+            )?
+        };
+        for idx in 0..Self::RANGE7_L2_ENTRIES {
+            let pte = unsafe {
+                core::ptr::read_volatile(
+                    shared_l2
+                        .ptr()
+                        .add(idx * core::mem::size_of::<u64>())
+                        .cast::<u64>(),
+                )
+            };
+            if pte != 0 {
+                dev_err!(
+                    dev.as_ref(),
+                    "MMU: G15 shared range-7 L2[{}] unexpectedly populated: {:#x}\n",
+                    idx,
+                    pte
+                );
+                return Err(EIO);
+            }
+        }
+
+        dev_info!(
+            dev.as_ref(),
+            "MMU: G15 shared bank-1 spine PASS root={:#x} root[2]={:#x} shared-l2={:#x}, range-7 L2[0..6) empty\n",
+            ttb,
+            root_pte,
+            shared_l2_phys
+        );
+
+        Ok(Self {
+            ttb,
+            shared_l2_phys,
+            _root: root,
+            _shared_l2: shared_l2,
+        })
+    }
+
+    fn ttb(&self) -> PhysicalAddr {
+        self.ttb
+    }
+
+    fn alloc_pages(&mut self, _iova_range: Range<u64>) -> Result {
+        Err(ENODEV)
+    }
+
+    fn map_pages(
+        &mut self,
+        _iova_range: Range<u64>,
+        _phys: PhysicalAddr,
+        _prot: Prot,
+        _one_page: bool,
+    ) -> Result {
+        Err(ENODEV)
+    }
+
+    fn unmap_pages(&mut self, _iova_range: Range<u64>) -> Result {
+        Err(ENODEV)
+    }
+}
+
 struct G15SharedBank1State {
-    page_table: UatPageTable,
+    page_table: G15SharedBank1PageTable,
     mm: mm::Allocator<(), G15SharedBank1MappingInner>,
 }
 
 impl G15SharedBank1State {
-    fn new(cfg: &'static hw::HwConfig, ttb: PhysicalAddr) -> Result<Self> {
-        // Apple kernel-task/accelerator UAT owns both G15 banks locally, and
-        // normal clients import that accelerator-owned bank-1 state.  Range 7
-        // must therefore extend the existing slot-0/kernel TTB1 root rather
-        // than live in a second independently allocated root.  This view owns
-        // only the disjoint range-7 subtree; the physical root itself remains
-        // bootloader-owned through the kernel Vm.
+    fn new(
+        dev: &driver::AsahiDevice,
+        cfg: &'static hw::HwConfig,
+        ttb: PhysicalAddr,
+    ) -> Result<Self> {
         Ok(Self {
-            page_table: UatPageTable::new_with_ttb(
-                ttb,
-                G15_GART_RANGE7.clone(),
-                G15_HW_UAT_IAS,
-                cfg.uat_oas,
-            )?,
+            page_table: G15SharedBank1PageTable::new(dev, cfg, ttb)?,
             mm: mm::Allocator::new(G15_GART_RANGE7.start, G15_GART_RANGE7.range(), ())?,
         })
     }
@@ -2317,15 +2436,6 @@ impl Uat {
         let kernel_lower_vm = Vm::new(dev, inner.clone(), IOVA_USER_RANGE, cfg, None, 1)?;
         let kernel_vm = Vm::new(dev, inner.clone(), IOVA_KERN_RANGE, cfg, Some(ttb1), 0)?;
 
-        // On G15, range 7 and the established high firmware/kernel mappings
-        // are separate subtrees of the same accelerator-owned bank-1 root.
-        // E024 proved that a second root leaves the firmware's global q22
-        // consumer unmapped even when client GPTBAT publication succeeds.
-        if cfg.uat_ias >= G15_HW_UAT_IAS {
-            let bank1 = G15SharedBank1State::new(cfg, kernel_vm.ttb())?;
-            inner.lock().g15_shared_bank1 = Some(bank1);
-        }
-
         dev_info!(dev.as_ref(), "MMU: Kernel page tables created\n");
 
         let ttb0 = kernel_lower_vm.ttb();
@@ -2359,6 +2469,17 @@ impl Uat {
         }
 
         inner.handoff().init(cfg.gpu_gen == hw::GpuGen::G15)?;
+
+        // G15 firmware initializes root[2] of the accelerator-owned bank-1
+        // spine during the handoff.  Only after that handshake is complete can
+        // Linux safely discover the firmware-carveout shared-L2 page.  E026
+        // validates this spine read-only; range-7 leaf mutation remains gated.
+        if cfg.uat_ias >= G15_HW_UAT_IAS {
+            core::mem::drop(inner);
+            let bank1 = G15SharedBank1State::new(dev, cfg, ttb1)?;
+            inner = uat.inner.lock();
+            inner.g15_shared_bank1 = Some(bank1);
+        }
 
         dev_info!(dev.as_ref(), "MMU: Initializing TTBs\n");
 
