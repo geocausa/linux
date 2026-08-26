@@ -120,7 +120,7 @@ pub(crate) mod raw {
         pub(crate) cswitch_timer_multiplier_05e: U32, // deliberately unaligned
         pub(crate) cdm_cswitch_mode_change_062: U32, // deliberately unaligned
         pub(crate) pad_066: Pad<0x0a>,
-        pub(crate) command_submission_enabled_070: U32,
+        pub(crate) command_submission_enabled_070: AtomicU32,
         pub(crate) zero_074: U32,                    // exact G15 bootstrap zero; firmware reads only
         pub(crate) gpu_max_power_078: U32,
         pub(crate) power_interface_1_target_07c: U32,

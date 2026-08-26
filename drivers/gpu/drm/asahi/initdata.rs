@@ -1394,7 +1394,7 @@ impl<'a> InitDataBuilder::ver<'a> {
                 // exact G15 bootstrap path never invokes their setters. The
                 // zero-filled q4 allocation therefore reaches firmware as 0.
                 cdm_cswitch_mode_change_062: U32(0),
-                command_submission_enabled_070: U32(0),
+                command_submission_enabled_070: AtomicU32::new(0),
                 // AGXAccelerator::start() builds the GPU PerfStateInfo from
                 // exact J615 `gpu-num-perf-states = 2`. G15 constructor byte
                 // +0x4e1 is zero, so Apple takes the direct 0x448-byte copy

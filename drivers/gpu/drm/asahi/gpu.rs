@@ -1062,7 +1062,7 @@ impl GpuManager::ver {
                     && raw.low2_clear_05a.0 == 1
                     && raw.cswitch_timer_multiplier_05e.0 == 1
                     && raw.cdm_cswitch_mode_change_062.0 == 0
-                    && raw.command_submission_enabled_070.0 == 0
+                    && raw.command_submission_enabled_070.load(Ordering::Acquire) == 0
                     && raw.zero_074.0 == 0
                     && raw.gpu_max_power_078.0 == 4070
                     && raw.power_interface_1_target_07c.0 == 100
@@ -2277,6 +2277,67 @@ impl GpuManager::ver {
         self.dyncfg.id.core_masks_packed.as_slice()
     }
 
+    /// Mirror Apple's runtime command-submission gate. The exact Apple G15
+    /// lifecycle boots q4 +0x070 as zero, then AGXAccelerator::
+    /// setCommandSubmissionEnabled(true) updates this firmware-visible word
+    /// before submitCL/TA/3D are allowed to ring EP21. E033 keeps this mutable
+    /// state lab-only and restores it after a fully acknowledged empty-queue
+    /// publication/release.
+    pub(crate) fn g15_set_command_submission_enabled(&self, enabled: bool) -> Result {
+        #[ver(G != G15)]
+        {
+            let _ = enabled;
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            let value = u32::from(enabled);
+            let before = self.initdata.g15_globals.with(|raw, _inner| {
+                raw.command_submission_enabled_070.load(Ordering::Acquire)
+            });
+            if before > 1 {
+                dev_err!(
+                    self.dev.as_ref(),
+                    "T8122 G15 invalid q4 command-submission state {}\n",
+                    before
+                );
+                return Err(EIO);
+            }
+            self.initdata.g15_globals.with(|raw, _inner| {
+                raw.command_submission_enabled_070
+                    .store(value, Ordering::Release);
+            });
+            mem::sync();
+            let after = self.initdata.g15_globals.with(|raw, _inner| {
+                raw.command_submission_enabled_070.load(Ordering::Acquire)
+            });
+            dev_info!(
+                self.dev.as_ref(),
+                "T8122 G15 E033 q4 command-submission gate {} -> {}\n",
+                before,
+                after
+            );
+            if after != value {
+                return Err(EIO);
+            }
+            Ok(())
+        }
+    }
+
+    pub(crate) fn g15_command_submission_enabled(&self) -> bool {
+        #[ver(G != G15)]
+        {
+            false
+        }
+        #[ver(G == G15)]
+        {
+            self.initdata.g15_globals.with(|raw, _inner| {
+                raw.command_submission_enabled_070.load(Ordering::Acquire) != 0
+            })
+        }
+    }
+
     /// Publish a fresh G15 QueueInfo without publishing any command-ring
     /// entry. RTKit-2419 copies wptr=0 into QueueInfo +0x28 and returns from the
     /// scheduler walker immediately because QueueInfo +0x20 is also zero.
@@ -2317,6 +2378,14 @@ impl GpuManager::ver {
                 }
             }
 
+            if !self.g15_command_submission_enabled() {
+                dev_err!(
+                    self.dev.as_ref(),
+                    "T8122 G15 E033 refusing EP21 pipe doorbell while q4 command submission is disabled\n"
+                );
+                return Err(EACCES);
+            }
+
             let msg = fw::channels::RunWorkQueueMsg::ver {
                 g15_timestamp: U64(workqueue::g15_submission_timestamp()),
                 work_queue: Some(work_queue),
@@ -2328,13 +2397,26 @@ impl GpuManager::ver {
                 g15_is_new: true,
             };
 
+            let state_before = pipe.g15_state();
             let token = pipe.send(&msg);
+            let state_after_put = pipe.g15_state();
+            let doorbell = MSG_TX_DOORBELL | pipe_type as u64 | ((index as u64) << 2);
+            dev_info!(
+                self.dev.as_ref(),
+                "T8122 G15 E033 pipe {:?}/{} state before={:?} after-put={:?} token={} doorbell={:#018x}\n",
+                pipe_type,
+                index,
+                state_before,
+                state_after_put,
+                token,
+                doorbell
+            );
             {
                 let mut guard = self.rtkit.lock();
                 let rtk = guard.as_mut().as_pin_mut().ok_or(ENODEV)?;
                 if let Err(e) = rtk.send_message(
                     EP_DOORBELL,
-                    MSG_TX_DOORBELL | pipe_type as u64 | ((index as u64) << 2),
+                    doorbell,
                 ) {
                     // A TX entry exists but its delivery state is uncertain.
                     // Fail-stop so no later host doorbell can accidentally
@@ -2344,7 +2426,17 @@ impl GpuManager::ver {
                 }
             }
 
-            if let Err(e) = pipe.wait_for(token) {
+            let wait_result = pipe.wait_for(token);
+            let state_after_wait = pipe.g15_state();
+            dev_info!(
+                self.dev.as_ref(),
+                "T8122 G15 E033 pipe {:?}/{} wait={:?} final-state={:?}\n",
+                pipe_type,
+                index,
+                wait_result,
+                state_after_wait
+            );
+            if let Err(e) = wait_result {
                 self.crashed.store(true, Ordering::Release);
                 return Err(e);
             }

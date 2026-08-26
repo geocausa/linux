@@ -734,11 +734,21 @@ impl Queue for Queue::ver {
             // Use the compute subqueue for the bounded publication probe. With
             // wptr=0 the common scheduler path returns before any command entry
             // is dereferenced, and this avoids render/TVB-specific work.
-            self.q_comp
+            gpu.g15_set_command_submission_enabled(true)?;
+            let publish_result = self
+                .q_comp
                 .as_ref()
                 .ok_or(EIO)?
                 .wq
-                .g15_publish_empty(&gpu)?;
+                .g15_publish_empty(&gpu);
+
+            // Restore the host runtime gate only after both the accelerator TX
+            // entry and native ReleaseResource completed successfully. On any
+            // ambiguous failure leave it enabled and fail-stop until reboot.
+            if publish_result.is_ok() {
+                gpu.g15_set_command_submission_enabled(false)?;
+            }
+            publish_result?;
         }
 
         core::mem::drop(bind);

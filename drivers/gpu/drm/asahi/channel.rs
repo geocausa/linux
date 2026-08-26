@@ -289,6 +289,20 @@ impl PipeChannel::ver {
     pub(crate) fn wait_for(&mut self, wptr: u32) -> Result {
         self.ch.wait_for(wptr, 1000)
     }
+
+    /// Snapshot the exact G15 TX channel state as
+    /// (read_ptr, write_ptr_shadow, write_ptr, host_wptr).
+    pub(crate) fn g15_state(&self) -> (u32, u32, u32, u32) {
+        self.ch.ring.state.with(|raw, _inner| {
+            (
+                raw.read_ptr.load(core::sync::atomic::Ordering::Acquire),
+                raw.write_ptr_shadow
+                    .load(core::sync::atomic::Ordering::Acquire),
+                raw.write_ptr.load(core::sync::atomic::Ordering::Acquire),
+                self.ch.wptr,
+            )
+        })
+    }
 }
 
 /// Firmware Control channel, used for secure cache flush requests.
