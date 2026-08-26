@@ -927,10 +927,12 @@ impl GpuManager::ver {
 
         #[ver(G == G15)]
         {
-            // Preserve the already-proven HwDataA deterministic pre-tail gate
-            // before advancing to the larger manager/channel object graph.
-            Self::initdata_preflight(dev, res, cfg)?;
-
+            // E031: the persistent manager must be the sole owner of the live
+            // accelerator-shared bank-1 mappings. The old initdata_preflight()
+            // constructed and discarded a second complete q22/range-7 graph;
+            // with the correct shared root that deliberately fail-closed graph
+            // cannot be followed by another UAT in the same boot. The full
+            // manager/root/q21/q22/q23 validation below remains intact.
             let mgr = Self::build_pre_rtkit(dev, res, cfg)?;
 
             let initdata_va = mgr.initdata.gpu_va().get();
