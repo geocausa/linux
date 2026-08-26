@@ -1035,13 +1035,28 @@ impl File {
     ) -> Result<u32> {
         debug::update_debug_flags();
 
-        if data.flags != 0 || data.pad != 0 {
+        let is_g15 = device.gpu.get_cfg().gpu_gen == hw::GpuGen::G15;
+        const G15_EMPTY_QUEUE_PROBE_FLAGS: u32 = 0x4731_3550; // "G15P"
+        const G15_EMPTY_QUEUE_PROBE_PAD: u32 = 0x4530_3333; // "E033"
+
+        if is_g15 {
+            // Lab-only discriminator. A plain all-zero SUBMIT is common enough
+            // for ambient userspace to hit accidentally after DRM registration.
+            // Require an explicit two-word signature before any VM bind or
+            // QueueInfo publication can occur. Ordinary G15 submissions remain
+            // fail-closed with ENODEV.
+            if data.flags != G15_EMPTY_QUEUE_PROBE_FLAGS
+                || data.pad != G15_EMPTY_QUEUE_PROBE_PAD
+            {
+                return Err(ENODEV);
+            }
+        } else if data.flags != 0 || data.pad != 0 {
             cls_pr_debug!(Errors, "submit: Invalid arguments\n");
             return Err(EINVAL);
         }
 
-        if device.gpu.get_cfg().gpu_gen == hw::GpuGen::G15 {
-            // E021 is an explicit zero-payload probe, not a partial enablement
+        if is_g15 {
+            // E033 is an explicit signed zero-payload probe, not a partial enablement
             // of ordinary userspace submission. Real Mesa submissions remain
             // rejected before queue lookup/VM publication.
             if data.syncs != 0

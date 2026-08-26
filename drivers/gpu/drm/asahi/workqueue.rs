@@ -945,9 +945,9 @@ impl WorkQueue::ver {
             let fields = context
                 .data()
                 .with(|raw, _inner| raw.g15_release_resource_fields());
-            mod_dev_dbg!(
-                context.dev,
-                "G15 empty QueueInfo publication result={:?}, context fields={:02x?}\n",
+            dev_info!(
+                context.dev.as_ref(),
+                "T8122 G15 E033 empty QueueInfo publish result={:?}, context fields={:02x?}\n",
                 publish_result,
                 fields
             );
@@ -958,6 +958,11 @@ impl WorkQueue::ver {
             if release_result.is_ok() {
                 context.mark_released_from_firmware();
             }
+            dev_info!(
+                context.dev.as_ref(),
+                "T8122 G15 E033 ReleaseResource result={:?}\n",
+                release_result
+            );
 
             match (publish_result, release_result) {
                 (Ok(()), Ok(())) => Ok(()),
