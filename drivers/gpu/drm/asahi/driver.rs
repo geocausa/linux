@@ -229,6 +229,16 @@ impl platform::Driver for AsahiDriver {
             regs::Resources::stop_cpu(pdev)?;
             dev_info!(pdev.as_ref(), "T8122 G15 ASC stopped after UAT preflight\n");
 
+            // E074 diagnostic-only gate: the range-8 parent proof is read-only
+            // and must not continue into InitData/RTKit/DRM in this build.
+            dev_info!(
+                pdev.as_ref(),
+                "T8122 G15 E074 range-8 parent read-only preflight complete; persistent runtime blocked\n"
+            );
+            if cfg.gpu_gen == hw::GpuGen::G15 {
+                return Err(ENODEV);
+            }
+
             // E030: E029 closed the shared bank-1 ownership/backend boundary.
             // Continue through the already-proven persistent manager/RTKit/DRM
             // path so the existing zero-payload submit gate can retry only the

@@ -1046,6 +1046,7 @@ struct G15SharedBank1PageTable {
 impl G15SharedBank1PageTable {
     const RANGE7_TOP_INDEX: usize = 2;
     const RANGE7_L2_ENTRIES: usize = 6;
+    const RANGE8_L2_ENTRIES: usize = 2;
     const L3_ENTRIES: usize = UAT_PGSZ / core::mem::size_of::<u64>();
     const L2_SPAN: u64 = (UAT_PGSZ as u64) * (Self::L3_ENTRIES as u64);
     const TABLE_TYPE_BITS: u64 = 0x3;
@@ -1113,6 +1114,35 @@ impl G15SharedBank1PageTable {
                 return Err(EIO);
             }
         }
+
+        // E074 read-only ownership preflight. Range 8 immediately follows the
+        // six range-7 L2 slots in this same firmware-owned shared-L2 page. Do
+        // not publish a Linux child descriptor yet; first require both parent
+        // slots to be empty on the exact J615 machine.
+        for rel in 0..Self::RANGE8_L2_ENTRIES {
+            let idx = Self::RANGE7_L2_ENTRIES + rel;
+            let pte = unsafe {
+                core::ptr::read_volatile(
+                    shared_l2
+                        .ptr()
+                        .add(idx * core::mem::size_of::<u64>())
+                        .cast::<u64>(),
+                )
+            };
+            if pte != 0 {
+                dev_err!(
+                    dev.as_ref(),
+                    "MMU: G15 E074 range-8 L2[{}] unexpectedly populated: {:#x}\n",
+                    idx,
+                    pte
+                );
+                return Err(EIO);
+            }
+        }
+        dev_info!(
+            dev.as_ref(),
+            "MMU: G15 E074 range-8 parent preflight PASS (shared-L2[6..8) empty, read-only)\n"
+        );
 
         // Allocate every Linux-owned child before the first firmware-carveout
         // mutation. This means allocation failure can never leave a dangling
