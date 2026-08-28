@@ -479,7 +479,10 @@ impl super::QueueInner::ver {
                     #[ver(G == G15)]
                     g15_uma_page_pool_state_fwva_83e: U64(0),
                     #[ver(G == G15)]
-                    g15_uma_prepared_846: 0,
+                    // AGXUMAPool::prepareLocked() sets the descriptor prepared
+                    // state before submitBuffer() copies descriptor +0x624 here.
+                    // The exact stock 23J220 empty-Compute path therefore uses 1.
+                    g15_uma_prepared_846: 1,
                     #[ver(G == G15)]
                     g15_uma_min_pool_size_847: U64(0),
                     #[ver(G == G15)]
