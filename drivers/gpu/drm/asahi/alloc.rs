@@ -453,6 +453,7 @@ pub(crate) type G15SharedGpuArray<T> =
 pub(crate) struct G15SharedBank1Allocator {
     dev: AsahiDevRef,
     bank1: mmu::G15SharedBank1,
+    aperture: mmu::G15SharedBank1Aperture,
     prot: mmu::Prot,
     min_align: usize,
     cpu_maps: bool,
@@ -469,7 +470,38 @@ impl G15SharedBank1Allocator {
         notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
     ) -> Self {
         if debug_enabled(DebugFlags::ForceCPUMaps) { cpu_maps = true; }
-        Self { dev: dev.into(), bank1, prot, min_align, cpu_maps, notifier }
+        Self {
+            dev: dev.into(),
+            bank1,
+            aperture: mmu::G15SharedBank1Aperture::Range7,
+            prot,
+            min_align,
+            cpu_maps,
+            notifier,
+        }
+    }
+
+    /// Dedicated eGartRange-8 allocator for G15 FList Page-Pool State objects.
+    /// The protection class is fixed by the exact E075 leaf proof rather than
+    /// supplied by callers, keeping PM/range-7 attributes impossible here.
+    #[allow(dead_code)]
+    pub(crate) fn new_range8(
+        dev: &AsahiDevice,
+        bank1: mmu::G15SharedBank1,
+        min_align: usize,
+        mut cpu_maps: bool,
+        notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
+    ) -> Self {
+        if debug_enabled(DebugFlags::ForceCPUMaps) { cpu_maps = true; }
+        Self {
+            dev: dev.into(),
+            bank1,
+            aperture: mmu::G15SharedBank1Aperture::Range8,
+            prot: mmu::PROT_G15_RANGE8_FW,
+            min_align,
+            cpu_maps,
+            notifier,
+        }
     }
 }
 
@@ -486,6 +518,7 @@ impl Allocator for G15SharedBank1Allocator {
         let p = obj.vmap()?.as_mut_ptr() as *mut u8;
         if debug_enabled(DebugFlags::FillAllocations) { obj.vmap()?.memset(0xde); }
         let mapping = self.bank1.map(
+            self.aperture,
             &obj.gem,
             size_aligned,
             self.min_align.max(mmu::UAT_PGSZ) as u64,

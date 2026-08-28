@@ -1628,7 +1628,8 @@ impl Drop for G15SharedBank1PageTable {
 
 struct G15SharedBank1State {
     page_table: G15SharedBank1PageTable,
-    mm: mm::Allocator<(), G15SharedBank1MappingInner>,
+    range7_mm: mm::Allocator<(), G15SharedBank1MappingInner>,
+    range8_mm: mm::Allocator<(), G15SharedBank1MappingInner>,
 }
 
 impl G15SharedBank1State {
@@ -1639,7 +1640,8 @@ impl G15SharedBank1State {
     ) -> Result<Self> {
         Ok(Self {
             page_table: G15SharedBank1PageTable::new(dev, cfg, ttb)?,
-            mm: mm::Allocator::new(G15_GART_RANGE7.start, G15_GART_RANGE7.range(), ())?,
+            range7_mm: mm::Allocator::new(G15_GART_RANGE7.start, G15_GART_RANGE7.range(), ())?,
+            range8_mm: mm::Allocator::new(G15_GART_RANGE8.start, G15_GART_RANGE8.range(), ())?,
         })
     }
 
@@ -1937,6 +1939,15 @@ impl Drop for G15SharedBank1Mapping {
     }
 }
 
+/// Disjoint Apple G15 bank-1 VA classes. Keeping the allocator arenas
+/// separate prevents a range-8 Page-Pool-State allocation from consuming a
+/// PM/range-7 VA (or vice versa) even though both share one page-table root.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum G15SharedBank1Aperture {
+    Range7,
+    Range8,
+}
+
 /// Cloneable mapping handle for the accelerator-shared G15 UAT bank 1.
 #[derive(Clone)]
 pub(crate) struct G15SharedBank1 {
@@ -1948,6 +1959,7 @@ impl G15SharedBank1 {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn map(
         &self,
+        aperture: G15SharedBank1Aperture,
         gem: &gem::Object,
         size: usize,
         alignment: u64,
@@ -1963,7 +1975,19 @@ impl G15SharedBank1 {
         let mut phys_pages = KVec::with_capacity(size / UAT_PGSZ, GFP_KERNEL)?;
         let mut shared = self.inner.lock();
         let bank1 = shared.g15_shared_bank1.as_mut().ok_or(EINVAL)?;
-        let node = bank1.mm.insert_node_in_range(
+        let (arena, start, end) = match aperture {
+            G15SharedBank1Aperture::Range7 => (
+                &mut bank1.range7_mm,
+                G15_GART_RANGE7.start,
+                G15_GART_RANGE7.end,
+            ),
+            G15SharedBank1Aperture::Range8 => (
+                &mut bank1.range8_mm,
+                G15_GART_RANGE8.start,
+                G15_GART_RANGE8.end,
+            ),
+        };
+        let node = arena.insert_node_in_range(
             G15SharedBank1MappingInner {
                 _gem: gem.into(),
                 mapped_size: size,
@@ -1971,8 +1995,8 @@ impl G15SharedBank1 {
             reserve_size as u64,
             alignment,
             0,
-            G15_GART_RANGE7.start,
-            G15_GART_RANGE7.end,
+            start,
+            end,
             mm::InsertMode::Best,
         )?;
 
