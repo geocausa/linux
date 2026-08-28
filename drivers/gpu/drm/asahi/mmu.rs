@@ -729,8 +729,15 @@ pub(crate) struct Vm {
 }
 no_debug!(Vm);
 
-/// Slot data for a [`Vm`] slot (nothing, we only care about the indices).
-pub(crate) struct SlotInner();
+/// Slot data for a [`Vm`] slot.
+///
+/// G15 firmware pairs the context ID with an 8-bit generation. Apple advances
+/// that byte only when an ID is assigned to a different GART; sticky reuse of
+/// the same slot preserves it. Keep the generation with the slot so Linux's
+/// existing sticky allocator has the same lifetime semantics.
+pub(crate) struct SlotInner {
+    generation: u8,
+}
 
 impl slotalloc::SlotItem for SlotInner {
     type Data = ();
@@ -740,12 +747,17 @@ impl slotalloc::SlotItem for SlotInner {
 ///
 /// The number of users is counted, and the slot will be freed when it drops to 0.
 #[derive(Debug)]
-pub(crate) struct VmBind(Vm, u32);
+pub(crate) struct VmBind(Vm, u32, u8);
 
 impl VmBind {
     /// Returns the slot that this `Vm` is bound to.
     pub(crate) fn slot(&self) -> u32 {
         self.1
+    }
+
+    /// Returns the generation paired with this G15 context ID.
+    pub(crate) fn generation(&self) -> u8 {
+        self.2
     }
 }
 
@@ -776,7 +788,7 @@ impl Clone for VmBind {
             self.1,
             binding.active_users
         );
-        VmBind(self.0.clone(), self.1)
+        VmBind(self.0.clone(), self.1, self.2)
     }
 }
 
@@ -2669,7 +2681,7 @@ impl Uat {
                 None
             });
 
-            let slot = self.slots.get(binding.bind_token)?;
+            let mut slot = self.slots.get(binding.bind_token)?;
             if slot.changed() {
                 mod_pr_debug!("Vm Bind [{}]: bind_token={:?}\n", vm.id, slot.token(),);
                 let idx = (slot.slot() as usize) + UAT_USER_CTX_START;
@@ -2716,6 +2728,12 @@ impl Uat {
                 // Make sure all TLB entries from the previous owner of this ASID are gone
                 mem::tlbi_asid(idx as u8);
                 mem::sync();
+
+                if self.cfg.gpu_gen == hw::GpuGen::G15 {
+                    // 23J220 AGXContextIDManager::alloc() increments the
+                    // generation only after registerContextID() succeeds.
+                    slot.generation = slot.generation.wrapping_add(1);
+                }
             }
 
             binding.bind_token = Some(slot.token());
@@ -2724,9 +2742,16 @@ impl Uat {
 
         binding.active_users += 1;
 
-        let slot = binding.binding.as_ref().unwrap().slot() + UAT_USER_CTX_START as u32;
-        mod_pr_debug!("MMU: slot {} active users {}\n", slot, binding.active_users);
-        Ok(VmBind(vm.clone(), slot))
+        let slot_guard = binding.binding.as_ref().unwrap();
+        let slot = slot_guard.slot() + UAT_USER_CTX_START as u32;
+        let generation = slot_guard.generation;
+        mod_pr_debug!(
+            "MMU: slot {} generation {} active users {}\n",
+            slot,
+            generation,
+            binding.active_users
+        );
+        Ok(VmBind(vm.clone(), slot, generation))
     }
 
     /// Creates a new `Vm` linked to this UAT.
@@ -2815,7 +2840,7 @@ impl Uat {
             slots: slotalloc::SlotAllocator::new(
                 UAT_USER_CTX as u32,
                 (),
-                |_inner, _slot| Some(SlotInner()),
+                |_inner, _slot| Some(SlotInner { generation: 0 }),
                 c_str!("Uat::SlotAllocator"),
                 static_lock_class!(),
                 static_lock_class!(),

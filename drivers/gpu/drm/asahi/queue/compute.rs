@@ -258,6 +258,8 @@ impl super::QueueInner::ver {
             },
             |inner, _ptr| {
                 let vm_slot = vm_bind.slot();
+                #[ver(G == G15)]
+                let context_generation = vm_bind.generation();
                 try_init!(fw::compute::raw::RunCompute::ver {
                     tag: fw::workqueue::CommandType::RunCompute,
                     #[ver(V >= V13_0B4)]
@@ -490,7 +492,10 @@ impl super::QueueInner::ver {
                     #[ver(G == G15)]
                     g15_uma_metrics_fwva_857: U64(0),
                     #[ver(G == G15)]
-                    g15_context_id_generation_85f: 0,
+                    // 23J220 exports AGXCLCommandDescriptor +0x494 here.
+                    // That byte is the generation paired with the managed
+                    // context ID at RunCompute +0x10, not a constant.
+                    g15_context_id_generation_85f: context_generation,
                     #[ver(V >= V13_0B4)]
                     context_store_req: U64(0),
                     #[ver(G == G15)]
