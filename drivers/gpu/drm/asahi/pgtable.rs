@@ -171,6 +171,12 @@ pub(crate) mod prot {
     /// UXN=1, GPU-access=1, PXN=0.
     pub(crate) const PROT_G15_RANGE7_FW: Prot =
         PROT_FW_RW.memattr(MEMATTR_DEV);
+    /// Exact non-legacy G15 eGartRange-8 Page-Pool-State protection shape.
+    /// The FList SecureMemoryMap path differs from the PM range-7 resource
+    /// class: exact 23J220 derives compact UAT option 0x003, which encodes
+    /// AP=1, cached memory, UXN=1, GPU-access=1, PXN=0.
+    pub(crate) const PROT_G15_RANGE8_FW: Prot =
+        PROT_FW_RW.memattr(MEMATTR_CACHED);
     /// Firmware/GPU shared (private) RW
     pub(crate) const PROT_GPU_FW_PRIV_RW: Prot = PROT_FW_GPU_RW.memattr(MEMATTR_CACHED);
     /// Firmware-RW/GPU-RO shared (private) RW
@@ -195,6 +201,10 @@ const _: [(); 1] = [(); ((prot::PROT_G15_RANGE5_CACHED.as_pte() & UAT_PROT_BITS)
 // UXN + GPU-access high bits.
 const _: [(); 1] = [(); ((prot::PROT_G15_RANGE7_FW.as_pte() & UAT_PROT_BITS)
     == 0x00c0_0000_0000_0044) as usize];
+// FList range-8 Page-Pool State: compact 0x003 -> AP=1, cached memattr,
+// UXN + GPU-access high bits.
+const _: [(); 1] = [(); ((prot::PROT_G15_RANGE8_FW.as_pte() & UAT_PROT_BITS)
+    == 0x00c0_0000_0000_0040) as usize];
 
 impl Prot {
     const fn from_bits(ap: u8, uxn: u16, pxn: u16) -> Self {

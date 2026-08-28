@@ -176,6 +176,14 @@ const _: [(); 7] = [(); g15_apple_gart_range(G15_GART_RANGE7.start) as usize];
 const _: [(); 7] = [(); g15_apple_gart_range(G15_GART_RANGE7.end - 1) as usize];
 const _: [(); 8] = [(); g15_apple_gart_range(G15_GART_RANGE7.end) as usize];
 
+/// Apple G15 eGartRange 8. Exact 23J220 AGXUMAFList uses this 64-MiB
+/// bank-1 aperture for its 0x70-byte UMA Page-Pool State object.
+pub(crate) const G15_GART_RANGE8: Range<u64> =
+    G15_GART_RANGE7.end..0xffff_fc20_1000_0000;
+const _: [(); 8] = [(); g15_apple_gart_range(G15_GART_RANGE8.start) as usize];
+const _: [(); 8] = [(); g15_apple_gart_range(G15_GART_RANGE8.end - 1) as usize];
+const _: [(); 9] = [(); g15_apple_gart_range(G15_GART_RANGE8.end) as usize];
+
 /// Apple G15 eGartRange 5. Parameter Scene Allocations and GTP/TPC use this
 /// per-client lower-address-space aperture. It is intentionally outside the
 /// current 39-bit DRM userspace ABI while remaining inside the 42-bit G15 UAT.
@@ -1032,7 +1040,8 @@ impl Drop for KernelMapping {
 /// owns only the six L3 pages installed beneath the live-proven empty L2 slots.
 /// Keeping that ownership split explicit avoids treating reserved firmware DRAM
 /// as `struct page` memory while still giving normal map/unmap callers a stable
-/// page-table backend for the complete 192-MiB range-7 aperture.
+/// page-table backend for the complete 192-MiB range-7 aperture plus the
+/// adjacent 64-MiB range-8 Page-Pool-State aperture.
 struct G15SharedBank1PageTable {
     ttb: PhysicalAddr,
     shared_l2_phys: PhysicalAddr,
@@ -1040,17 +1049,19 @@ struct G15SharedBank1PageTable {
     _root: io::mem::Mem,
     _shared_l2: io::mem::Mem,
     l3: Option<KVec<Owned<Page>>>,
-    l3_desc: [u64; Self::RANGE7_L2_ENTRIES],
+    l3_desc: [u64; Self::BANK1_L2_ENTRIES],
 }
 
 impl G15SharedBank1PageTable {
     const RANGE7_TOP_INDEX: usize = 2;
     const RANGE7_L2_ENTRIES: usize = 6;
     const RANGE8_L2_ENTRIES: usize = 2;
+    const BANK1_L2_ENTRIES: usize = Self::RANGE7_L2_ENTRIES + Self::RANGE8_L2_ENTRIES;
     const L3_ENTRIES: usize = UAT_PGSZ / core::mem::size_of::<u64>();
     const L2_SPAN: u64 = (UAT_PGSZ as u64) * (Self::L3_ENTRIES as u64);
     const TABLE_TYPE_BITS: u64 = 0x3;
     const RANGE7_LEAF_BITS: u64 = 0x00c0_0000_0000_0447;
+    const RANGE8_LEAF_BITS: u64 = 0x00c0_0000_0000_0443;
 
     fn new(dev: &driver::AsahiDevice, cfg: &'static hw::HwConfig, ttb: PhysicalAddr) -> Result<Self> {
         if cfg.uat_ias < G15_HW_UAT_IAS || ttb & UAT_PGMSK as u64 != 0 {
@@ -1147,13 +1158,13 @@ impl G15SharedBank1PageTable {
         // Allocate every Linux-owned child before the first firmware-carveout
         // mutation. This means allocation failure can never leave a dangling
         // parent descriptor in the Apple-owned shared L2.
-        let mut l3 = KVec::with_capacity(Self::RANGE7_L2_ENTRIES, GFP_KERNEL)?;
-        let mut l3_desc = [0u64; Self::RANGE7_L2_ENTRIES];
-        for idx in 0..Self::RANGE7_L2_ENTRIES {
+        let mut l3 = KVec::with_capacity(Self::BANK1_L2_ENTRIES, GFP_KERNEL)?;
+        let mut l3_desc = [0u64; Self::BANK1_L2_ENTRIES];
+        for idx in 0..Self::BANK1_L2_ENTRIES {
             let page = Page::alloc_page(GFP_KERNEL | __GFP_ZERO)?;
             let phys = page.phys();
             if phys & UAT_PGMSK as u64 != 0 || phys & !oas_mask != 0 {
-                dev_err!(dev.as_ref(), "MMU: G15 invalid range-7 L3 page {} at {:#x}\n", idx, phys);
+                dev_err!(dev.as_ref(), "MMU: G15 invalid bank-1 L3 page {} at {:#x}\n", idx, phys);
                 return Err(EIO);
             }
             let zero = page.with_page_mapped(|ptr| {
@@ -1170,7 +1181,7 @@ impl G15SharedBank1PageTable {
                 true
             });
             if !zero {
-                dev_err!(dev.as_ref(), "MMU: G15 range-7 L3 page {} is not zeroed\n", idx);
+                dev_err!(dev.as_ref(), "MMU: G15 bank-1 L3 page {} is not zeroed\n", idx);
                 return Err(EIO);
             }
             l3_desc[idx] = phys | Self::TABLE_TYPE_BITS;
@@ -1178,7 +1189,7 @@ impl G15SharedBank1PageTable {
         }
 
         // Recheck the live ownership boundary immediately before publication.
-        for idx in 0..Self::RANGE7_L2_ENTRIES {
+        for idx in 0..Self::BANK1_L2_ENTRIES {
             let slot = unsafe {
                 shared_l2
                     .ptr()
@@ -1189,7 +1200,7 @@ impl G15SharedBank1PageTable {
                 return Err(EBUSY);
             }
         }
-        for idx in 0..Self::RANGE7_L2_ENTRIES {
+        for idx in 0..Self::BANK1_L2_ENTRIES {
             let slot = unsafe {
                 shared_l2
                     .ptr()
@@ -1203,7 +1214,7 @@ impl G15SharedBank1PageTable {
         mem::sync();
 
         let mut publish_ok = true;
-        for idx in 0..Self::RANGE7_L2_ENTRIES {
+        for idx in 0..Self::BANK1_L2_ENTRIES {
             let slot = unsafe {
                 shared_l2
                     .ptr()
@@ -1215,7 +1226,7 @@ impl G15SharedBank1PageTable {
                 publish_ok = false;
                 dev_err!(
                     dev.as_ref(),
-                    "MMU: G15 shared range-7 L2[{}] publish mismatch got={:#x} expected={:#x}\n",
+                    "MMU: G15 shared bank-1 L2[{}] publish mismatch got={:#x} expected={:#x}\n",
                     idx,
                     got,
                     l3_desc[idx]
@@ -1223,7 +1234,7 @@ impl G15SharedBank1PageTable {
             }
         }
         if !publish_ok {
-            for idx in 0..Self::RANGE7_L2_ENTRIES {
+            for idx in 0..Self::BANK1_L2_ENTRIES {
                 let slot = unsafe {
                     shared_l2
                         .ptr()
@@ -1237,7 +1248,7 @@ impl G15SharedBank1PageTable {
             fence(Ordering::SeqCst);
             mem::tlbi_all();
             mem::sync();
-            let detached = (0..Self::RANGE7_L2_ENTRIES).all(|idx| {
+            let detached = (0..Self::BANK1_L2_ENTRIES).all(|idx| {
                 let slot = unsafe {
                     shared_l2
                         .ptr()
@@ -1255,7 +1266,7 @@ impl G15SharedBank1PageTable {
 
         dev_info!(
             dev.as_ref(),
-            "MMU: G15 shared bank-1 backend online root={:#x} shared-l2={:#x}, 6 Linux L3 tables published\n",
+            "MMU: G15 shared bank-1 backend online root={:#x} shared-l2={:#x}, 8 Linux L3 tables published (range7=6, range8=2)\n",
             ttb,
             shared_l2_phys
         );
@@ -1278,22 +1289,39 @@ impl G15SharedBank1PageTable {
     fn validate_range(&self, iova_range: &Range<u64>) -> Result<usize> {
         if iova_range.start > iova_range.end
             || (iova_range.start | iova_range.end) & UAT_PGMSK as u64 != 0
-            || iova_range.start < G15_GART_RANGE7.start
-            || iova_range.end > G15_GART_RANGE7.end
         {
+            return Err(EINVAL);
+        }
+        let in_range7 = iova_range.start >= G15_GART_RANGE7.start
+            && iova_range.end <= G15_GART_RANGE7.end;
+        let in_range8 = iova_range.start >= G15_GART_RANGE8.start
+            && iova_range.end <= G15_GART_RANGE8.end;
+        if !in_range7 && !in_range8 {
             return Err(EINVAL);
         }
         Ok(((iova_range.end - iova_range.start) >> UAT_PGBIT) as usize)
     }
 
+    fn expected_leaf_bits(iova_range: &Range<u64>) -> Result<u64> {
+        if iova_range.start >= G15_GART_RANGE7.start && iova_range.end <= G15_GART_RANGE7.end {
+            Ok(Self::RANGE7_LEAF_BITS)
+        } else if iova_range.start >= G15_GART_RANGE8.start
+            && iova_range.end <= G15_GART_RANGE8.end
+        {
+            Ok(Self::RANGE8_LEAF_BITS)
+        } else {
+            Err(EINVAL)
+        }
+    }
+
     fn leaf_location(iova: u64) -> Result<(usize, usize)> {
-        if iova < G15_GART_RANGE7.start || iova >= G15_GART_RANGE7.end {
+        if iova < G15_GART_RANGE7.start || iova >= G15_GART_RANGE8.end {
             return Err(EINVAL);
         }
         let off = iova - G15_GART_RANGE7.start;
         let l2 = (off / Self::L2_SPAN) as usize;
         let l3 = ((off >> UAT_PGBIT) & (Self::L3_ENTRIES as u64 - 1)) as usize;
-        if l2 >= Self::RANGE7_L2_ENTRIES {
+        if l2 >= Self::BANK1_L2_ENTRIES {
             return Err(EINVAL);
         }
         Ok((l2, l3))
@@ -1322,7 +1350,7 @@ impl G15SharedBank1PageTable {
     }
 
     fn validate_parents(&self) -> Result {
-        for idx in 0..Self::RANGE7_L2_ENTRIES {
+        for idx in 0..Self::BANK1_L2_ENTRIES {
             let slot = unsafe {
                 self._shared_l2
                     .ptr()
@@ -1332,7 +1360,7 @@ impl G15SharedBank1PageTable {
             let got = unsafe { core::ptr::read_volatile(slot) };
             if got != self.l3_desc[idx] {
                 pr_err!(
-                    "MMU: G15 shared range-7 parent {} changed got={:#x} expected={:#x}\n",
+                    "MMU: G15 shared bank-1 parent {} changed got={:#x} expected={:#x}\n",
                     idx,
                     got,
                     self.l3_desc[idx]
@@ -1364,10 +1392,14 @@ impl G15SharedBank1PageTable {
             return Err(EINVAL);
         }
         let leaf_bits = prot.as_pte() | Self::TABLE_TYPE_BITS;
-        if leaf_bits != Self::RANGE7_LEAF_BITS {
+        let expected_leaf_bits = Self::expected_leaf_bits(&iova_range)?;
+        if leaf_bits != expected_leaf_bits {
             pr_err!(
-                "MMU: G15 range-7 rejected unexpected PTE protection bits {:#x}\n",
-                leaf_bits
+                "MMU: G15 bank-1 rejected PTE protection bits {:#x} for {:#x}..{:#x} (expected {:#x})\n",
+                leaf_bits,
+                iova_range.start,
+                iova_range.end,
+                expected_leaf_bits
             );
             return Err(EINVAL);
         }
@@ -1385,7 +1417,7 @@ impl G15SharedBank1PageTable {
                 return Err(EINVAL);
             }
             if self.read_leaf(iova)? != 0 {
-                pr_err!("MMU: G15 range-7 IOVA {:#x} already mapped\n", iova);
+                pr_err!("MMU: G15 bank-1 IOVA {:#x} already mapped\n", iova);
                 return Err(EBUSY);
             }
         }
@@ -1409,7 +1441,7 @@ impl G15SharedBank1PageTable {
             let iova = iova_range.start + (page * UAT_PGSZ) as u64;
             let pte = self.read_leaf(iova)?;
             if pte != 0 && pte & Self::TABLE_TYPE_BITS != Self::TABLE_TYPE_BITS {
-                pr_err!("MMU: G15 range-7 invalid leaf at {:#x}: {:#x}\n", iova, pte);
+                pr_err!("MMU: G15 bank-1 invalid leaf at {:#x}: {:#x}\n", iova, pte);
                 return Err(EIO);
             }
         }
@@ -1466,6 +1498,53 @@ impl G15SharedBank1PageTable {
         );
         Ok(())
     }
+
+    /// E075 validates the exact FList range-8 Page-Pool-State leaf class while
+    /// still below InitData/RTKit. Only one temporary leaf is published; the
+    /// normal shared-bank allocator remains range-7-only in this checkpoint.
+    fn e075_preflight_range8_leaf(&mut self, dev: &driver::AsahiDevice) -> Result {
+        let data = Page::alloc_page(GFP_KERNEL | __GFP_ZERO)?;
+        let phys = data.phys();
+        if phys & UAT_PGMSK as u64 != 0 || phys & !self.oas_mask != 0 {
+            return Err(EIO);
+        }
+        let range = G15_GART_RANGE8.start..(G15_GART_RANGE8.start + UAT_PGSZ as u64);
+        self.alloc_pages(range.clone())?;
+        self.map_pages(range.clone(), phys, PROT_G15_RANGE8_FW, false)?;
+        fence(Ordering::SeqCst);
+        mem::tlbi_all();
+        mem::sync();
+
+        let published = self.read_leaf(range.start)?;
+        let expected = phys | Self::RANGE8_LEAF_BITS;
+        let unmap_result = self.unmap_pages(range.clone());
+        fence(Ordering::SeqCst);
+        mem::tlbi_all();
+        mem::sync();
+        let cleared = self.read_leaf(range.start)? == 0;
+
+        if unmap_result.is_err() || !cleared {
+            core::mem::forget(data);
+            return Err(EIO);
+        }
+        if published != expected {
+            dev_err!(
+                dev.as_ref(),
+                "MMU: E075 range-8 leaf mismatch got={:#x} expected={:#x}\n",
+                published,
+                expected
+            );
+            return Err(EIO);
+        }
+
+        dev_info!(
+            dev.as_ref(),
+            "MMU: G15 E075 range-8 leaf PTE PASS (VA {:#x}, bits {:#018x}, clean leaf)\n",
+            range.start,
+            Self::RANGE8_LEAF_BITS
+        );
+        Ok(())
+    }
 }
 
 impl Drop for G15SharedBank1PageTable {
@@ -1478,7 +1557,7 @@ impl Drop for G15SharedBank1PageTable {
         // An occupied leaf means external lifetime ordering failed. Keep every
         // L3 page alive rather than letting Apple/firmware retain a pointer into
         // freed Linux memory.
-        let all_leaves_zero = (0..Self::RANGE7_L2_ENTRIES).all(|l2| {
+        let all_leaves_zero = (0..Self::BANK1_L2_ENTRIES).all(|l2| {
             leaves[l2].with_page_mapped(|ptr| {
                 for idx in 0..Self::L3_ENTRIES {
                     let pte = unsafe {
@@ -1503,7 +1582,7 @@ impl Drop for G15SharedBank1PageTable {
             return;
         }
 
-        for idx in 0..Self::RANGE7_L2_ENTRIES {
+        for idx in 0..Self::BANK1_L2_ENTRIES {
             let slot = unsafe {
                 self._shared_l2
                     .ptr()
@@ -1518,7 +1597,7 @@ impl Drop for G15SharedBank1PageTable {
         mem::tlbi_all();
         mem::sync();
 
-        let detached = (0..Self::RANGE7_L2_ENTRIES).all(|idx| {
+        let detached = (0..Self::BANK1_L2_ENTRIES).all(|idx| {
             let slot = unsafe {
                 self._shared_l2
                     .ptr()
@@ -1539,10 +1618,10 @@ impl Drop for G15SharedBank1PageTable {
         }
 
         // Taking and dropping only after exact parent-zero proof releases the
-        // six Linux pages with no remaining firmware-carveout references.
+        // eight Linux pages with no remaining firmware-carveout references.
         core::mem::drop(self.l3.take());
         pr_info!(
-            "MMU: G15 shared bank-1 backend teardown PASS (6 parents detached, leaves clean)\n"
+            "MMU: G15 shared bank-1 backend teardown PASS (8 parents detached, leaves clean)\n"
         );
     }
 }
@@ -2899,9 +2978,11 @@ impl Uat {
             core::mem::drop(inner);
             let mut bank1 = G15SharedBank1State::new(dev, cfg, ttb1)?;
             // E029 exercises the persistent shared-bank1 backend itself. The
-            // six Linux L3 parents remain installed until UAT teardown; the
-            // test leaf is mapped/unmapped through the real runtime methods.
+            // Eight Linux L3 parents (six range-7, two range-8) remain installed
+            // until UAT teardown; both test leaves are mapped/unmapped through
+            // the same bounded backend methods.
             bank1.page_table.e029_preflight_backend(dev)?;
+            bank1.page_table.e075_preflight_range8_leaf(dev)?;
             inner = uat.inner.lock();
             inner.g15_shared_bank1 = Some(bank1);
         }

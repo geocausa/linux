@@ -229,11 +229,11 @@ impl platform::Driver for AsahiDriver {
             regs::Resources::stop_cpu(pdev)?;
             dev_info!(pdev.as_ref(), "T8122 G15 ASC stopped after UAT preflight\n");
 
-            // E074 diagnostic-only gate: the range-8 parent proof is read-only
+            // E075 diagnostic-only gate: the range-8 leaf preflight is bounded
             // and must not continue into InitData/RTKit/DRM in this build.
             dev_info!(
                 pdev.as_ref(),
-                "T8122 G15 E074 range-8 parent read-only preflight complete; persistent runtime blocked\n"
+                "T8122 G15 E075 range-8 leaf preflight complete; persistent runtime blocked\n"
             );
             if cfg.gpu_gen == hw::GpuGen::G15 {
                 return Err(ENODEV);
