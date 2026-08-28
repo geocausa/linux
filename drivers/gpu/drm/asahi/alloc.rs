@@ -481,6 +481,29 @@ impl G15SharedBank1Allocator {
         }
     }
 
+    /// Dedicated eGartRange-7 allocator for the exact 8-byte AGXUMAFList
+    /// FW-Uncached-State object. It shares the collision-safe range-7 VA arena
+    /// with PM/q22 but fixes the distinct compact-0x00b protection class.
+    #[allow(dead_code)]
+    pub(crate) fn new_range7_flist(
+        dev: &AsahiDevice,
+        bank1: mmu::G15SharedBank1,
+        min_align: usize,
+        mut cpu_maps: bool,
+        notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
+    ) -> Self {
+        if debug_enabled(DebugFlags::ForceCPUMaps) { cpu_maps = true; }
+        Self {
+            dev: dev.into(),
+            bank1,
+            aperture: mmu::G15SharedBank1Aperture::Range7FList,
+            prot: mmu::PROT_G15_RANGE7_FLIST_FW,
+            min_align,
+            cpu_maps,
+            notifier,
+        }
+    }
+
     /// Dedicated eGartRange-8 allocator for G15 FList Page-Pool State objects.
     /// The protection class is fixed by the exact E075 leaf proof rather than
     /// supplied by callers, keeping PM/range-7 attributes impossible here.

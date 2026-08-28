@@ -105,6 +105,19 @@ pub(crate) mod raw {
     const _: [(); 0x60] = [(); core::mem::offset_of!(G15UMAPagePoolState, host_zero_60)];
     const _: [(); 0x68] = [(); core::mem::offset_of!(G15UMAPagePoolState, host_zero_68)];
 
+    /// Exact 23J220 AGXUMAFList +0x1b0 backing. Apple allocates one 8-byte
+    /// GPU/FW-visible object in eGartRange 7, zeros it, and mirrors this qword
+    /// into G15UMAPagePoolState +0x50. Firmware requires the pointed value and
+    /// mirror to remain equal before refreshing the page-pool descriptor.
+    #[derive(Clone, Copy, Debug)]
+    #[repr(C)]
+    pub(crate) struct G15UMAFWUncachedState {
+        pub(crate) coherency_value: U64,
+    }
+    default_zeroed!(G15UMAFWUncachedState);
+    const _: [(); 0x08] = [(); core::mem::size_of::<G15UMAFWUncachedState>()];
+    const _: [(); 0x00] = [(); core::mem::offset_of!(G15UMAFWUncachedState, coherency_value)];
+
     #[derive(Debug, Default)]
     #[repr(C)]
     pub(crate) struct Stats {

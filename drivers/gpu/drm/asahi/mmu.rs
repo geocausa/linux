@@ -1061,6 +1061,7 @@ impl G15SharedBank1PageTable {
     const L2_SPAN: u64 = (UAT_PGSZ as u64) * (Self::L3_ENTRIES as u64);
     const TABLE_TYPE_BITS: u64 = 0x3;
     const RANGE7_LEAF_BITS: u64 = 0x00c0_0000_0000_0447;
+    const RANGE7_FLIST_LEAF_BITS: u64 = 0x00c0_0000_0000_044b;
     const RANGE8_LEAF_BITS: u64 = 0x00c0_0000_0000_0443;
 
     fn new(dev: &driver::AsahiDevice, cfg: &'static hw::HwConfig, ttb: PhysicalAddr) -> Result<Self> {
@@ -1302,13 +1303,21 @@ impl G15SharedBank1PageTable {
         Ok(((iova_range.end - iova_range.start) >> UAT_PGBIT) as usize)
     }
 
-    fn expected_leaf_bits(iova_range: &Range<u64>) -> Result<u64> {
+    fn validate_leaf_bits(iova_range: &Range<u64>, leaf_bits: u64) -> Result {
         if iova_range.start >= G15_GART_RANGE7.start && iova_range.end <= G15_GART_RANGE7.end {
-            Ok(Self::RANGE7_LEAF_BITS)
+            if leaf_bits == Self::RANGE7_LEAF_BITS || leaf_bits == Self::RANGE7_FLIST_LEAF_BITS {
+                Ok(())
+            } else {
+                Err(EINVAL)
+            }
         } else if iova_range.start >= G15_GART_RANGE8.start
             && iova_range.end <= G15_GART_RANGE8.end
         {
-            Ok(Self::RANGE8_LEAF_BITS)
+            if leaf_bits == Self::RANGE8_LEAF_BITS {
+                Ok(())
+            } else {
+                Err(EINVAL)
+            }
         } else {
             Err(EINVAL)
         }
@@ -1392,14 +1401,12 @@ impl G15SharedBank1PageTable {
             return Err(EINVAL);
         }
         let leaf_bits = prot.as_pte() | Self::TABLE_TYPE_BITS;
-        let expected_leaf_bits = Self::expected_leaf_bits(&iova_range)?;
-        if leaf_bits != expected_leaf_bits {
+        if Self::validate_leaf_bits(&iova_range, leaf_bits).is_err() {
             pr_err!(
-                "MMU: G15 bank-1 rejected PTE protection bits {:#x} for {:#x}..{:#x} (expected {:#x})\n",
+                "MMU: G15 bank-1 rejected PTE protection bits {:#x} for {:#x}..{:#x}\n",
                 leaf_bits,
                 iova_range.start,
-                iova_range.end,
-                expected_leaf_bits
+                iova_range.end
             );
             return Err(EINVAL);
         }
@@ -1944,7 +1951,11 @@ impl Drop for G15SharedBank1Mapping {
 /// PM/range-7 VA (or vice versa) even though both share one page-table root.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum G15SharedBank1Aperture {
+    /// PM/q22 resource class, compact SecureGart option 0x007.
     Range7,
+    /// AGXUMAFList FW-Uncached-State class, compact option 0x00b.
+    Range7FList,
+    /// AGXUMAFList Page-Pool-State class, compact option 0x003.
     Range8,
 }
 
@@ -1975,18 +1986,36 @@ impl G15SharedBank1 {
         let mut phys_pages = KVec::with_capacity(size / UAT_PGSZ, GFP_KERNEL)?;
         let mut shared = self.inner.lock();
         let bank1 = shared.g15_shared_bank1.as_mut().ok_or(EINVAL)?;
-        let (arena, start, end) = match aperture {
+        let (arena, start, end, expected_prot) = match aperture {
             G15SharedBank1Aperture::Range7 => (
                 &mut bank1.range7_mm,
                 G15_GART_RANGE7.start,
                 G15_GART_RANGE7.end,
+                PROT_G15_RANGE7_FW,
+            ),
+            G15SharedBank1Aperture::Range7FList => (
+                &mut bank1.range7_mm,
+                G15_GART_RANGE7.start,
+                G15_GART_RANGE7.end,
+                PROT_G15_RANGE7_FLIST_FW,
             ),
             G15SharedBank1Aperture::Range8 => (
                 &mut bank1.range8_mm,
                 G15_GART_RANGE8.start,
                 G15_GART_RANGE8.end,
+                PROT_G15_RANGE8_FW,
             ),
         };
+        if prot.as_pte() != expected_prot.as_pte() {
+            dev_err!(
+                self.dev.as_ref(),
+                "MMU: G15 shared bank-1 aperture/protection mismatch {:?} got={:#x} expected={:#x}\n",
+                aperture,
+                prot.as_pte(),
+                expected_prot.as_pte()
+            );
+            return Err(EINVAL);
+        }
         let node = arena.insert_node_in_range(
             G15SharedBank1MappingInner {
                 _gem: gem.into(),
