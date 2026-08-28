@@ -267,6 +267,71 @@ impl G15HardwareBufferIdState {
     }
 }
 
+/// Synchronized owner for the exact G15 HardwareBuffer-ID state machine.
+/// E080 defines the lock/Arc lifetime but deliberately does not instantiate this
+/// manager in GpuManager, InitData, a queue, or any FList runtime object.
+#[derive(Clone)]
+#[allow(dead_code)]
+pub(crate) struct G15HardwareBufferIdManager(Arc<Mutex<G15HardwareBufferIdState>>);
+
+#[allow(dead_code)]
+impl G15HardwareBufferIdManager {
+    pub(crate) fn new() -> Result<Self> {
+        Ok(Self(Arc::pin_init(
+            new_mutex!(G15HardwareBufferIdState::new(), "g15_hardware_buffer_ids"),
+            GFP_KERNEL,
+        )?))
+    }
+
+    pub(crate) fn acquire(
+        &self,
+        binding: &mut G15HardwareBufferBinding,
+    ) -> Result<G15HardwareBufferLease> {
+        self.0.lock().acquire(binding)
+    }
+
+    pub(crate) fn complete(
+        &self,
+        binding: &G15HardwareBufferBinding,
+        hardware_buffer_id: u32,
+    ) -> Result<bool> {
+        self.0.lock().complete(binding, hardware_buffer_id)
+    }
+}
+
+/// FList-side sticky HardwareBuffer ownership. This is the host object boundary
+/// corresponding to AGXHardwareBufferBase +0x10: it retains the binding across
+/// zero-reference periods so the manager can reuse the same dormant ID until it
+/// is stolen. `prepare_reference()` / `complete_reference()` return the exact
+/// callback transition booleans; E080 does not execute those callbacks itself.
+#[allow(dead_code)]
+pub(crate) struct G15FListHardwareBufferOwner {
+    manager: G15HardwareBufferIdManager,
+    binding: G15HardwareBufferBinding,
+}
+
+#[allow(dead_code)]
+impl G15FListHardwareBufferOwner {
+    pub(crate) fn new(manager: G15HardwareBufferIdManager, owner_cookie: u64) -> Result<Self> {
+        Ok(Self {
+            manager,
+            binding: G15HardwareBufferBinding::new(owner_cookie)?,
+        })
+    }
+
+    pub(crate) fn sticky_id(&self) -> Option<u32> {
+        self.binding.hardware_buffer_id()
+    }
+
+    pub(crate) fn prepare_reference(&mut self) -> Result<G15HardwareBufferLease> {
+        self.manager.acquire(&mut self.binding)
+    }
+
+    pub(crate) fn complete_reference(&self, hardware_buffer_id: u32) -> Result<bool> {
+        self.manager.complete(&self.binding, hardware_buffer_id)
+    }
+}
+
 /// Apple G15 parameter-management device configuration recovered from
 /// `AGXAcceleratorG15::halGetPMConfig()`.
 ///
