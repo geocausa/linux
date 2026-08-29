@@ -183,6 +183,43 @@ impl G15HWMetricsBacking {
 
 const _: [(); 0x100] = [(); G15HWMetricsBacking::RECORD_COUNT];
 
+/// First phase of the E112 two-phase transaction. The rotating slots and
+/// command-independent UMA/HWMetrics assets are known, but the SKU bytes have
+/// not been serialized or written because the RunCompute FWVA is not known yet.
+#[derive(Debug)]
+#[allow(dead_code)]
+struct G15UnpublishedStockEmptyPrepare {
+    event_index: usize,
+    event_control_fwva: u64,
+    sku: fw::compute::G15ReservedSkuSlot,
+    page_pool_state_fwva: u64,
+    hwmetrics_fwva: u64,
+    hardware_buffer_id: u32,
+    state_sequence: u32,
+}
+
+/// Still-unclosed runtime sources required only at the command-aware SKU
+/// finalize boundary. E113 deliberately keeps them explicit rather than
+/// deriving guessed constants from the dormant Linux constructor.
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
+struct G15StockEmptySkuFinalizeInputs {
+    firmware_state_fwva: u64,
+    channel_state_fwva: u64,
+    channel_command_region_base_fwva: u64,
+    fw_stamp_fwva: u64,
+    user_timestamp_start: u64,
+    user_timestamp_end: u64,
+    command_counter: u64,
+    context_id: u32,
+    queue_event_sequence: u32,
+    evctl_index: u32,
+    uuid: u32,
+    stamp_value: u32,
+    gart_soft_fault_enabled: bool,
+    accelerator_654_bit7: bool,
+}
+
 /// Fully materialized stock-empty command assets that are still deliberately
 /// unpublished. This token is not a firmware structure and has no RunCompute
 /// conversion/consumer. It exists only to prove the exact owner graph can
@@ -297,28 +334,22 @@ impl G15StockEmptyComputeOwnerGraph {
         })
     }
 
-    /// Materialize one stock-empty asset set after the caller has separately
-    /// proven both supplied slots retired. This method still cannot create a
-    /// RunCompute command. Event/SKU writes happen before HardwareBuffer
-    /// activation, so an activation failure leaves only unpublished retired
-    /// slots modified and does not leak a manager reference.
-    #[allow(clippy::too_many_arguments)]
-    fn prepare_unpublished_after_retirement(
+    /// Phase 1: after the caller has bound both retirement guards, seed the
+    /// selected event-control state, reserve (but do not write) the SKU slot,
+    /// activate the exact stock-empty FList epoch and reserve the HWMetrics
+    /// record. No RunCompute address is required or published here.
+    fn prepare_unpublished_phase1(
         &mut self,
         event_index: usize,
         state_sequence: u32,
         sku_index: usize,
-        sku_stream: &fw::compute::G15StockEmptySkuStream,
         priority: u32,
-    ) -> Result<G15UnpublishedStockEmptyCommandAssets> {
+    ) -> Result<G15UnpublishedStockEmptyPrepare> {
         self._event_control
             .seed_selected_after_event_finish(event_index, state_sequence)?;
         let event_control_fwva = self._event_control.control_fwva(event_index)?;
-        let sku = self._sku.write_retired_stock_empty_slot(sku_index, sku_stream)?;
-        if event_control_fwva == 0
-            || sku.fwva() == 0
-            || sku.size() as usize != fw::compute::G15_STOCK_EMPTY_SKU_STREAM_SIZE
-        {
+        let sku = self._sku.reserve_retired_slot(sku_index)?;
+        if event_control_fwva == 0 || sku.fwva() == 0 {
             return Err(EIO);
         }
 
@@ -342,14 +373,92 @@ impl G15StockEmptyComputeOwnerGraph {
             return Err(EIO);
         }
 
-        Ok(G15UnpublishedStockEmptyCommandAssets {
+        Ok(G15UnpublishedStockEmptyPrepare {
+            event_index,
             event_control_fwva,
-            sku_fwva: sku.fwva(),
-            sku_size: sku.size(),
+            sku,
             page_pool_state_fwva,
             hwmetrics_fwva,
             hardware_buffer_id: lease.hardware_buffer_id,
+            state_sequence,
         })
+    }
+
+    /// Phase 2: after a future caller has allocated the RunCompute backing and
+    /// therefore knows its FWVA, serialize E102 using the exact selected SKU
+    /// slot address and explicit still-unclosed runtime sources, then write only
+    /// that already-retired slot. The result remains a host-only E111 stage.
+    fn finalize_unpublished(
+        &mut self,
+        prepared: G15UnpublishedStockEmptyPrepare,
+        command_fwva: u64,
+        input: G15StockEmptySkuFinalizeInputs,
+    ) -> Result<G15UnpublishedRunComputeFieldStage> {
+        if command_fwva == 0 {
+            let _ = self._flist.complete_reference(prepared.hardware_buffer_id);
+            return Err(EINVAL);
+        }
+
+        let sku_input = fw::compute::G15StockEmptySkuInputs {
+            command_fwva,
+            stream_fwva: prepared.sku.fwva(),
+            firmware_state_fwva: input.firmware_state_fwva,
+            channel_state_fwva: input.channel_state_fwva,
+            channel_command_region_base_fwva: input.channel_command_region_base_fwva,
+            event_control_fwva: prepared.event_control_fwva,
+            page_pool_state_fwva: prepared.page_pool_state_fwva,
+            hwmetrics_fwva: prepared.hwmetrics_fwva,
+            fw_stamp_fwva: input.fw_stamp_fwva,
+            user_timestamp_start: input.user_timestamp_start,
+            user_timestamp_end: input.user_timestamp_end,
+            command_counter: input.command_counter,
+            context_id: input.context_id,
+            state_sequence: prepared.state_sequence,
+            queue_event_sequence: input.queue_event_sequence,
+            evctl_index: input.evctl_index,
+            uuid: input.uuid,
+            stamp_value: input.stamp_value,
+            gart_soft_fault_enabled: input.gart_soft_fault_enabled,
+            accelerator_654_bit7: input.accelerator_654_bit7,
+        };
+        let stream = match fw::compute::G15StockEmptySkuStream::new(sku_input) {
+            Ok(stream) => stream,
+            Err(err) => {
+                let _ = self._flist.complete_reference(prepared.hardware_buffer_id);
+                return Err(err);
+            }
+        };
+        let sku = match self
+            ._sku
+            .write_reserved_stock_empty_slot(prepared.sku, &stream)
+        {
+            Ok(sku) => sku,
+            Err(err) => {
+                let _ = self._flist.complete_reference(prepared.hardware_buffer_id);
+                return Err(err);
+            }
+        };
+        if sku.fwva() == 0
+            || sku.size() as usize != fw::compute::G15_STOCK_EMPTY_SKU_STREAM_SIZE
+        {
+            let _ = self._flist.complete_reference(prepared.hardware_buffer_id);
+            return Err(EIO);
+        }
+
+        Ok(G15UnpublishedRunComputeFieldStage::from_assets(
+            G15UnpublishedStockEmptyCommandAssets {
+                event_control_fwva: prepared.event_control_fwva,
+                sku_fwva: sku.fwva(),
+                sku_size: sku.size(),
+                page_pool_state_fwva: prepared.page_pool_state_fwva,
+                hwmetrics_fwva: prepared.hwmetrics_fwva,
+                hardware_buffer_id: prepared.hardware_buffer_id,
+            },
+        ))
+    }
+
+    fn abort_unpublished(&self, prepared: G15UnpublishedStockEmptyPrepare) -> Result<bool> {
+        self._flist.complete_reference(prepared.hardware_buffer_id)
     }
 
     fn complete_unpublished(
@@ -729,26 +838,23 @@ impl G15StockEmptyAssetGuards::ver {
         })
     }
 
-    /// Select and bind both exact rotating lifetimes to an already-armed Linux
-    /// submission fence before any GPU-visible backing is rewritten. On any
-    /// materialization failure the freshly-bound guard entries are cleared;
-    /// the underlying rotation indices intentionally remain advanced, which is
-    /// conservative and cannot make an occupied slot reusable prematurely.
-    fn prepare_unpublished(
+    /// Phase 1: bind both exact rotating lifetimes to an already-armed Linux
+    /// submission fence, then reserve command-independent assets without
+    /// serializing or writing SKU bytes. On failure fresh guard entries roll
+    /// back while the exact rotation positions remain conservative.
+    fn prepare_unpublished_phase1(
         &mut self,
         owners: &mut G15StockEmptyComputeOwnerGraph,
         fence: &UserFence<JobFence::ver>,
         state_sequence: u32,
-        sku_stream: &fw::compute::G15StockEmptySkuStream,
         priority: u32,
-    ) -> Result<G15UnpublishedRunComputeFieldStage> {
+    ) -> Result<G15UnpublishedStockEmptyPrepare> {
         if fence.pending.load(Ordering::Acquire) == 0 {
             return Err(EINVAL);
         }
 
         // Apple selects exactly the next command-buffer state and waits for
         // that state to finish; it does not skip a busy event-control slot.
-        // Keep the selector unchanged on EBUSY so a retry targets the same slot.
         let event_index = owners._event_control.next_index();
         if !self.event.try_finish(event_index)? {
             return Err(EBUSY);
@@ -766,20 +872,53 @@ impl G15StockEmptyAssetGuards::ver {
             }
         };
 
-        match owners.prepare_unpublished_after_retirement(
+        match owners.prepare_unpublished_phase1(
             event_index,
             state_sequence,
             sku_index,
-            sku_stream,
             priority,
         ) {
-            Ok(assets) => Ok(G15UnpublishedRunComputeFieldStage::from_assets(assets)),
+            Ok(prepared) => Ok(prepared),
             Err(err) => {
                 self.event.rollback_bound(event_index);
                 self.sku.rollback_bound(sku_index);
                 Err(err)
             }
         }
+    }
+
+    /// Phase 2: once a future caller knows the RunCompute FWVA and has closed
+    /// all explicit SKU runtime inputs, finalize the reserved slot. This still
+    /// returns only the host-only E111 stage and has no command writer.
+    fn finalize_unpublished(
+        &mut self,
+        owners: &mut G15StockEmptyComputeOwnerGraph,
+        prepared: G15UnpublishedStockEmptyPrepare,
+        command_fwva: u64,
+        input: G15StockEmptySkuFinalizeInputs,
+    ) -> Result<G15UnpublishedRunComputeFieldStage> {
+        let event_index = prepared.event_index;
+        let sku_index = prepared.sku.index();
+        match owners.finalize_unpublished(prepared, command_fwva, input) {
+            Ok(stage) => Ok(stage),
+            Err(err) => {
+                self.event.rollback_bound(event_index);
+                self.sku.rollback_bound(sku_index);
+                Err(err)
+            }
+        }
+    }
+
+    fn abort_unpublished(
+        &mut self,
+        owners: &G15StockEmptyComputeOwnerGraph,
+        prepared: G15UnpublishedStockEmptyPrepare,
+    ) -> Result<bool> {
+        let event_index = prepared.event_index;
+        let sku_index = prepared.sku.index();
+        self.event.rollback_bound(event_index);
+        self.sku.rollback_bound(sku_index);
+        owners.abort_unpublished(prepared)
     }
 
     fn scrub_completed(&mut self) {

@@ -498,6 +498,28 @@ impl G15StockEmptySkuStream {
     }
 }
 
+/// One selected/retired SKU slot whose address is known before bytes are
+/// serialized. E113 separates this reservation from the later command-aware
+/// serializer because the exact SKU payload embeds both command and stream
+/// addresses. The token has no RunCompute consumer.
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
+pub(crate) struct G15ReservedSkuSlot {
+    index: u16,
+    fwva: u64,
+}
+
+#[allow(dead_code)]
+impl G15ReservedSkuSlot {
+    pub(crate) fn index(&self) -> usize {
+        self.index as usize
+    }
+
+    pub(crate) fn fwva(&self) -> u64 {
+        self.fwva
+    }
+}
+
 /// One fully serialized but still-unpublished SKU slot. E107 allows the FWVA
 /// to exist only in this definition-only token; RunCompute has no consumer.
 #[derive(Clone, Copy, Debug)]
@@ -563,15 +585,10 @@ impl G15SkuBacking {
         Ok(Self { backing })
     }
 
-    /// Copy one E102 stock-empty stream into a slot that the caller has already
-    /// proved retired/bound through the E106 guard. The entire 0x300-byte slot
-    /// is cleared first, preserving Apple's 0x40 bytes of stock-empty slack.
-    /// The returned FWVA is intentionally trapped in an unpublished token.
-    pub(crate) fn write_retired_stock_empty_slot(
-        &mut self,
-        index: usize,
-        stream: &G15StockEmptySkuStream,
-    ) -> Result<G15PreparedSkuSlot> {
+    /// Resolve one already-retired slot address without writing the backing.
+    /// This is the first phase required by E112: the selected stream FWVA must
+    /// be known before E102 can serialize command-relative SKU bytes.
+    pub(crate) fn reserve_retired_slot(&self, index: usize) -> Result<G15ReservedSkuSlot> {
         if index >= G15_SKU_SLOT_COUNT {
             return Err(EINVAL);
         }
@@ -580,7 +597,31 @@ impl G15SkuBacking {
         if end > self.backing.len() {
             return Err(EIO);
         }
+        let base: u64 = self.backing.weak_pointer().into();
+        let fwva = base.checked_add(start as u64).ok_or(EOVERFLOW)?;
+        Ok(G15ReservedSkuSlot {
+            index: index.try_into().map_err(|_| EOVERFLOW)?,
+            fwva,
+        })
+    }
 
+    /// Copy a finalized E102 stock-empty stream into a previously reserved
+    /// slot. The reservation is re-derived before the write so an index/FWVA
+    /// mismatch fails closed. The complete 0x300 bytes are cleared first.
+    pub(crate) fn write_reserved_stock_empty_slot(
+        &mut self,
+        reserved: G15ReservedSkuSlot,
+        stream: &G15StockEmptySkuStream,
+    ) -> Result<G15PreparedSkuSlot> {
+        let expected = self.reserve_retired_slot(reserved.index())?;
+        if expected.fwva() != reserved.fwva() {
+            return Err(EIO);
+        }
+        let start = reserved
+            .index()
+            .checked_mul(G15_SKU_SLOT_STRIDE)
+            .ok_or(EOVERFLOW)?;
+        let end = start.checked_add(G15_SKU_SLOT_STRIDE).ok_or(EOVERFLOW)?;
         let slot = &mut self.backing.as_mut_slice()[start..end];
         for byte in slot.iter_mut() {
             *byte = 0;
@@ -592,15 +633,26 @@ impl G15SkuBacking {
         {
             return Err(EIO);
         }
-
-        let base: u64 = self.backing.weak_pointer().into();
-        let fwva = base.checked_add(start as u64).ok_or(EOVERFLOW)?;
         Ok(G15PreparedSkuSlot {
-            index: index.try_into().map_err(|_| EOVERFLOW)?,
-            fwva,
+            index: reserved.index().try_into().map_err(|_| EOVERFLOW)?,
+            fwva: reserved.fwva(),
             size: G15_STOCK_EMPTY_SKU_STREAM_SIZE as u32,
         })
     }
+
+    /// Copy one E102 stock-empty stream into a slot that the caller has already
+    /// proved retired/bound through the E106 guard. The entire 0x300-byte slot
+    /// is cleared first, preserving Apple's 0x40 bytes of stock-empty slack.
+    /// The returned FWVA is intentionally trapped in an unpublished token.
+    pub(crate) fn write_retired_stock_empty_slot(
+        &mut self,
+        index: usize,
+        stream: &G15StockEmptySkuStream,
+    ) -> Result<G15PreparedSkuSlot> {
+        let reserved = self.reserve_retired_slot(index)?;
+        self.write_reserved_stock_empty_slot(reserved, stream)
+    }
+
 }
 
 #[versions(AGX)]
