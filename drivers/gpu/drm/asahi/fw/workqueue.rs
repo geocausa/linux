@@ -283,6 +283,13 @@ const _: [(); 0x6e0] = [(); G15_J615_CHANNEL_MEMORY_BACKING_SLACK_BYTES];
 pub(crate) const G15_J615_FIRST_CL_EVCTL_INDEX: u32 = 0;
 #[allow(dead_code)]
 pub(crate) const G15_J615_CL_SECOND_CONSTRUCTOR_INTEGER: u32 = 0x50;
+/// E124 closes AGXChannel::init()'s derived channel +0x54 value for the
+/// normal J615 CL constructor: min(0x50, 0x80) << 4 = 0x500. Exact
+/// resetChannelState() publishes this into selected uncached channel memory
+/// +0x50 while zeroing four sibling header words.
+pub(crate) const G15_J615_CL_UNCACHED_CHANNEL_VALUE_50: u32 =
+    G15_J615_CL_SECOND_CONSTRUCTOR_INTEGER << 4;
+const _: [(); 0x500] = [(); G15_J615_CL_UNCACHED_CHANNEL_VALUE_50 as usize];
 pub(crate) const G15_J615_CL_PRIORITY_INTEGER_ARGUMENT: u32 = 2;
 pub(crate) const G15_J615_CDM_BACKOFF_TIMEOUT: u8 = 4;
 

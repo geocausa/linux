@@ -350,6 +350,15 @@ struct G15UncachedChannelMemoryBackingBlock {
     block: alloc::G15SharedGpuArray<u8>,
 }
 
+/// Private E124 proof token: one caller-selected local element has received
+/// the exact CL reset header writes. It deliberately carries no FWVA and does
+/// not model the global Apple resource-stack index.
+#[derive(Debug)]
+#[allow(dead_code)]
+struct G15PreparedUncachedChannelMemory {
+    slot_index: usize,
+}
+
 #[allow(dead_code)]
 impl G15UncachedChannelMemoryBackingBlock {
     fn new(
@@ -376,6 +385,42 @@ impl G15UncachedChannelMemoryBackingBlock {
             return Err(EIO);
         }
         Ok(Self { block })
+    }
+
+    fn put_u32(slot: &mut [u8], offset: usize, value: u32) -> Result {
+        let end = offset.checked_add(4).ok_or(EOVERFLOW)?;
+        let dst = slot.get_mut(offset..end).ok_or(EINVAL)?;
+        dst.copy_from_slice(&value.to_le_bytes());
+        Ok(())
+    }
+
+    /// Apply only the exact E124 `resetChannelState()` writes to one already
+    /// selected local uncached-memory element. Apple does not bulk-clear this
+    /// element in resetChannelState(), so this helper deliberately touches only
+    /// the six proven u32 header locations. The backing is still definition-only
+    /// and this method returns no firmware address.
+    fn reset_selected_j615_cl(
+        &mut self,
+        slot_index: usize,
+    ) -> Result<G15PreparedUncachedChannelMemory> {
+        let offset = g15_j615_channel_memory_slot_offset(slot_index).ok_or(EINVAL)?;
+        let end = offset
+            .checked_add(fw::workqueue::G15_J615_CHANNEL_MEMORY_BYTES)
+            .ok_or(EOVERFLOW)?;
+        let slot = self.block.as_mut_slice().get_mut(offset..end).ok_or(EIO)?;
+
+        Self::put_u32(slot, 0x00, 0)?;
+        Self::put_u32(slot, 0x10, 0)?;
+        Self::put_u32(slot, 0x20, 0)?;
+        Self::put_u32(slot, 0x30, 0)?;
+        Self::put_u32(slot, 0x40, 0)?;
+        Self::put_u32(
+            slot,
+            0x50,
+            fw::workqueue::G15_J615_CL_UNCACHED_CHANNEL_VALUE_50,
+        )?;
+
+        Ok(G15PreparedUncachedChannelMemory { slot_index })
     }
 }
 
