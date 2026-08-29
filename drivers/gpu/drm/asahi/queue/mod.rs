@@ -408,6 +408,14 @@ impl G15EventControlBacking {
         }
         Ok(self._controls.weak_item_pointer(index).into())
     }
+
+    fn next_index(&self) -> usize {
+        (self._selector.current() + 1) % fw::event::G15_EVENT_CONTROL_STATE_COUNT
+    }
+
+    fn advance_index(&mut self) -> usize {
+        self._selector.advance()
+    }
 }
 
 #[versions(AGX)]
@@ -568,6 +576,12 @@ impl G15EventControlRetirementGuards::ver {
         }
         Ok(done)
     }
+
+    fn rollback_bound(&mut self, index: usize) {
+        if index < fw::event::G15_EVENT_CONTROL_STATE_COUNT {
+            self.slots[index] = None;
+        }
+    }
 }
 
 /// Conservative Linux retirement guards for the exact 0xf0 G15 Compute SKU
@@ -635,6 +649,90 @@ impl G15SkuRetirementGuards::ver {
                 *slot = None;
             }
         }
+    }
+
+    fn rollback_bound(&mut self, index: usize) {
+        if index < fw::compute::G15_SKU_SLOT_COUNT {
+            self.slots[index] = None;
+        }
+    }
+}
+
+/// Definition-only guard integration for one stock-empty Compute asset set.
+/// The versioned wrapper is required only because the existing submission fence
+/// and E096/E106 guard types are firmware-versioned. It has no Queue call site.
+#[versions(AGX)]
+#[allow(dead_code)]
+struct G15StockEmptyAssetGuards {
+    event: G15EventControlRetirementGuards::ver,
+    sku: G15SkuRetirementGuards::ver,
+}
+
+#[versions(AGX)]
+#[allow(dead_code)]
+impl G15StockEmptyAssetGuards::ver {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            event: G15EventControlRetirementGuards::ver::new()?,
+            sku: G15SkuRetirementGuards::ver::new()?,
+        })
+    }
+
+    /// Select and bind both exact rotating lifetimes to an already-armed Linux
+    /// submission fence before any GPU-visible backing is rewritten. On any
+    /// materialization failure the freshly-bound guard entries are cleared;
+    /// the underlying rotation indices intentionally remain advanced, which is
+    /// conservative and cannot make an occupied slot reusable prematurely.
+    fn prepare_unpublished(
+        &mut self,
+        owners: &mut G15StockEmptyComputeOwnerGraph,
+        fence: &UserFence<JobFence::ver>,
+        state_sequence: u32,
+        sku_stream: &fw::compute::G15StockEmptySkuStream,
+        priority: u32,
+    ) -> Result<G15UnpublishedStockEmptyCommandAssets> {
+        if fence.pending.load(Ordering::Acquire) == 0 {
+            return Err(EINVAL);
+        }
+
+        // Apple selects exactly the next command-buffer state and waits for
+        // that state to finish; it does not skip a busy event-control slot.
+        // Keep the selector unchanged on EBUSY so a retry targets the same slot.
+        let event_index = owners._event_control.next_index();
+        if !self.event.try_finish(event_index)? {
+            return Err(EBUSY);
+        }
+        if owners._event_control.advance_index() != event_index {
+            return Err(EIO);
+        }
+        self.event.bind_inflight(event_index, fence)?;
+
+        let sku_index = match self.sku.select_and_bind(fence) {
+            Ok(index) => index,
+            Err(err) => {
+                self.event.rollback_bound(event_index);
+                return Err(err);
+            }
+        };
+
+        match owners.prepare_unpublished_after_retirement(
+            event_index,
+            state_sequence,
+            sku_index,
+            sku_stream,
+            priority,
+        ) {
+            Ok(assets) => Ok(assets),
+            Err(err) => {
+                self.event.rollback_bound(event_index);
+                self.sku.rollback_bound(sku_index);
+                Err(err)
+            }
+        }
+    }
+
+    fn scrub_completed(&mut self) {
+        self.sku.scrub_completed();
     }
 }
 
