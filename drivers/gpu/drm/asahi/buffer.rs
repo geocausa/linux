@@ -710,6 +710,45 @@ impl G15FListResourceOwner {
         Ok(())
     }
 
+    /// Exact stock-empty 23J220 first-activation image.
+    ///
+    /// E100 correlates the exact prepareLocked() growth path with the stock
+    /// type-5 UMA accounting oracle: a successful empty Compute command leaves
+    /// every pool +0x38/+0x40 accounting qword at zero, so no pool-memory
+    /// growth occurs. populatePagePool() therefore sees no chained allocation,
+    /// leaves both list backings zero, and produces page_count/cursors and
+    /// Backup extent count zero. The CL pool itself is shared/reusable and
+    /// async-grow enabled; priority remains a real queue-derived input.
+    fn populate_stock_empty_first_epoch(
+        &mut self,
+        lease: G15HardwareBufferLease,
+        priority: u32,
+    ) -> Result {
+        if priority > 1 {
+            return Err(EINVAL);
+        }
+
+        // Keep this path mechanically tied to the exact empty-list oracle. If
+        // a future caller mutates either backing before activation, fail closed
+        // instead of silently publishing a non-empty state under empty rules.
+        if self.page_pool_list.as_slice().iter().any(|entry| entry.0 != 0)
+            || self.backup_page_list.as_slice().iter().any(|entry| entry.0 != 0)
+        {
+            return Err(EBUSY);
+        }
+
+        self.populate_first_initialized_epoch(
+            lease,
+            G15FListPopulationInputs {
+                async_grow_enabled: true,
+                priority,
+                current_allocated_bytes: 0,
+                backup_page_list_entry_count: 0,
+                shared_compute_pool: true,
+            },
+        )
+    }
+
     fn complete_reference(&self, hardware_buffer_id: u32) -> Result<bool> {
         self.plan.complete_reference(hardware_buffer_id)
     }
