@@ -205,7 +205,6 @@ struct G15ChannelStateResetInputs {
     state_fwva: u64,
     ring_fwva: u64,
     notifier_list_fwva: u64,
-    gpu_buf_fwva: u64,
     channel_4c_value: u32,
     gpu_context_fwva: u64,
     effective_priority: u32,
@@ -284,7 +283,6 @@ impl G15ChannelStateBackingBlock {
         if input.state_fwva == 0
             || input.ring_fwva == 0
             || input.notifier_list_fwva == 0
-            || input.gpu_buf_fwva == 0
             || input.gpu_context_fwva == 0
         {
             return Err(EINVAL);
@@ -295,6 +293,14 @@ impl G15ChannelStateBackingBlock {
         )
         .ok_or(EINVAL)?;
         let offset = Self::slot_offset(slot_index).ok_or(EINVAL)?;
+        let base: u64 = self.block.weak_pointer().into();
+        let fwva = base.checked_add(offset as u64).ok_or(EOVERFLOW)?;
+        let gpu_buf_fwva = fwva
+            .checked_add(fw::workqueue::G15_CHANNEL_STATE_GPU_BUF_OFFSET as u64)
+            .ok_or(EOVERFLOW)?;
+        if fwva == 0 || gpu_buf_fwva == 0 {
+            return Err(EIO);
+        }
         let end = offset
             .checked_add(fw::workqueue::G15_CHANNEL_STATE_BYTES)
             .ok_or(EOVERFLOW)?;
@@ -307,7 +313,9 @@ impl G15ChannelStateBackingBlock {
         Self::put_u64(slot, 0x00, input.state_fwva)?;
         Self::put_u64(slot, 0x08, input.ring_fwva)?;
         Self::put_u64(slot, 0x10, input.notifier_list_fwva)?;
-        Self::put_u64(slot, 0x18, input.gpu_buf_fwva)?;
+        // E121: AGXChannel::init() derives channel +0x88 from selected-state
+        // GPUVA +0xb0; resetChannelState() then publishes that value at +0x18.
+        Self::put_u64(slot, 0x18, gpu_buf_fwva)?;
         Self::put_u32(slot, 0x2c, u32::MAX)?;
         Self::put_u32(slot, 0x30, 4)?;
         Self::put_u32(slot, 0x4c, u32::MAX)?;
@@ -325,11 +333,6 @@ impl G15ChannelStateBackingBlock {
         Self::put_u32(slot, 0x44, priority.integer_arg_44)?;
         Self::put_u32(slot, 0x48, priority.qos_value_48)?;
 
-        let base: u64 = self.block.weak_pointer().into();
-        let fwva = base.checked_add(offset as u64).ok_or(EOVERFLOW)?;
-        if fwva == 0 {
-            return Err(EIO);
-        }
         Ok(G15PreparedChannelState { slot_index, fwva })
     }
 }

@@ -243,10 +243,20 @@ pub(crate) const G15_CHANNEL_STATE_BACKING_SLACK_BYTES: usize =
     G15_CHANNEL_STATE_BACKING_BYTES
         - G15_CHANNEL_STATE_SLOTS_PER_BACKING * G15_CHANNEL_STATE_BYTES;
 
+/// Exact in-slot pointer used by G15 QueueInfo `gpu_buf`. E121 proves
+/// AGXChannel::init() stores selected-state GPUVA + 0xb0 at channel +0x88,
+/// and resetChannelState() converts that value into QueueInfo +0x18.
+/// This is an offset inside the selected channel-state slot, not a separate
+/// G15 queue allocation.
+pub(crate) const G15_CHANNEL_STATE_GPU_BUF_OFFSET: usize = 0xb0;
+
 const _: [(); 0x8000] = [(); G15_CHANNEL_STATE_BACKING_BYTES];
 const _: [(); 0x24c0] = [(); G15_CHANNEL_STATE_BYTES];
 const _: [(); 3] = [(); G15_CHANNEL_STATE_SLOTS_PER_BACKING];
 const _: [(); 0x11c0] = [(); G15_CHANNEL_STATE_BACKING_SLACK_BYTES];
+const _: [(); 0xb0] = [(); G15_CHANNEL_STATE_GPU_BUF_OFFSET];
+const _: [(); G15_CHANNEL_STATE_GPU_BUF_OFFSET] =
+    [(); core::mem::size_of::<raw::QueueInfoG15V14_7<'static>>()];
 
 /// Exact normal-J615 CL-channel constructor values closed by E119.
 #[allow(dead_code)]
