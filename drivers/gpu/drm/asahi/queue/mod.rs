@@ -289,6 +289,115 @@ const _: [(); 0x0000] = [(); G15TimestampQueueBackingBlock::slot_offset(0).unwra
 const _: [(); 0x0018] = [(); G15TimestampQueueBackingBlock::slot_offset(1).unwrap()];
 const _: [(); 0x3fd8] = [(); G15TimestampQueueBackingBlock::slot_offset(0x2a9).unwrap()];
 
+/// One exact 23J220 `_AGFISchedulerState` range-8 backing block.
+///
+/// E126 proves one page-rounded 0x4000 block contains exactly 0x100 complete
+/// 0x40-byte states. The global firmware resource stack owns selection/release;
+/// this compile-only block has no externally reachable selected-state accessor.
+#[allow(dead_code)]
+struct G15SchedulerStateBackingBlock {
+    block: alloc::G15SharedGpuArray<u8>,
+}
+
+/// Private proof token for one caller-selected local scheduler state. The FWVA
+/// is consumed only by definition-only channel-state reconstruction; the local
+/// index is deliberately not claimed to equal Apple's global stack index.
+#[derive(Debug)]
+#[allow(dead_code)]
+struct G15PreparedSchedulerState {
+    slot_index: usize,
+    fwva: u64,
+}
+
+#[allow(dead_code)]
+impl G15SchedulerStateBackingBlock {
+    fn new(
+        dev: &AsahiDevice,
+        bank1: mmu::G15SharedBank1,
+        mapping_notifier: Arc<Mutex<mmu::G15MappingNotifier>>,
+    ) -> Result<Self> {
+        let mut allocator = alloc::G15SharedBank1Allocator::new_range8_scheduler_state(
+            dev,
+            bank1,
+            mmu::UAT_PGSZ,
+            true,
+            Some(mapping_notifier),
+        );
+        let block = allocator.array_empty_shared_data::<u8>(
+            fw::workqueue::G15_SCHEDULER_STATE_BACKING_BYTES,
+        )?;
+        let base: u64 = block.weak_pointer().into();
+        if block.len() != fw::workqueue::G15_SCHEDULER_STATE_BACKING_BYTES
+            || base == 0
+            || base & (mmu::UAT_PGSZ as u64 - 1) != 0
+            || fw::workqueue::G15_SCHEDULER_STATES_PER_BACKING != 0x100
+        {
+            return Err(EIO);
+        }
+        Ok(Self { block })
+    }
+
+    const fn slot_offset(index: usize) -> Option<usize> {
+        if index < fw::workqueue::G15_SCHEDULER_STATES_PER_BACKING {
+            Some(index * fw::workqueue::G15_SCHEDULER_STATE_BYTES)
+        } else {
+            None
+        }
+    }
+
+    fn put_u16(slot: &mut [u8], offset: usize, value: u16) -> Result {
+        let end = offset.checked_add(2).ok_or(EOVERFLOW)?;
+        let dst = slot.get_mut(offset..end).ok_or(EINVAL)?;
+        dst.copy_from_slice(&value.to_le_bytes());
+        Ok(())
+    }
+
+    fn put_u32(slot: &mut [u8], offset: usize, value: u32) -> Result {
+        let end = offset.checked_add(4).ok_or(EOVERFLOW)?;
+        let dst = slot.get_mut(offset..end).ok_or(EINVAL)?;
+        dst.copy_from_slice(&value.to_le_bytes());
+        Ok(())
+    }
+
+    /// Exact normal-J615 `AGXCommandQueue::init()` host reset of one already
+    /// selected scheduler state. Apple clears exactly the first 0x38 bytes,
+    /// then writes +0x00/+0x01=0xff, +0x05=1, +0x22=0xff, zero at +0x23..26,
+    /// and AGXShared+0x100 (=2) at +0x27. Bytes +0x38..0x3f are deliberately
+    /// preserved because the exact host constructor does not clear them.
+    fn reset_selected_j615(
+        &mut self,
+        slot_index: usize,
+    ) -> Result<G15PreparedSchedulerState> {
+        let offset = Self::slot_offset(slot_index).ok_or(EINVAL)?;
+        let end = offset
+            .checked_add(fw::workqueue::G15_SCHEDULER_STATE_BYTES)
+            .ok_or(EOVERFLOW)?;
+        let base: u64 = self.block.weak_pointer().into();
+        let fwva = base.checked_add(offset as u64).ok_or(EOVERFLOW)?;
+        if fwva == 0 {
+            return Err(EIO);
+        }
+        let slot = self.block.as_mut_slice().get_mut(offset..end).ok_or(EIO)?;
+        let reset = slot
+            .get_mut(..fw::workqueue::G15_SCHEDULER_STATE_HOST_RESET_BYTES)
+            .ok_or(EIO)?;
+        for byte in reset.iter_mut() {
+            *byte = 0;
+        }
+        Self::put_u16(slot, 0x00, u16::MAX)?;
+        slot[0x05] = 1;
+        slot[0x22] = 0xff;
+        Self::put_u32(slot, 0x23, 0)?;
+        slot[0x27] = fw::workqueue::G15_J615_SCHEDULER_SHARED_BYTE_27;
+
+        Ok(G15PreparedSchedulerState { slot_index, fwva })
+    }
+}
+
+const _: [(); 0x0000] = [(); G15SchedulerStateBackingBlock::slot_offset(0).unwrap()];
+const _: [(); 0x0040] = [(); G15SchedulerStateBackingBlock::slot_offset(1).unwrap()];
+const _: [(); 0x3fc0] = [(); G15SchedulerStateBackingBlock::slot_offset(0xff).unwrap()];
+
 /// One exact 23J220 firmware `_AGFIChannelState` backing block.
 ///
 /// E116 proves the global firmware resource stack allocates page-base 0x8000
@@ -312,7 +421,7 @@ struct G15ChannelStateResetInputs {
     ring_fwva: u64,
     timestamp_queue_state_fwva: u64,
     channel_4c_value: u32,
-    gpu_context_fwva: u64,
+    scheduler_state_fwva: u64,
     effective_priority: u32,
     queue_qos: u32,
 }
@@ -389,7 +498,7 @@ impl G15ChannelStateBackingBlock {
         if input.state_fwva == 0
             || input.ring_fwva == 0
             || input.timestamp_queue_state_fwva == 0
-            || input.gpu_context_fwva == 0
+            || input.scheduler_state_fwva == 0
         {
             return Err(EINVAL);
         }
@@ -428,7 +537,8 @@ impl G15ChannelStateBackingBlock {
         Self::put_u32(slot, 0x30, 4)?;
         Self::put_u32(slot, 0x4c, u32::MAX)?;
         Self::put_u32(slot, 0x50, input.channel_4c_value)?;
-        Self::put_u64(slot, 0xa4, input.gpu_context_fwva)?;
+        // E126: exact G15 QueueInfo +0xa4 is selected scheduler-state FWVA.
+        Self::put_u64(slot, 0xa4, input.scheduler_state_fwva)?;
         slot[0xac] = fw::workqueue::G15_J615_CDM_BACKOFF_TIMEOUT;
 
         // Exact later setChannelPriority() mutation. +0x30/+0x34 carry the

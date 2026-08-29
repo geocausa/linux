@@ -98,10 +98,11 @@ pub(crate) mod raw {
     }
 
     impl GpuContextData {
-        /// Exact G15 scheduler/context resource bootstrap reconstructed from
-        /// AGXCommandQueue::init(). The G15 firmware-visible object is 0x38
-        /// bytes; this shared raw type retains the inherited 0x40 allocation
-        /// size for older generations, but the first 0x38 bytes match Apple.
+        /// Exact G15 selected `_AGFISchedulerState` bootstrap reconstructed
+        /// from AGXCommandQueue::init(). E126 proves the firmware resource-stack
+        /// element is 0x40 bytes while Apple host-reset initializes the first
+        /// 0x38 bytes. This inherited raw type remains the byte-layout carrier;
+        /// the live generic `GpuContext` allocator is not reclassified here.
         pub(crate) fn g15() -> Self {
             // Apple zeroes exactly 0x38 bytes, then writes:
             //   +0x00/+0x01 = 0xff, +0x05 = 1, +0x22 = 0xff,
@@ -214,6 +215,9 @@ pub(crate) mod raw {
         pub(crate) unk_94: u32,
         pub(crate) pending: AtomicU32,
         pub(crate) unk_9c: u32,
+        // Historical inherited name. On exact G15 this is the selected
+        // `_AGFISchedulerState` FWVA sourced from command queue +0x8d8 via
+        // channel +0xf0. The live generic GpuContext path remains gated.
         pub(crate) gpu_context: GpuPointer<'a, super::GpuContextData>,
         #[ver(G != G15)]
         pub(crate) unk_a8: U64,
@@ -298,6 +302,23 @@ const _: [(); 0x18] = [(); G15_TIMESTAMP_QUEUE_STATE_BYTES];
 const _: [(); 0x4000] = [(); G15_TIMESTAMP_QUEUE_BACKING_BYTES];
 const _: [(); 0x2aa] = [(); G15_TIMESTAMP_QUEUE_STATES_PER_BACKING];
 const _: [(); 0x10] = [(); G15_TIMESTAMP_QUEUE_BACKING_SLACK_BYTES];
+
+/// Exact 23J220 `_AGFISchedulerState` resource-stack geometry. E126 proves
+/// range 8 with 0x40-byte elements. The generic resource stack page-rounds
+/// its initial two-element request to one 0x4000 J615 page: 0x100 exact slots
+/// and no trailing slack. Apple clears the first 0x38 bytes on command-queue
+/// construction; the final eight bytes are outside that host reset.
+pub(crate) const G15_SCHEDULER_STATE_BYTES: usize = 0x40;
+pub(crate) const G15_SCHEDULER_STATE_HOST_RESET_BYTES: usize = 0x38;
+pub(crate) const G15_SCHEDULER_STATE_BACKING_BYTES: usize = 0x4000;
+pub(crate) const G15_SCHEDULER_STATES_PER_BACKING: usize =
+    G15_SCHEDULER_STATE_BACKING_BYTES / G15_SCHEDULER_STATE_BYTES;
+pub(crate) const G15_J615_SCHEDULER_SHARED_BYTE_27: u8 = 2;
+
+const _: [(); 0x40] = [(); G15_SCHEDULER_STATE_BYTES];
+const _: [(); 0x38] = [(); G15_SCHEDULER_STATE_HOST_RESET_BYTES];
+const _: [(); 0x4000] = [(); G15_SCHEDULER_STATE_BACKING_BYTES];
+const _: [(); 0x100] = [(); G15_SCHEDULER_STATES_PER_BACKING];
 
 /// Exact normal-J615 CL-channel constructor values closed by E119.
 #[allow(dead_code)]

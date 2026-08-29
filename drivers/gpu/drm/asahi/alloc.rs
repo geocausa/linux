@@ -656,6 +656,30 @@ impl G15SharedBank1Allocator {
         }
     }
 
+    /// Dedicated exact G15 `_AGFISchedulerState` range-8 allocator. E126
+    /// proves the command-queue scheduler-state resource stack uses ordinary
+    /// special range 8: compact option 0x003 / leaf 0x...0443. Keeping this
+    /// semantic constructor separate prevents accidental use of range 7.
+    #[allow(dead_code)]
+    pub(crate) fn new_range8_scheduler_state(
+        dev: &AsahiDevice,
+        bank1: mmu::G15SharedBank1,
+        min_align: usize,
+        mut cpu_maps: bool,
+        notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
+    ) -> Self {
+        if debug_enabled(DebugFlags::ForceCPUMaps) { cpu_maps = true; }
+        Self {
+            dev: dev.into(),
+            bank1,
+            aperture: mmu::G15SharedBank1Aperture::Range8,
+            prot: mmu::PROT_G15_RANGE8_FW,
+            min_align,
+            cpu_maps,
+            notifier,
+        }
+    }
+
     /// Dedicated eGartRange-8 allocator for G15 FList Page-Pool State objects.
     /// The protection class is fixed by the exact E075 leaf proof rather than
     /// supplied by callers, keeping PM/range-7 attributes impossible here.
