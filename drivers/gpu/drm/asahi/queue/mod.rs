@@ -192,7 +192,33 @@ const _: [(); 0x100] = [(); G15HWMetricsBacking::RECORD_COUNT];
 /// are separate channel-lifetime gates.
 #[allow(dead_code)]
 struct G15ChannelStateBackingBlock {
-    _block: alloc::G15SharedGpuArray<u8>,
+    block: alloc::G15SharedGpuArray<u8>,
+}
+
+/// Exact host inputs for rebuilding the first 0xb0 bytes of one selected G15
+/// `_AGFIChannelState` after Apple's full 0x24c0 reset. These are deliberately
+/// FW addresses/runtime values, not borrowed Linux QueueInfo objects: E118/E119
+/// close the byte image while the eventual live owner bridges remain gated.
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
+struct G15ChannelStateResetInputs {
+    state_fwva: u64,
+    ring_fwva: u64,
+    notifier_list_fwva: u64,
+    gpu_buf_fwva: u64,
+    channel_4c_value: u32,
+    gpu_context_fwva: u64,
+    effective_priority: u32,
+    queue_qos: u32,
+}
+
+/// Private proof token for one reset/prioritized channel-state slot. It has no
+/// conversion to a SKU input or RunCompute field and no external call site.
+#[derive(Debug)]
+#[allow(dead_code)]
+struct G15PreparedChannelState {
+    slot_index: usize,
+    fwva: u64,
 }
 
 #[allow(dead_code)]
@@ -220,7 +246,7 @@ impl G15ChannelStateBackingBlock {
         {
             return Err(EIO);
         }
-        Ok(Self { _block: block })
+        Ok(Self { block })
     }
 
     /// Pure geometry only: no FWVA is returned from the owner.
@@ -230,6 +256,81 @@ impl G15ChannelStateBackingBlock {
         } else {
             None
         }
+    }
+
+    fn put_u32(slot: &mut [u8], offset: usize, value: u32) -> Result {
+        let end = offset.checked_add(4).ok_or(EOVERFLOW)?;
+        let dst = slot.get_mut(offset..end).ok_or(EINVAL)?;
+        dst.copy_from_slice(&value.to_le_bytes());
+        Ok(())
+    }
+
+    fn put_u64(slot: &mut [u8], offset: usize, value: u64) -> Result {
+        let end = offset.checked_add(8).ok_or(EOVERFLOW)?;
+        let dst = slot.get_mut(offset..end).ok_or(EINVAL)?;
+        dst.copy_from_slice(&value.to_le_bytes());
+        Ok(())
+    }
+
+    /// Rebuild one already-selected channel state at the exact E118/E119 host
+    /// boundary. This models neither resource-stack allocation/release nor a
+    /// live channel. It clears exactly one 0x24c0 slot, writes Apple's reset
+    /// QueueInfo image, then applies the exact normal-J615 priority mutation.
+    fn reset_selected_j615_cl(
+        &mut self,
+        slot_index: usize,
+        input: G15ChannelStateResetInputs,
+    ) -> Result<G15PreparedChannelState> {
+        if input.state_fwva == 0
+            || input.ring_fwva == 0
+            || input.notifier_list_fwva == 0
+            || input.gpu_buf_fwva == 0
+            || input.gpu_context_fwva == 0
+        {
+            return Err(EINVAL);
+        }
+        let priority = fw::workqueue::g15_j615_cl_priority_image(
+            input.effective_priority,
+            input.queue_qos,
+        )
+        .ok_or(EINVAL)?;
+        let offset = Self::slot_offset(slot_index).ok_or(EINVAL)?;
+        let end = offset
+            .checked_add(fw::workqueue::G15_CHANNEL_STATE_BYTES)
+            .ok_or(EOVERFLOW)?;
+        let slot = self.block.as_mut_slice().get_mut(offset..end).ok_or(EIO)?;
+
+        // Exact resetChannelState(): bulk zero selected 0x24c0 state first.
+        for byte in slot.iter_mut() {
+            *byte = 0;
+        }
+        Self::put_u64(slot, 0x00, input.state_fwva)?;
+        Self::put_u64(slot, 0x08, input.ring_fwva)?;
+        Self::put_u64(slot, 0x10, input.notifier_list_fwva)?;
+        Self::put_u64(slot, 0x18, input.gpu_buf_fwva)?;
+        Self::put_u32(slot, 0x2c, u32::MAX)?;
+        Self::put_u32(slot, 0x30, 4)?;
+        Self::put_u32(slot, 0x4c, u32::MAX)?;
+        Self::put_u32(slot, 0x50, input.channel_4c_value)?;
+        Self::put_u64(slot, 0xa4, input.gpu_context_fwva)?;
+        slot[0xac] = fw::workqueue::G15_J615_CDM_BACKOFF_TIMEOUT;
+
+        // Exact later setChannelPriority() mutation. +0x30/+0x34 carry the
+        // same class; +0x44 is the E119 constant 2. All other reset bytes stay
+        // untouched/zero unless explicitly written here.
+        Self::put_u32(slot, 0x30, priority.class_30)?;
+        Self::put_u32(slot, 0x34, priority.class_30)?;
+        Self::put_u64(slot, 0x38, priority.mask_38)?;
+        Self::put_u32(slot, 0x40, priority.control_40)?;
+        Self::put_u32(slot, 0x44, priority.integer_arg_44)?;
+        Self::put_u32(slot, 0x48, priority.qos_value_48)?;
+
+        let base: u64 = self.block.weak_pointer().into();
+        let fwva = base.checked_add(offset as u64).ok_or(EOVERFLOW)?;
+        if fwva == 0 {
+            return Err(EIO);
+        }
+        Ok(G15PreparedChannelState { slot_index, fwva })
     }
 }
 

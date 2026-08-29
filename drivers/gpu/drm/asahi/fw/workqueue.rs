@@ -248,6 +248,68 @@ const _: [(); 0x24c0] = [(); G15_CHANNEL_STATE_BYTES];
 const _: [(); 3] = [(); G15_CHANNEL_STATE_SLOTS_PER_BACKING];
 const _: [(); 0x11c0] = [(); G15_CHANNEL_STATE_BACKING_SLACK_BYTES];
 
+/// Exact normal-J615 CL-channel constructor values closed by E119.
+#[allow(dead_code)]
+pub(crate) const G15_J615_FIRST_CL_EVCTL_INDEX: u32 = 0;
+#[allow(dead_code)]
+pub(crate) const G15_J615_CL_SECOND_CONSTRUCTOR_INTEGER: u32 = 0x50;
+pub(crate) const G15_J615_CL_PRIORITY_INTEGER_ARGUMENT: u32 = 2;
+pub(crate) const G15_J615_CDM_BACKOFF_TIMEOUT: u8 = 4;
+
+/// Exact six-field priority image written by
+/// AGXArmFirmware::setChannelPriority() into selected `_AGFIChannelState`
+/// QueueInfo +0x30..+0x4b. This is deliberately separate from the inherited
+/// `raw::PRIORITY` table: E118 proves that table is not a direct G15 mapping.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct G15ClChannelPriorityImage {
+    pub(crate) class_30: u32,
+    pub(crate) mask_38: u64,
+    pub(crate) control_40: u32,
+    pub(crate) integer_arg_44: u32,
+    pub(crate) qos_value_48: u32,
+}
+
+/// Resolve the exact normal-J615 CL priority image from IOGPU-owned runtime
+/// priority/QoS state. E119 proves the integer argument is always 2 here and
+/// that effective priority is normally 1 (foreground branch) or 2 (alternate
+/// branch). Other values are rejected instead of inheriting guessed tables.
+pub(crate) const fn g15_j615_cl_priority_image(
+    effective_priority: u32,
+    queue_qos: u32,
+) -> Option<G15ClChannelPriorityImage> {
+    if queue_qos > 4 {
+        return None;
+    }
+
+    match effective_priority {
+        1 => {
+            let (class_30, mask_38, qos_value_48) = match queue_qos {
+                0 => (2, 0xffff_ffff_0000_0000, 0),
+                1 => (2, 0xffff_0000_0000_0000, 1),
+                2 => (2, 0xffff_0000_0000_0000, 2),
+                3 => (2, 0xffff_0000_0000_0000, 3),
+                4 => (3, 0x0000_0000_0000_0000, 4),
+                _ => return None,
+            };
+            Some(G15ClChannelPriorityImage {
+                class_30,
+                mask_38,
+                control_40: 0,
+                integer_arg_44: G15_J615_CL_PRIORITY_INTEGER_ARGUMENT,
+                qos_value_48,
+            })
+        }
+        2 => Some(G15ClChannelPriorityImage {
+            class_30: 3,
+            mask_38: 0,
+            control_40: 0,
+            integer_arg_44: G15_J615_CL_PRIORITY_INTEGER_ARGUMENT,
+            qos_value_48: 0,
+        }),
+        _ => None,
+    }
+}
+
 trivial_gpustruct!(RingState);
 
 #[versions(AGX)]
