@@ -562,6 +562,29 @@ impl G15SharedBank1Allocator {
         }
     }
 
+    /// Dedicated eGartRange-7 allocator for exact G15 UMA HWMetrics. E097
+    /// proves compact SecureGart option 0x30b and leaf 0x...040b, bit-identical
+    /// to the existing firmware/GPU shared uncached R/W protection shape.
+    #[allow(dead_code)]
+    pub(crate) fn new_range7_hwmetrics(
+        dev: &AsahiDevice,
+        bank1: mmu::G15SharedBank1,
+        min_align: usize,
+        mut cpu_maps: bool,
+        notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
+    ) -> Self {
+        if debug_enabled(DebugFlags::ForceCPUMaps) { cpu_maps = true; }
+        Self {
+            dev: dev.into(),
+            bank1,
+            aperture: mmu::G15SharedBank1Aperture::Range7HWMetrics,
+            prot: mmu::PROT_GPU_FW_SHARED_RW,
+            min_align,
+            cpu_maps,
+            notifier,
+        }
+    }
+
     /// Dedicated eGartRange-8 allocator for G15 FList Page-Pool State objects.
     /// The protection class is fixed by the exact E075 leaf proof rather than
     /// supplied by callers, keeping PM/range-7 attributes impossible here.

@@ -1062,6 +1062,7 @@ impl G15SharedBank1PageTable {
     const TABLE_TYPE_BITS: u64 = 0x3;
     const RANGE7_LEAF_BITS: u64 = 0x00c0_0000_0000_0447;
     const RANGE7_FLIST_LEAF_BITS: u64 = 0x00c0_0000_0000_044b;
+    const RANGE7_HWMETRICS_LEAF_BITS: u64 = 0x00e0_0000_0000_040b;
     const RANGE8_LEAF_BITS: u64 = 0x00c0_0000_0000_0443;
 
     fn new(dev: &driver::AsahiDevice, cfg: &'static hw::HwConfig, ttb: PhysicalAddr) -> Result<Self> {
@@ -1305,7 +1306,10 @@ impl G15SharedBank1PageTable {
 
     fn validate_leaf_bits(iova_range: &Range<u64>, leaf_bits: u64) -> Result {
         if iova_range.start >= G15_GART_RANGE7.start && iova_range.end <= G15_GART_RANGE7.end {
-            if leaf_bits == Self::RANGE7_LEAF_BITS || leaf_bits == Self::RANGE7_FLIST_LEAF_BITS {
+            if leaf_bits == Self::RANGE7_LEAF_BITS
+                || leaf_bits == Self::RANGE7_FLIST_LEAF_BITS
+                || leaf_bits == Self::RANGE7_HWMETRICS_LEAF_BITS
+            {
                 Ok(())
             } else {
                 Err(EINVAL)
@@ -1985,6 +1989,8 @@ pub(crate) enum G15SharedBank1Aperture {
     Range7,
     /// AGXUMAFList FW-Uncached-State class, compact option 0x00b.
     Range7FList,
+    /// AGXUMAHWMetrics class, compact option 0x30b.
+    Range7HWMetrics,
     /// AGXUMAFList Page-Pool-State class, compact option 0x003.
     Range8,
 }
@@ -2028,6 +2034,12 @@ impl G15SharedBank1 {
                 G15_GART_RANGE7.start,
                 G15_GART_RANGE7.end,
                 PROT_G15_RANGE7_FLIST_FW,
+            ),
+            G15SharedBank1Aperture::Range7HWMetrics => (
+                &mut bank1.range7_mm,
+                G15_GART_RANGE7.start,
+                G15_GART_RANGE7.end,
+                PROT_GPU_FW_SHARED_RW,
             ),
             G15SharedBank1Aperture::Range8 => (
                 &mut bank1.range8_mm,

@@ -122,6 +122,61 @@ impl SubQueueJob::ver {
     }
 }
 
+/// Compile-only owner for exact 23J220 G15 UMA HWMetrics.
+///
+/// E097 proves one page-base 0x4000-byte range-7 mapping using compact UAT
+/// option 0x30b / leaf 0x00e000000000040b. The backing is zeroed once at
+/// channel construction and contains 0x100 records of 0x40 bytes. Apple keeps
+/// this mapping prepared for the channel lifetime. This owner remains
+/// unreachable and exposes no FWVA to RunCompute.
+#[allow(dead_code)]
+struct G15HWMetricsBacking {
+    _page: alloc::G15SharedGpuArray<u8>,
+    record_offset: u32,
+}
+
+#[allow(dead_code)]
+impl G15HWMetricsBacking {
+    const PAGE_BYTES: usize = 0x4000;
+    const RECORD_BYTES: u32 = 0x40;
+    const RECORD_COUNT: usize = Self::PAGE_BYTES / Self::RECORD_BYTES as usize;
+
+    fn new(
+        dev: &AsahiDevice,
+        bank1: mmu::G15SharedBank1,
+        mapping_notifier: Arc<Mutex<mmu::G15MappingNotifier>>,
+    ) -> Result<Self> {
+        let mut metrics_alloc = alloc::G15SharedBank1Allocator::new_range7_hwmetrics(
+            dev,
+            bank1,
+            mmu::UAT_PGSZ,
+            true,
+            Some(mapping_notifier),
+        );
+        let page = metrics_alloc.array_empty_shared_data::<u8>(Self::PAGE_BYTES)?;
+        if page.len() != Self::PAGE_BYTES
+            || Self::PAGE_BYTES != mmu::UAT_PGSZ
+            || Self::RECORD_COUNT != 0x100
+        {
+            return Err(EIO);
+        }
+        Ok(Self {
+            _page: page,
+            record_offset: 0,
+        })
+    }
+
+    /// Exact host ring update from AGXUMAFList::updateSubmitInfo(): return the
+    /// current record offset, then advance by 0x40 modulo one 0x4000 page.
+    fn take_record_offset(&mut self) -> u32 {
+        let current = self.record_offset;
+        self.record_offset = (self.record_offset + Self::RECORD_BYTES) % Self::PAGE_BYTES as u32;
+        current
+    }
+}
+
+const _: [(); 0x100] = [(); G15HWMetricsBacking::RECORD_COUNT];
+
 /// Compile-only owner for the exact 23J220 G15 command-buffer stamp and
 /// event-control shared-data backings.
 ///
