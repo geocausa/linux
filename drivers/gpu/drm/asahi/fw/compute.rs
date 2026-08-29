@@ -119,7 +119,12 @@ pub(crate) mod raw {
         pub(crate) counter: U64,
 
         pub(crate) unk_4: u32,
+        #[ver(G != G15)]
         pub(crate) vm_slot: u32,
+        // Exact 23J220 submitBuffer() copies the managed context ID acquired by
+        // AGXContextIDManager::alloc() to RunCompute +0x10.
+        #[ver(G == G15)]
+        pub(crate) g15_context_id_10: u32,
         #[ver(G != G15)]
         pub(crate) notifier: GpuPointer<'a, event::Notifier::ver>,
         // Exact 23J220: descriptor +0x148 is the selected GPU address from
@@ -236,9 +241,11 @@ pub(crate) mod raw {
     }
 
     const _: [(); 0x880] = [(); core::mem::size_of::<RunComputeG15V14_7<'static>>()];
-    // AGXCLChannelSKU::submitBuffer() writes the G15 context ID at +0x10,
-    // matching the existing VM-slot field, then the event-control FWVA at +0x14.
-    const _: [(); 0x10] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, vm_slot)];
+    const _: [(); 0x04] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, counter)];
+    // AGXCLChannelSKU::submitBuffer() writes the managed G15 context ID at
+    // +0x10, then the event-control FWVA at +0x14.
+    const _: [(); 0x10] =
+        [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_context_id_10)];
     const _: [(); 0x14] = [(); core::mem::offset_of!(
         RunComputeG15V14_7<'static>,
         g15_event_control_fwva_14
@@ -261,9 +268,23 @@ pub(crate) mod raw {
     const _: [(); 0x7d8] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_raw_compute_a8_b0_lo_7d8)];
     const _: [(); 0x7e0] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_raw_compute_b0_hi_7e0)];
     const _: [(); 0x7e4] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, meta)];
+    // E131 exact SKU source loads: +0x7f0 fw_stamp, +0x7f8 stamp_value,
+    // +0x808 UUID and +0x80c queue-local event sequence.
+    const _: [(); 0x7f0] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, meta)
+        + core::mem::offset_of!(job::raw::G15JobMeta, fw_stamp)];
+    const _: [(); 0x7f8] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, meta)
+        + core::mem::offset_of!(job::raw::G15JobMeta, stamp_value)];
+    const _: [(); 0x808] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, meta)
+        + core::mem::offset_of!(job::raw::G15JobMeta, uuid)];
+    const _: [(); 0x80c] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, meta)
+        + core::mem::offset_of!(job::raw::G15JobMeta, event_seq)];
     const _: [(); 0x810] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, command_time)];
     const _: [(); 0x818] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, timestamp_pointers)];
     const _: [(); 0x828] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, user_timestamp_pointers)];
+    const _: [(); 0x830] = [();
+        core::mem::offset_of!(RunComputeG15V14_7<'static>, user_timestamp_pointers)
+            + core::mem::offset_of!(job::raw::TimestampPointers<'static>, end_addr)
+    ];
     const _: [(); 0x838] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_pad_838)];
     const _: [(); 0x83e] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_uma_page_pool_state_fwva_83e)];
     const _: [(); 0x846] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_uma_prepared_846)];
@@ -360,8 +381,8 @@ pub(crate) struct G15StockEmptySkuInputs {
     pub(crate) page_pool_state_fwva: u64,
     pub(crate) hwmetrics_fwva: u64,
     pub(crate) fw_stamp_fwva: u64,
-    pub(crate) user_timestamp_start: u64,
-    pub(crate) user_timestamp_end: u64,
+    /// Exact encodeTimeStamp() predicate: either command +0x828/+0x830 is present.
+    pub(crate) user_timestamps_present: bool,
     pub(crate) command_counter: u64,
     pub(crate) context_id: u32,
     pub(crate) state_sequence: u32,
@@ -410,7 +431,7 @@ impl G15StockEmptySkuStream {
             Self::add_addr(input.command_fwva, if start { 0x818 } else { 0x820 })?,
         );
         Self::put_u64(bytes, offset + 0x1c, input.channel_state_fwva);
-        let user_ts = if input.user_timestamp_start != 0 || input.user_timestamp_end != 0 {
+        let user_ts = if input.user_timestamps_present {
             Self::add_addr(input.command_fwva, 0x828)?
         } else {
             0

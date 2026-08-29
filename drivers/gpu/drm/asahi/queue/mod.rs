@@ -795,25 +795,13 @@ struct G15UnpublishedStockEmptyPrepare {
     state_sequence: u32,
 }
 
-/// Still-unclosed runtime sources required only at the command-aware SKU
-/// finalize boundary. E115 removes the CL command-resource base from this list
-/// after closing its persistent range-5 owner; the remaining values stay
-/// explicit rather than being guessed from the dormant Linux constructor.
-/// E128 removes the first-CL evctl index and accelerator packed-feature bit 39;
-/// E129 also removes the GART HW-soft-fault state. E130 closes the firmware-state
-/// source as the manager-owned G15 Compute statistics object.
-#[derive(Clone, Copy, Debug)]
-#[allow(dead_code)]
-struct G15StockEmptySkuFinalizeInputs {
-    fw_stamp_fwva: u64,
-    user_timestamp_start: u64,
-    user_timestamp_end: u64,
-    command_counter: u64,
-    context_id: u32,
-    queue_event_sequence: u32,
-    uuid: u32,
-    stamp_value: u32,
-}
+/// E131 closes the remaining command-local stock-empty SKU sources at the
+/// dormant finalize boundary. Exact 23J220 encodeCLCommandSKUStream() reads
+/// these values back from the already-initialized RunCompute image: counter
+/// +0x04, context ID +0x10, JobMeta fw-stamp/value/UUID/event-sequence at
+/// +0x7f0/+0x7f8/+0x808/+0x80c, plus user-timestamp presence at +0x828/+0x830.
+/// The finalizer therefore takes that typed command image instead of a parallel
+/// bag of raw values that could drift from the command being serialized.
 
 /// Fully materialized stock-empty command assets that are still deliberately
 /// unpublished. This token is not a firmware structure and has no RunCompute
@@ -1054,15 +1042,15 @@ impl G15StockEmptyComputeOwnerGraph {
         })
     }
 
-    /// Phase 2: after a future caller has allocated the RunCompute backing and
-    /// therefore knows its FWVA, serialize E102 using the exact selected SKU
-    /// slot address and explicit still-unclosed runtime sources, then write only
-    /// that already-retired slot. The result remains a host-only E111 stage.
+    /// Phase 2: after a future caller has initialized the RunCompute backing
+    /// and therefore knows both its typed image and FWVA, serialize E102 from
+    /// that exact command plus the already-owned persistent resources, then
+    /// write only the already-retired SKU slot. The result remains host-only.
     fn finalize_unpublished(
         &mut self,
         prepared: G15UnpublishedStockEmptyPrepare,
         command_fwva: u64,
-        input: G15StockEmptySkuFinalizeInputs,
+        command: &fw::compute::raw::RunComputeG15V14_7<'_>,
     ) -> Result<G15UnpublishedRunComputeFieldStage> {
         if command_fwva == 0 {
             let _ = self._flist.complete_reference(prepared.hardware_buffer_id);
@@ -1087,18 +1075,21 @@ impl G15StockEmptyComputeOwnerGraph {
             event_control_fwva: prepared.event_control_fwva,
             page_pool_state_fwva: prepared.page_pool_state_fwva,
             hwmetrics_fwva: prepared.hwmetrics_fwva,
-            fw_stamp_fwva: input.fw_stamp_fwva,
-            user_timestamp_start: input.user_timestamp_start,
-            user_timestamp_end: input.user_timestamp_end,
-            command_counter: input.command_counter,
-            context_id: input.context_id,
+            // E131 exact command-local sources. Apple reads these from the
+            // same already-initialized RunCompute image immediately before
+            // serializing the SKU stream, so do not accept duplicate values.
+            fw_stamp_fwva: command.meta.fw_stamp.into(),
+            user_timestamps_present: command.user_timestamp_pointers.start_addr.is_some()
+                || command.user_timestamp_pointers.end_addr.is_some(),
+            command_counter: command.counter.0,
+            context_id: command.g15_context_id_10,
             state_sequence: prepared.state_sequence,
-            queue_event_sequence: input.queue_event_sequence,
+            queue_event_sequence: command.meta.event_seq,
             // E119/E128: this dormant graph models the first normal J615 CL
             // channel, whose AGXChannel +0x38 / G15JobMeta evctl_index is 0.
             evctl_index: fw::workqueue::G15_J615_FIRST_CL_EVCTL_INDEX,
-            uuid: input.uuid,
-            stamp_value: input.stamp_value,
+            uuid: command.meta.uuid,
+            stamp_value: command.meta.stamp_value.raw(),
             // E129 exact ordinary IOGPU device chain: userspace passes options=0,
             // so IOServiceOpen type 5 propagates zero through IOGPUDeviceUserClient,
             // IOGPU::createDevice(), AGXShared and AGXSecureGart. Together with the
@@ -1578,19 +1569,19 @@ impl G15StockEmptyAssetGuards::ver {
         }
     }
 
-    /// Phase 2: once a future caller knows the RunCompute FWVA and has closed
-    /// all explicit SKU runtime inputs, finalize the reserved slot. This still
+    /// Phase 2: once a future caller has an initialized RunCompute image and
+    /// its FWVA, finalize the reserved slot from that same command. This still
     /// returns only the host-only E111 stage and has no command writer.
     fn finalize_unpublished(
         &mut self,
         owners: &mut G15StockEmptyComputeOwnerGraph,
         prepared: G15UnpublishedStockEmptyPrepare,
         command_fwva: u64,
-        input: G15StockEmptySkuFinalizeInputs,
+        command: &fw::compute::raw::RunComputeG15V14_7<'_>,
     ) -> Result<G15UnpublishedRunComputeFieldStage> {
         let event_index = prepared.event_index;
         let sku_index = prepared.sku.index();
-        match owners.finalize_unpublished(prepared, command_fwva, input) {
+        match owners.finalize_unpublished(prepared, command_fwva, command) {
             Ok(stage) => Ok(stage),
             Err(err) => {
                 self.event.rollback_bound(event_index);

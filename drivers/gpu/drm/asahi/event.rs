@@ -59,6 +59,11 @@ impl EventValue {
         EventValue(self.0.wrapping_add(0x100))
     }
 
+    /// Return the exact firmware-visible stamp word.
+    pub(crate) fn raw(&self) -> u32 {
+        self.0
+    }
+
     /// Increments this `EventValue` in place.
     pub(crate) fn increment(&mut self) {
         self.0 = self.0.wrapping_add(0x100);
