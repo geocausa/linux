@@ -258,6 +258,26 @@ const _: [(); 0xb0] = [(); G15_CHANNEL_STATE_GPU_BUF_OFFSET];
 const _: [(); G15_CHANNEL_STATE_GPU_BUF_OFFSET] =
     [(); core::mem::size_of::<raw::QueueInfoG15V14_7<'static>>()];
 
+/// Exact 23J220 normal-J615 cached/uncached firmware channel-memory stack
+/// geometry closed by E122. Both stacks use the same element size, derived
+/// from the exact firmware queue count 0x50, but they live in distinct normal
+/// range-7 / special range-8 mapping classes. Allocation blocks are page
+/// rounded to 0x8000 and contain three complete 0x2860-byte elements.
+pub(crate) const G15_J615_FW_QUEUE_COUNT: usize = 0x50;
+pub(crate) const G15_J615_CHANNEL_MEMORY_BYTES: usize =
+    0x60 | ((G15_J615_FW_QUEUE_COUNT & 0x0fff_ffff) << 7);
+pub(crate) const G15_J615_CHANNEL_MEMORY_BACKING_BYTES: usize = 0x8000;
+pub(crate) const G15_J615_CHANNEL_MEMORY_SLOTS_PER_BACKING: usize = 3;
+pub(crate) const G15_J615_CHANNEL_MEMORY_BACKING_SLACK_BYTES: usize =
+    G15_J615_CHANNEL_MEMORY_BACKING_BYTES
+        - G15_J615_CHANNEL_MEMORY_SLOTS_PER_BACKING * G15_J615_CHANNEL_MEMORY_BYTES;
+
+const _: [(); 0x50] = [(); G15_J615_FW_QUEUE_COUNT];
+const _: [(); 0x2860] = [(); G15_J615_CHANNEL_MEMORY_BYTES];
+const _: [(); 0x8000] = [(); G15_J615_CHANNEL_MEMORY_BACKING_BYTES];
+const _: [(); 3] = [(); G15_J615_CHANNEL_MEMORY_SLOTS_PER_BACKING];
+const _: [(); 0x6e0] = [(); G15_J615_CHANNEL_MEMORY_BACKING_SLACK_BYTES];
+
 /// Exact normal-J615 CL-channel constructor values closed by E119.
 #[allow(dead_code)]
 pub(crate) const G15_J615_FIRST_CL_EVCTL_INDEX: u32 = 0;

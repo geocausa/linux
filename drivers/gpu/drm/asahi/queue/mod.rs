@@ -341,6 +341,96 @@ const _: [(); 0x0000] = [(); G15ChannelStateBackingBlock::slot_offset(0).unwrap(
 const _: [(); 0x24c0] = [(); G15ChannelStateBackingBlock::slot_offset(1).unwrap()];
 const _: [(); 0x4980] = [(); G15ChannelStateBackingBlock::slot_offset(2).unwrap()];
 
+/// One exact 23J220 `AGXUncachedFWChannelMem` resource-stack backing block.
+/// E122 proves this is a normal range-7 0x8000-byte allocation containing
+/// three 0x2860-byte elements. Selection/index lifetime is deliberately not
+/// modeled here and no element FWVA accessor exists.
+#[allow(dead_code)]
+struct G15UncachedChannelMemoryBackingBlock {
+    block: alloc::G15SharedGpuArray<u8>,
+}
+
+#[allow(dead_code)]
+impl G15UncachedChannelMemoryBackingBlock {
+    fn new(
+        dev: &AsahiDevice,
+        bank1: mmu::G15SharedBank1,
+        mapping_notifier: Arc<Mutex<mmu::G15MappingNotifier>>,
+    ) -> Result<Self> {
+        let mut allocator = alloc::G15SharedBank1Allocator::new_range7_channel_memory(
+            dev,
+            bank1,
+            mmu::UAT_PGSZ,
+            true,
+            Some(mapping_notifier),
+        );
+        let block = allocator.array_empty_shared_data::<u8>(
+            fw::workqueue::G15_J615_CHANNEL_MEMORY_BACKING_BYTES,
+        )?;
+        let base: u64 = block.weak_pointer().into();
+        if block.len() != fw::workqueue::G15_J615_CHANNEL_MEMORY_BACKING_BYTES
+            || base == 0
+            || base & (mmu::UAT_PGSZ as u64 - 1) != 0
+            || fw::workqueue::G15_J615_CHANNEL_MEMORY_SLOTS_PER_BACKING != 3
+        {
+            return Err(EIO);
+        }
+        Ok(Self { block })
+    }
+}
+
+/// One exact 23J220 `AGXCachedFWChannelMem` resource-stack backing block.
+/// It has the same element/block geometry as the uncached stack but uses the
+/// independently proven special range-8 class. Selection and publication stay
+/// outside this definition-only owner.
+#[allow(dead_code)]
+struct G15CachedChannelMemoryBackingBlock {
+    block: alloc::G15SharedGpuArray<u8>,
+}
+
+#[allow(dead_code)]
+impl G15CachedChannelMemoryBackingBlock {
+    fn new(
+        dev: &AsahiDevice,
+        bank1: mmu::G15SharedBank1,
+        mapping_notifier: Arc<Mutex<mmu::G15MappingNotifier>>,
+    ) -> Result<Self> {
+        let mut allocator = alloc::G15SharedBank1Allocator::new_range8_channel_memory(
+            dev,
+            bank1,
+            mmu::UAT_PGSZ,
+            true,
+            Some(mapping_notifier),
+        );
+        let block = allocator.array_empty_shared_data::<u8>(
+            fw::workqueue::G15_J615_CHANNEL_MEMORY_BACKING_BYTES,
+        )?;
+        let base: u64 = block.weak_pointer().into();
+        if block.len() != fw::workqueue::G15_J615_CHANNEL_MEMORY_BACKING_BYTES
+            || base == 0
+            || base & (mmu::UAT_PGSZ as u64 - 1) != 0
+            || fw::workqueue::G15_J615_CHANNEL_MEMORY_SLOTS_PER_BACKING != 3
+        {
+            return Err(EIO);
+        }
+        Ok(Self { block })
+    }
+}
+
+/// Pure E122 geometry helper used only by compile-time assertions. It does not
+/// expose an address from either backing owner.
+const fn g15_j615_channel_memory_slot_offset(index: usize) -> Option<usize> {
+    if index < fw::workqueue::G15_J615_CHANNEL_MEMORY_SLOTS_PER_BACKING {
+        Some(index * fw::workqueue::G15_J615_CHANNEL_MEMORY_BYTES)
+    } else {
+        None
+    }
+}
+
+const _: [(); 0x0000] = [(); g15_j615_channel_memory_slot_offset(0).unwrap()];
+const _: [(); 0x2860] = [(); g15_j615_channel_memory_slot_offset(1).unwrap()];
+const _: [(); 0x50c0] = [(); g15_j615_channel_memory_slot_offset(2).unwrap()];
+
 /// Persistent exact 23J220 CL-channel command-resource backing used by the
 /// stock-empty Compute SKU stream. E114 proves J615 owns one normal option-3
 /// eGartRange-5 resource of logical size 0x1f400. The already-proven range-5
