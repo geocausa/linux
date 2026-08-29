@@ -9,14 +9,20 @@ use crate::{
 };
 use core::sync::atomic::Ordering;
 
-/// Exact 23J220 AGXCommandBuffer event-control geometry for G15.
+/// Exact 23J220 AGXCommandBuffer stamp/event-control geometry for G15.
 ///
-/// The backing mapping class is intentionally not modeled yet. E088 proves only
-/// the contiguous 36-state/0xc0-byte ownership and selection contract.
+/// E092 closes two contiguous shared-data backings: 36 four-byte stamps in
+/// normal eGartRange 7 and 36 0xc0-byte event-control states in eGartRange 8.
 pub(crate) const G15_EVENT_CONTROL_STATE_COUNT: usize = 36;
+pub(crate) const G15_EVENT_CONTROL_STAMP_SIZE: usize = core::mem::size_of::<Stamp>();
+pub(crate) const G15_EVENT_CONTROL_STAMP_POOL_SIZE: usize =
+    G15_EVENT_CONTROL_STATE_COUNT * G15_EVENT_CONTROL_STAMP_SIZE;
 pub(crate) const G15_EVENT_CONTROL_BLOCK_SIZE: usize = 0xc0;
 pub(crate) const G15_EVENT_CONTROL_POOL_SIZE: usize =
     G15_EVENT_CONTROL_STATE_COUNT * G15_EVENT_CONTROL_BLOCK_SIZE;
+
+const _: [(); 0x90] = [(); G15_EVENT_CONTROL_STAMP_POOL_SIZE];
+const _: [(); 0x1b00] = [(); G15_EVENT_CONTROL_POOL_SIZE];
 
 pub(crate) mod raw {
     use super::*;
@@ -36,23 +42,32 @@ pub(crate) mod raw {
     }
     default_zeroed!(NotifierList);
 
-    /// Opaque exact-size G15 command-buffer event-control state.
+    /// Partial exact 23J220 G15 command-buffer event-control state.
     ///
-    /// E088 closes the 0xc0-byte stride and CPU/GPU paired ownership, but not
-    /// the complete field semantics or mapping class. Keep the bytes opaque so
-    /// no inherited Notifier layout can be accidentally imposed on G15.
+    /// E092 closes the construction/rotation writes below while leaving all
+    /// still-unnamed bytes as padding. In particular, `config_10` is named only
+    /// by producer/offset until its J615 value and semantic are independently
+    /// recovered. This must not be confused with the legacy Notifier layout.
     #[allow(dead_code)]
     #[derive(Debug, Clone, Copy)]
     #[repr(C)]
     pub(crate) struct G15EventControlBlock {
-        opaque: Pad<G15_EVENT_CONTROL_BLOCK_SIZE>,
+        pub(crate) stamp_fwva: U64,
+        pub(crate) stamp_index_08: u32,
+        zero_0c: u32,
+        config_10: u32,
+        zero_14: u32,
+        zero_18: U64,
+        __pad_20: Pad<0x88>,
+        sentinel_a8: U64,
+        __pad_b0: Pad<0x10>,
     }
     default_zeroed!(G15EventControlBlock);
 
     /// Exact contiguous 36-state command-buffer event-control pool layout.
-    /// This deliberately does not implement `GpuStruct`: E091 models geometry
-    /// only and cannot allocate or publish this pool before its mapping class is
-    /// independently recovered.
+    /// E092 proves the pool maps through shared eGartRange 8, but the compile-
+    /// only E093 owner uses `GpuArray<G15EventControlBlock>` directly rather
+    /// than imposing an unrelated inherited Notifier `GpuStruct`.
     #[allow(dead_code)]
     #[derive(Debug, Clone, Copy)]
     #[repr(C)]
@@ -65,6 +80,13 @@ pub(crate) mod raw {
         [(); core::mem::size_of::<G15EventControlBlock>()];
     const _: [(); G15_EVENT_CONTROL_POOL_SIZE] =
         [(); core::mem::size_of::<G15EventControlPool>()];
+    const _: [(); 0x00] = [(); core::mem::offset_of!(G15EventControlBlock, stamp_fwva)];
+    const _: [(); 0x08] = [(); core::mem::offset_of!(G15EventControlBlock, stamp_index_08)];
+    const _: [(); 0x0c] = [(); core::mem::offset_of!(G15EventControlBlock, zero_0c)];
+    const _: [(); 0x10] = [(); core::mem::offset_of!(G15EventControlBlock, config_10)];
+    const _: [(); 0x14] = [(); core::mem::offset_of!(G15EventControlBlock, zero_14)];
+    const _: [(); 0x18] = [(); core::mem::offset_of!(G15EventControlBlock, zero_18)];
+    const _: [(); 0xa8] = [(); core::mem::offset_of!(G15EventControlBlock, sentinel_a8)];
 
     #[versions(AGX)]
     #[derive(Debug, Clone, Copy)]

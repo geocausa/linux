@@ -122,6 +122,68 @@ impl SubQueueJob::ver {
     }
 }
 
+/// Compile-only owner for the exact 23J220 G15 command-buffer stamp and
+/// event-control shared-data backings.
+///
+/// E092 proves two page-based mappings with logical data at page offset zero:
+/// 36 four-byte stamps in normal range 7 and 36 0xc0-byte controls in range 8.
+/// This owner remains unreachable and exposes no selected event-control FWVA;
+/// rotation-time `+0x10` configuration is still an explicit activation gate.
+#[allow(dead_code)]
+struct G15EventControlBacking {
+    _stamps: alloc::G15SharedGpuArray<Stamp>,
+    _controls: alloc::G15SharedGpuArray<fw::event::raw::G15EventControlBlock>,
+    _selector: fw::event::G15EventControlSelector,
+}
+
+#[allow(dead_code)]
+impl G15EventControlBacking {
+    fn new(
+        dev: &AsahiDevice,
+        bank1: mmu::G15SharedBank1,
+        mapping_notifier: Arc<Mutex<mmu::G15MappingNotifier>>,
+    ) -> Result<Self> {
+        // Apple shared-data logical addresses are page-base addresses. A page
+        // minimum alignment forces G15SharedBank1Allocator's sub-page offset to
+        // zero instead of packing these small objects at the end of a page.
+        let mut stamp_alloc = alloc::G15SharedBank1Allocator::new_range7_event(
+            dev,
+            bank1.clone(),
+            mmu::UAT_PGSZ,
+            true,
+            Some(mapping_notifier.clone()),
+        );
+        let stamps = stamp_alloc.array_empty_shared_data::<Stamp>(
+            fw::event::G15_EVENT_CONTROL_STATE_COUNT,
+        )?;
+
+        let mut control_alloc = alloc::G15SharedBank1Allocator::new_range8(
+            dev,
+            bank1,
+            mmu::UAT_PGSZ,
+            true,
+            Some(mapping_notifier),
+        );
+        let mut controls = control_alloc
+            .array_empty_shared_data::<fw::event::raw::G15EventControlBlock>(
+                fw::event::G15_EVENT_CONTROL_STATE_COUNT,
+            )?;
+
+        // Exact AGXCommandBuffer::init() construction boundary: all controls
+        // are zero except +0x00, which points at the corresponding stamp FWVA.
+        // G15 GPUVA->FWVA conversion is identity on the exact target.
+        for index in 0..fw::event::G15_EVENT_CONTROL_STATE_COUNT {
+            controls[index].stamp_fwva = U64(stamps.weak_item_pointer(index).into());
+        }
+
+        Ok(Self {
+            _stamps: stamps,
+            _controls: controls,
+            _selector: Default::default(),
+        })
+    }
+}
+
 #[versions(AGX)]
 pub(crate) struct Queue {
     dev: AsahiDevRef,

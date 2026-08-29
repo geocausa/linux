@@ -461,6 +461,41 @@ pub(crate) struct G15SharedBank1Allocator {
 }
 
 impl G15SharedBank1Allocator {
+    /// Allocate one exact Apple-style shared-data array at the mapping page
+    /// base. Unlike the generic allocator helpers this deliberately omits debug
+    /// headers/trailing overflow padding, because either would change the FWVA
+    /// of the ABI object. The complete rounded backing is zeroed, matching
+    /// AGXFirmware::allocateSharedData().
+    #[allow(dead_code)]
+    pub(crate) fn array_empty_shared_data<T: Sized + Default>(
+        &mut self,
+        count: usize,
+    ) -> Result<G15SharedGpuArray<T>> {
+        let size = mem::size_of::<T>() * count;
+        let rounded = (size + mmu::UAT_PGSZ - 1) & !mmu::UAT_PGMSK;
+        let raw = self.alloc(size, mmu::UAT_PGSZ)?;
+
+        if let Some(p) = raw.ptr() {
+            // SAFETY: G15SharedBank1Allocator::alloc() rounds the backing to
+            // `rounded` bytes and page alignment above forces its logical
+            // offset to zero, so the whole mapped backing is writable here.
+            unsafe { p.as_ptr().write_bytes(0, rounded) };
+        } else {
+            return Err(EINVAL);
+        }
+
+        let alloc = GenericAlloc {
+            alloc: raw,
+            alloc_size: size,
+            debug_offset: 0,
+            padding: 0,
+            tag: 0,
+            pad_word: GUARD_MARKER | 0x81818181,
+            _p: PhantomData,
+        };
+        GpuArray::<T, GenericAlloc<T, G15SharedBank1Allocation>>::empty(alloc, count)
+    }
+
     pub(crate) fn new(
         dev: &AsahiDevice,
         bank1: mmu::G15SharedBank1,
@@ -475,6 +510,29 @@ impl G15SharedBank1Allocator {
             bank1,
             aperture: mmu::G15SharedBank1Aperture::Range7,
             prot,
+            min_align,
+            cpu_maps,
+            notifier,
+        }
+    }
+
+    /// Dedicated normal eGartRange-7 allocator for exact G15 command-buffer
+    /// stamp/shared-event storage. E092 proves this is the compact-0x007 /
+    /// 0x...0447 class, distinct from the FList FW-Uncached 0x...044b class.
+    #[allow(dead_code)]
+    pub(crate) fn new_range7_event(
+        dev: &AsahiDevice,
+        bank1: mmu::G15SharedBank1,
+        min_align: usize,
+        mut cpu_maps: bool,
+        notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
+    ) -> Self {
+        if debug_enabled(DebugFlags::ForceCPUMaps) { cpu_maps = true; }
+        Self {
+            dev: dev.into(),
+            bank1,
+            aperture: mmu::G15SharedBank1Aperture::Range7,
+            prot: mmu::PROT_G15_RANGE7_FW,
             min_align,
             cpu_maps,
             notifier,
