@@ -9,6 +9,15 @@ use crate::{
 };
 use core::sync::atomic::Ordering;
 
+/// Exact 23J220 AGXCommandBuffer event-control geometry for G15.
+///
+/// The backing mapping class is intentionally not modeled yet. E088 proves only
+/// the contiguous 36-state/0xc0-byte ownership and selection contract.
+pub(crate) const G15_EVENT_CONTROL_STATE_COUNT: usize = 36;
+pub(crate) const G15_EVENT_CONTROL_BLOCK_SIZE: usize = 0xc0;
+pub(crate) const G15_EVENT_CONTROL_POOL_SIZE: usize =
+    G15_EVENT_CONTROL_STATE_COUNT * G15_EVENT_CONTROL_BLOCK_SIZE;
+
 pub(crate) mod raw {
     use super::*;
 
@@ -26,6 +35,36 @@ pub(crate) mod raw {
         pub(crate) unkptr_10: U64,
     }
     default_zeroed!(NotifierList);
+
+    /// Opaque exact-size G15 command-buffer event-control state.
+    ///
+    /// E088 closes the 0xc0-byte stride and CPU/GPU paired ownership, but not
+    /// the complete field semantics or mapping class. Keep the bytes opaque so
+    /// no inherited Notifier layout can be accidentally imposed on G15.
+    #[allow(dead_code)]
+    #[derive(Debug, Clone, Copy)]
+    #[repr(C)]
+    pub(crate) struct G15EventControlBlock {
+        opaque: Pad<G15_EVENT_CONTROL_BLOCK_SIZE>,
+    }
+    default_zeroed!(G15EventControlBlock);
+
+    /// Exact contiguous 36-state command-buffer event-control pool layout.
+    /// This deliberately does not implement `GpuStruct`: E091 models geometry
+    /// only and cannot allocate or publish this pool before its mapping class is
+    /// independently recovered.
+    #[allow(dead_code)]
+    #[derive(Debug, Clone, Copy)]
+    #[repr(C)]
+    pub(crate) struct G15EventControlPool {
+        blocks: Array<G15_EVENT_CONTROL_STATE_COUNT, G15EventControlBlock>,
+    }
+    default_zeroed!(G15EventControlPool);
+
+    const _: [(); G15_EVENT_CONTROL_BLOCK_SIZE] =
+        [(); core::mem::size_of::<G15EventControlBlock>()];
+    const _: [(); G15_EVENT_CONTROL_POOL_SIZE] =
+        [(); core::mem::size_of::<G15EventControlPool>()];
 
     #[versions(AGX)]
     #[derive(Debug, Clone, Copy)]
@@ -91,6 +130,37 @@ pub(crate) mod raw {
 
 trivial_gpustruct!(Threshold);
 trivial_gpustruct!(NotifierList);
+
+/// Host-side selector for the exact G15 command-buffer event-control ring.
+///
+/// `AGXCommandBuffer::init()` initializes the selected state to zero and
+/// `nextCommandBufferState()` increments before selecting modulo 36. This type
+/// intentionally owns no GPU memory; it only pins that rotation contract.
+#[allow(dead_code)]
+#[derive(Debug, Default)]
+pub(crate) struct G15EventControlSelector {
+    current: u32,
+}
+
+#[allow(dead_code)]
+impl G15EventControlSelector {
+    pub(crate) fn advance(&mut self) -> usize {
+        self.current = (self.current + 1) % G15_EVENT_CONTROL_STATE_COUNT as u32;
+        self.current as usize
+    }
+
+    pub(crate) fn current(&self) -> usize {
+        self.current as usize
+    }
+
+    pub(crate) const fn state_offset(index: usize) -> Option<usize> {
+        if index < G15_EVENT_CONTROL_STATE_COUNT {
+            Some(index * G15_EVENT_CONTROL_BLOCK_SIZE)
+        } else {
+            None
+        }
+    }
+}
 
 #[versions(AGX)]
 #[derive(Debug)]
