@@ -749,7 +749,41 @@ impl G15FListResourceOwner {
         )
     }
 
-    fn complete_reference(&self, hardware_buffer_id: u32) -> Result<bool> {
+    /// Acquire one stock-empty command reference and initialize the firmware
+    /// state on the first-ever active epoch. If first-epoch population fails,
+    /// drop the just-acquired manager reference before returning the error.
+    pub(crate) fn prepare_stock_empty_reference(
+        &mut self,
+        priority: u32,
+    ) -> Result<G15HardwareBufferLease> {
+        let lease = self.prepare_reference()?;
+        if !self.firmware_state_initialized {
+            if !lease.first_reference {
+                let _ = self.complete_reference(lease.hardware_buffer_id);
+                return Err(EIO);
+            }
+            if let Err(err) = self.populate_stock_empty_first_epoch(lease, priority) {
+                let final_reference = self.complete_reference(lease.hardware_buffer_id)?;
+                if !final_reference {
+                    return Err(EIO);
+                }
+                return Err(err);
+            }
+        }
+        Ok(lease)
+    }
+
+    /// FWVA is usable only after the first exact firmware-state population.
+    /// E109 keeps this accessor definition-only and returns it solely into an
+    /// unpublished command-assets token, never directly to RunCompute.
+    pub(crate) fn initialized_page_pool_state_fwva(&self) -> Result<u64> {
+        if !self.firmware_state_initialized {
+            return Err(EINVAL);
+        }
+        Ok(self.page_pool_state.weak_item_pointer(0).into())
+    }
+
+    pub(crate) fn complete_reference(&self, hardware_buffer_id: u32) -> Result<bool> {
         self.plan.complete_reference(hardware_buffer_id)
     }
 }

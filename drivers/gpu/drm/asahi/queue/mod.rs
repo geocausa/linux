@@ -173,9 +173,31 @@ impl G15HWMetricsBacking {
         self.record_offset = (self.record_offset + Self::RECORD_BYTES) % Self::PAGE_BYTES as u32;
         current
     }
+
+    fn take_record_fwva(&mut self) -> Result<u64> {
+        let base: u64 = self._page.weak_pointer().into();
+        let offset = self.take_record_offset() as u64;
+        base.checked_add(offset).ok_or(EOVERFLOW)
+    }
 }
 
 const _: [(); 0x100] = [(); G15HWMetricsBacking::RECORD_COUNT];
+
+/// Fully materialized stock-empty command assets that are still deliberately
+/// unpublished. This token is not a firmware structure and has no RunCompute
+/// conversion/consumer. It exists only to prove the exact owner graph can
+/// produce one coherent set of addresses after callers have separately proved
+/// event-control and SKU slots retired.
+#[derive(Debug)]
+#[allow(dead_code)]
+struct G15UnpublishedStockEmptyCommandAssets {
+    event_control_fwva: u64,
+    sku_fwva: u64,
+    sku_size: u32,
+    page_pool_state_fwva: u64,
+    hwmetrics_fwva: u64,
+    hardware_buffer_id: u32,
+}
 
 /// Unreachable ownership graph for the exact stock-empty G15 Compute
 /// prerequisites that have independent Apple lifetimes but must coexist before
@@ -236,6 +258,58 @@ impl G15StockEmptyComputeOwnerGraph {
             _flist: flist,
             _sku: sku,
         })
+    }
+
+    /// Materialize one stock-empty asset set after the caller has separately
+    /// proven both supplied slots retired. This method still cannot create a
+    /// RunCompute command. Event/SKU writes happen before HardwareBuffer
+    /// activation, so an activation failure leaves only unpublished retired
+    /// slots modified and does not leak a manager reference.
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_unpublished_after_retirement(
+        &mut self,
+        event_index: usize,
+        state_sequence: u32,
+        sku_index: usize,
+        sku_stream: &fw::compute::G15StockEmptySkuStream,
+        priority: u32,
+    ) -> Result<G15UnpublishedStockEmptyCommandAssets> {
+        self._event_control
+            .seed_selected_after_event_finish(event_index, state_sequence)?;
+        let event_control_fwva = self._event_control.control_fwva(event_index)?;
+        let sku = self._sku.write_retired_stock_empty_slot(sku_index, sku_stream)?;
+
+        let lease = self._flist.prepare_stock_empty_reference(priority)?;
+        let page_pool_state_fwva = match self._flist.initialized_page_pool_state_fwva() {
+            Ok(fwva) => fwva,
+            Err(err) => {
+                let _ = self._flist.complete_reference(lease.hardware_buffer_id);
+                return Err(err);
+            }
+        };
+        let hwmetrics_fwva = match self._hwmetrics.take_record_fwva() {
+            Ok(fwva) => fwva,
+            Err(err) => {
+                let _ = self._flist.complete_reference(lease.hardware_buffer_id);
+                return Err(err);
+            }
+        };
+
+        Ok(G15UnpublishedStockEmptyCommandAssets {
+            event_control_fwva,
+            sku_fwva: sku.fwva(),
+            sku_size: sku.size(),
+            page_pool_state_fwva,
+            hwmetrics_fwva,
+            hardware_buffer_id: lease.hardware_buffer_id,
+        })
+    }
+
+    fn complete_unpublished(
+        &self,
+        assets: G15UnpublishedStockEmptyCommandAssets,
+    ) -> Result<bool> {
+        self._flist.complete_reference(assets.hardware_buffer_id)
     }
 }
 
@@ -326,6 +400,13 @@ impl G15EventControlBacking {
         self._controls[index].sentinel_a8 = U64(u64::MAX);
 
         Ok(())
+    }
+
+    fn control_fwva(&self, index: usize) -> Result<u64> {
+        if index >= fw::event::G15_EVENT_CONTROL_STATE_COUNT {
+            return Err(EINVAL);
+        }
+        Ok(self._controls.weak_item_pointer(index).into())
     }
 }
 
