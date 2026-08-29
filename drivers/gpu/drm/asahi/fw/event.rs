@@ -59,7 +59,7 @@ pub(crate) mod raw {
     #[repr(C)]
     pub(crate) struct G15EventControlBlock {
         pub(crate) stamp_fwva: U64,
-        pub(crate) stamp_index_08: u32,
+        pub(crate) state_sequence_08: u32,
         zero_0c: u32,
         pub(crate) effective_record_count_10: u32,
         zero_14: u32,
@@ -87,7 +87,7 @@ pub(crate) mod raw {
     const _: [(); G15_EVENT_CONTROL_POOL_SIZE] =
         [(); core::mem::size_of::<G15EventControlPool>()];
     const _: [(); 0x00] = [(); core::mem::offset_of!(G15EventControlBlock, stamp_fwva)];
-    const _: [(); 0x08] = [(); core::mem::offset_of!(G15EventControlBlock, stamp_index_08)];
+    const _: [(); 0x08] = [(); core::mem::offset_of!(G15EventControlBlock, state_sequence_08)];
     const _: [(); 0x0c] = [(); core::mem::offset_of!(G15EventControlBlock, zero_0c)];
     const _: [(); 0x10] =
         [(); core::mem::offset_of!(G15EventControlBlock, effective_record_count_10)];

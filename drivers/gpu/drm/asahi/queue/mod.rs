@@ -188,7 +188,11 @@ impl G15EventControlBacking {
     /// slot has been retired. This is deliberately not a complete
     /// `nextCommandBufferState()` implementation: the exact IOGPU finish-event
     /// operation must happen before this reset and is not modeled here yet.
-    fn seed_selected_after_event_finish(&mut self, index: usize, stamp_index: u32) -> Result {
+    fn seed_selected_after_event_finish(
+        &mut self,
+        index: usize,
+        state_sequence: u32,
+    ) -> Result {
         if index >= fw::event::G15_EVENT_CONTROL_STATE_COUNT {
             return Err(EINVAL);
         }
@@ -199,7 +203,7 @@ impl G15EventControlBacking {
         let stamp_fwva: u64 = self._stamps.weak_item_pointer(index).into();
         self._controls[index] = Default::default();
         self._controls[index].stamp_fwva = U64(stamp_fwva);
-        self._controls[index].stamp_index_08 = stamp_index;
+        self._controls[index].state_sequence_08 = state_sequence;
         self._controls[index].effective_record_count_10 =
             fw::event::G15_EVENT_CONTROL_J615_EFFECTIVE_RECORD_COUNT;
         self._controls[index].sentinel_a8 = U64(u64::MAX);
@@ -300,6 +304,71 @@ impl dma_fence::FenceOps for JobFence::ver {
     }
     fn get_timeline_name<'a>(self: &'a FenceObject<Self>) -> &'a CStr {
         c_str!("queue")
+    }
+}
+
+/// Host-only reuse guards for the 36 exact G15 command-buffer states.
+///
+/// E095 proves Apple finishes the selected host event before resetting the
+/// corresponding GPU-visible stamp/control state. Linux does not need to copy
+/// that IOGPUEvent layout: retaining the submission fence expresses the same
+/// lifetime. Reuse is fail-closed while any command covered by the fence is
+/// still pending.
+#[versions(AGX)]
+#[allow(dead_code)]
+struct G15EventControlRetirementGuards {
+    slots: KVec<Option<UserFence<JobFence::ver>>>,
+}
+
+#[versions(AGX)]
+#[allow(dead_code)]
+impl G15EventControlRetirementGuards::ver {
+    fn new() -> Result<Self> {
+        let mut slots = KVec::with_capacity(
+            fw::event::G15_EVENT_CONTROL_STATE_COUNT,
+            GFP_KERNEL,
+        )?;
+        for _ in 0..fw::event::G15_EVENT_CONTROL_STATE_COUNT {
+            slots.push(None, GFP_KERNEL)?;
+        }
+        Ok(Self { slots })
+    }
+
+    /// Bind a selected state only after the submission has acquired at least
+    /// one command reference. This prevents a not-yet-armed fence from being
+    /// mistaken for an already-retired slot.
+    fn bind_inflight(
+        &mut self,
+        index: usize,
+        fence: &UserFence<JobFence::ver>,
+    ) -> Result {
+        if index >= fw::event::G15_EVENT_CONTROL_STATE_COUNT {
+            return Err(EINVAL);
+        }
+        if self.slots[index].is_some() {
+            return Err(EBUSY);
+        }
+        if fence.pending.load(Ordering::Acquire) == 0 {
+            return Err(EINVAL);
+        }
+        self.slots[index] = Some(fence.clone());
+        Ok(())
+    }
+
+    /// Nonblocking Linux equivalent of the E095 reuse barrier. A caller may
+    /// clear/reseed the GPU-visible state only after this returns true.
+    fn try_finish(&mut self, index: usize) -> Result<bool> {
+        if index >= fw::event::G15_EVENT_CONTROL_STATE_COUNT {
+            return Err(EINVAL);
+        }
+        let done = match self.slots[index].as_ref() {
+            Some(fence) => fence.pending.load(Ordering::Acquire) == 0,
+            None => true,
+        };
+        if done {
+            self.slots[index] = None;
+        }
+        Ok(done)
     }
 }
 
