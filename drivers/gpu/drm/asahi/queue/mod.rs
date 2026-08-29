@@ -177,6 +177,68 @@ impl G15HWMetricsBacking {
 
 const _: [(); 0x100] = [(); G15HWMetricsBacking::RECORD_COUNT];
 
+/// Unreachable ownership graph for the exact stock-empty G15 Compute
+/// prerequisites that have independent Apple lifetimes but must coexist before
+/// a RunCompute command can be published.
+///
+/// This graph deliberately stops at construction ownership. It does not select
+/// an event-control state, acquire/populate an FList HardwareBuffer epoch,
+/// select/copy a SKU slot, advance HWMetrics, or expose any FWVA. The existing
+/// E096/E106 retirement guards also remain separate. That preserves the exact
+/// lifetime boundaries while proving the shared bank-1/q22 resources and the
+/// per-VM range-5 FList resources can be owned together without a submission
+/// path.
+#[allow(dead_code)]
+struct G15StockEmptyComputeOwnerGraph {
+    _event_control: G15EventControlBacking,
+    _hwmetrics: G15HWMetricsBacking,
+    _flist: buffer::G15FListResourceOwner,
+    _sku: fw::compute::G15SkuBacking,
+}
+
+#[allow(dead_code)]
+impl G15StockEmptyComputeOwnerGraph {
+    #[allow(clippy::too_many_arguments)]
+    fn new_unpublished(
+        dev: &AsahiDevice,
+        hardware_buffer_ids: buffer::G15HardwareBufferIdManager,
+        flist_owner_cookie: u64,
+        pool_id: u64,
+        range5_list_alloc: &mut alloc::DefaultAllocator,
+        bank1: mmu::G15SharedBank1,
+        mapping_notifier: Arc<Mutex<mmu::G15MappingNotifier>>,
+    ) -> Result<Self> {
+        // Keep one shared bank-1/q22 lifetime for every exact shared resource.
+        let event_control = G15EventControlBacking::new(
+            dev,
+            bank1.clone(),
+            mapping_notifier.clone(),
+        )?;
+        let hwmetrics = G15HWMetricsBacking::new(
+            dev,
+            bank1.clone(),
+            mapping_notifier.clone(),
+        )?;
+        let flist = buffer::G15FListResourceOwner::new_j615_unprepared(
+            dev,
+            hardware_buffer_ids,
+            flist_owner_cookie,
+            pool_id,
+            range5_list_alloc,
+            bank1.clone(),
+            Some(mapping_notifier.clone()),
+        )?;
+        let sku = fw::compute::G15SkuBacking::new(dev, bank1, mapping_notifier)?;
+
+        Ok(Self {
+            _event_control: event_control,
+            _hwmetrics: hwmetrics,
+            _flist: flist,
+            _sku: sku,
+        })
+    }
+}
+
 /// Compile-only owner for the exact 23J220 G15 command-buffer stamp and
 /// event-control shared-data backings.
 ///
