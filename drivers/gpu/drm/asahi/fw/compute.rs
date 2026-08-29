@@ -9,10 +9,14 @@ use super::{
     workqueue, //
 };
 use crate::{
+    alloc,
     microseq,
     mmu, //
 };
-use kernel::{prelude::*, sync::Arc};
+use kernel::{
+    prelude::*,
+    sync::{Arc, Mutex}, //
+};
 
 pub(crate) mod raw {
     use super::*;
@@ -279,6 +283,17 @@ pub(crate) mod raw {
 /// Compute WFI, end timestamp, type-0xc retirement packet, finish word, and
 /// zero padding to Apple's 0x40-byte reported alignment.
 pub(crate) const G15_STOCK_EMPTY_SKU_STREAM_SIZE: usize = 0x2c0;
+/// Exact 23J220 Compute SKU encoder slot count on normal J615.
+pub(crate) const G15_SKU_SLOT_COUNT: usize = 0xf0;
+/// Exact per-slot allocation stride. The stock-empty stream uses 0x2c0 bytes
+/// and therefore leaves the final 0x40 bytes of each slot unused.
+pub(crate) const G15_SKU_SLOT_STRIDE: usize = 0x300;
+/// Exact mapped SKU backing after rounding 0xf0 * 0x300 to the 16-KiB host page.
+pub(crate) const G15_SKU_BACKING_BYTES: usize = 0x30000;
+/// Exact host-only IOGPUEvent storage owned by Apple's SKU encoder. Linux does
+/// not reproduce this raw event array in E104; slot retirement stays separate.
+#[allow(dead_code)]
+pub(crate) const G15_SKU_HOST_EVENT_BYTES: usize = 0x3c00;
 const G15_STOCK_EMPTY_SKU_PRE_ROUND_SIZE: usize = 0x2b8;
 const G15_SKU_TYPE0B_PACKET_SIZE: usize = 0x1bc;
 const G15_SKU_TIMESTAMP_SIZE: usize = 0x3c;
@@ -304,6 +319,12 @@ const _: [(); G15_STOCK_EMPTY_SKU_PRE_ROUND_SIZE] = [();
         + 4
 ];
 const _: [(); G15_STOCK_EMPTY_SKU_STREAM_SIZE] = [(); 0x2c0];
+const _: [(); 0x2d000] = [(); G15_SKU_SLOT_COUNT * G15_SKU_SLOT_STRIDE];
+const _: [(); G15_SKU_BACKING_BYTES] = [();
+    ((G15_SKU_SLOT_COUNT * G15_SKU_SLOT_STRIDE + mmu::UAT_PGSZ - 1)
+        & !mmu::UAT_PGMSK)
+];
+const _: [(); G15_SKU_HOST_EVENT_BYTES] = [(); G15_SKU_SLOT_COUNT * 0x40];
 const _: [(); G15_SKU_START_TIMESTAMP_OFFSET] = [(); G15_SKU_TYPE0B_PACKET_SIZE];
 const _: [(); G15_SKU_WFI_OFFSET] =
     [(); G15_SKU_START_TIMESTAMP_OFFSET + G15_SKU_TIMESTAMP_SIZE];
@@ -474,6 +495,48 @@ impl G15StockEmptySkuStream {
 
     pub(crate) fn as_bytes(&self) -> &[u8; G15_STOCK_EMPTY_SKU_STREAM_SIZE] {
         &self.bytes
+    }
+}
+
+/// Persistent exact 23J220 Compute SKU backing owner.
+///
+/// E103 proves one accelerator-owned special-range-8 mapping of exactly
+/// 0x30000 bytes, divided into 0xf0 slots at 0x300-byte stride. This owner is
+/// deliberately unreachable and exposes no slot/FWVA accessor, so E102's
+/// serializer cannot be published to RunCompute +0x760 through this type.
+/// Apple's separate 0xf0 x 0x40 host event array is not reproduced here; a
+/// future integration must bind slot reuse to an already-proven Linux lifetime.
+#[allow(dead_code)]
+pub(crate) struct G15SkuBacking {
+    backing: alloc::G15SharedGpuArray<u8>,
+}
+
+#[allow(dead_code)]
+impl G15SkuBacking {
+    pub(crate) fn new(
+        dev: &crate::driver::AsahiDevice,
+        bank1: mmu::G15SharedBank1,
+        mapping_notifier: Arc<Mutex<mmu::G15MappingNotifier>>,
+    ) -> Result<Self> {
+        let mut allocator = alloc::G15SharedBank1Allocator::new_range8(
+            dev,
+            bank1,
+            mmu::UAT_PGSZ,
+            true,
+            Some(mapping_notifier),
+        );
+        let backing = allocator.array_empty_shared_data::<u8>(G15_SKU_BACKING_BYTES)?;
+        let base: u64 = backing.weak_pointer().into();
+        if backing.len() != G15_SKU_BACKING_BYTES
+            || base & mmu::UAT_PGMSK as u64 != 0
+        {
+            return Err(EIO);
+        }
+        if backing.as_slice().iter().any(|byte| *byte != 0) {
+            return Err(EIO);
+        }
+
+        Ok(Self { backing })
     }
 }
 
