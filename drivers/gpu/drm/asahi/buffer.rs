@@ -419,10 +419,12 @@ const _: [(); G15_HARDWARE_BUFFER_ID_COUNT] = [(); 0x100];
 /// combines the exact symbolic resource geometry with the synchronized sticky
 /// HardwareBuffer owner but deliberately owns no GPU allocation object.
 ///
-/// In particular, E081 does not choose a Page/Backup List mapping class, does
-/// not call the range-7/range-8 allocators, and cannot publish Page-Pool State
-/// to RunCompute. A future constructor may consume this plan only after M/B and
-/// the remaining range-5 mapping classes are mechanically closed.
+/// E082 closes the Page/Backup List mapping class as exact range-5 compact
+/// option 0x300 (`PROT_G15_RANGE5_FLIST_LIST`). The plan still owns no
+/// allocator/GPU object, does not call any range allocator, and cannot publish
+/// Page-Pool State to RunCompute. A future resource constructor may consume
+/// this plan only after the remaining M/B producer values are mechanically
+/// closed.
 #[allow(dead_code)]
 pub(crate) struct G15FListResourcePlan {
     geometry: G15FListGeometry,
@@ -446,6 +448,11 @@ impl G15FListResourcePlan {
 
     pub(crate) fn geometry(&self) -> G15FListGeometry {
         self.geometry
+    }
+
+    /// Exact 23J220 PTE class for both persistent range-5 list backings.
+    pub(crate) fn range5_list_prot(&self) -> mmu::Prot {
+        mmu::PROT_G15_RANGE5_FLIST_LIST
     }
 
     pub(crate) fn sticky_hardware_buffer_id(&self) -> Option<u32> {

@@ -164,6 +164,12 @@ pub(crate) mod prot {
     /// `PROT_GPU_FW_PRIV_RW`, which would add PXN/UXN bits not present here.
     pub(crate) const PROT_G15_RANGE5_CACHED: Prot =
         PROT_FW_GPU_NA.memattr(MEMATTR_CACHED);
+    /// Exact 23J220 AGXUMAFList Page Pool List / Backup Page List class.
+    /// Both list mappings use eGartRange 5 with caller options 0x20000000003;
+    /// SecureMemoryMap + SecureGart reduce that path to compact UAT option
+    /// 0x300. Keep a semantic FList name even though its PTE bits equal the
+    /// already-modeled cached range-5 class.
+    pub(crate) const PROT_G15_RANGE5_FLIST_LIST: Prot = PROT_G15_RANGE5_CACHED;
     /// Exact non-legacy G15 eGartRange-7 firmware-shared protection shape.
     /// Apple uses option word 0x700000007 for the q22 mapping-control state/ring,
     /// PMPageMetricsBuffer, and Parameter Scene statistics resources. SecureGart
@@ -201,6 +207,10 @@ const _: [(); 1] = [(); ((prot::PROT_G15_RANGE5_UNCACHED.as_pte() & UAT_PROT_BIT
 // PM-record compact 0x300 -> G15 GPU-access high bit + cached memory,
 // with no PXN/UXN bits.
 const _: [(); 1] = [(); ((prot::PROT_G15_RANGE5_CACHED.as_pte() & UAT_PROT_BITS)
+    == 0x0080_0000_0000_0000) as usize];
+// FList Page/Backup lists: exact compact 0x300, intentionally equal to the
+// cached range-5 protection bits while retaining separate ownership semantics.
+const _: [(); 1] = [(); ((prot::PROT_G15_RANGE5_FLIST_LIST.as_pte() & UAT_PROT_BITS)
     == 0x0080_0000_0000_0000) as usize];
 // Range-7 FW-shared resources: compact 0x007 -> AP=1, device memattr,
 // UXN + GPU-access high bits.
