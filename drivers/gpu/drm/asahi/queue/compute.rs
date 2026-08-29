@@ -266,7 +266,10 @@ impl super::QueueInner::ver {
                     counter: U64(count),
                     unk_4: 0,
                     vm_slot,
+                    #[ver(G != G15)]
                     notifier: inner.notifier.gpu_pointer(),
+                    #[ver(G == G15)]
+                    g15_event_control_fwva_14: U64(0),
                     unk_pointee: Default::default(),
                     #[ver(G < G14X && G != G15)]
                     __pad0: Default::default(),

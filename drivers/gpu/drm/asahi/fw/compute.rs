@@ -116,7 +116,16 @@ pub(crate) mod raw {
 
         pub(crate) unk_4: u32,
         pub(crate) vm_slot: u32,
+        #[ver(G != G15)]
         pub(crate) notifier: GpuPointer<'a, event::Notifier::ver>,
+        // Exact 23J220: descriptor +0x148 is the selected GPU address from
+        // AGXCommandBuffer's 36-entry event-control pool. submitBuffer()
+        // converts it to FWVA and writes it at RunCompute +0x14. Linux does
+        // not yet own the matching per-command-buffer G15 pool, so keep this
+        // pointer zero/fail-closed instead of exporting the legacy queue-wide
+        // notifier object.
+        #[ver(G == G15)]
+        pub(crate) g15_event_control_fwva_14: U64,
         pub(crate) unk_pointee: u32,
         #[ver(G < G14X && G != G15)]
         pub(crate) __pad0: Array<0x50, u8>,
@@ -224,9 +233,12 @@ pub(crate) mod raw {
 
     const _: [(); 0x880] = [(); core::mem::size_of::<RunComputeG15V14_7<'static>>()];
     // AGXCLChannelSKU::submitBuffer() writes the G15 context ID at +0x10,
-    // matching the existing VM-slot field, then the notifier at +0x14.
+    // matching the existing VM-slot field, then the event-control FWVA at +0x14.
     const _: [(); 0x10] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, vm_slot)];
-    const _: [(); 0x14] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, notifier)];
+    const _: [(); 0x14] = [(); core::mem::offset_of!(
+        RunComputeG15V14_7<'static>,
+        g15_event_control_fwva_14
+    )];
     const _: [(); 0x1c] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, unk_pointee)];
     const _: [(); 0x20] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, registers)];
     const _: [(); 0x730] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_pre_micro_730)];
