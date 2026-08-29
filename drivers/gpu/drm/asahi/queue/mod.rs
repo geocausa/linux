@@ -183,6 +183,60 @@ impl G15HWMetricsBacking {
 
 const _: [(); 0x100] = [(); G15HWMetricsBacking::RECORD_COUNT];
 
+/// One exact 23J220 firmware `_AGFIChannelState` backing block.
+///
+/// E116 proves the global firmware resource stack allocates page-base 0x8000
+/// blocks in the already-proven special range-8 class and slices each block
+/// into three 0x24c0-byte channel states. This compile-only owner deliberately
+/// does not select a slot, expose a slot FWVA, or initialize QueueInfo; those
+/// are separate channel-lifetime gates.
+#[allow(dead_code)]
+struct G15ChannelStateBackingBlock {
+    _block: alloc::G15SharedGpuArray<u8>,
+}
+
+#[allow(dead_code)]
+impl G15ChannelStateBackingBlock {
+    fn new(
+        dev: &AsahiDevice,
+        bank1: mmu::G15SharedBank1,
+        mapping_notifier: Arc<Mutex<mmu::G15MappingNotifier>>,
+    ) -> Result<Self> {
+        let mut state_alloc = alloc::G15SharedBank1Allocator::new_range8(
+            dev,
+            bank1,
+            mmu::UAT_PGSZ,
+            true,
+            Some(mapping_notifier),
+        );
+        let block = state_alloc.array_empty_shared_data::<u8>(
+            fw::workqueue::G15_CHANNEL_STATE_BACKING_BYTES,
+        )?;
+        let base: u64 = block.weak_pointer().into();
+        if block.len() != fw::workqueue::G15_CHANNEL_STATE_BACKING_BYTES
+            || base == 0
+            || base & (mmu::UAT_PGSZ as u64 - 1) != 0
+            || fw::workqueue::G15_CHANNEL_STATE_SLOTS_PER_BACKING != 3
+        {
+            return Err(EIO);
+        }
+        Ok(Self { _block: block })
+    }
+
+    /// Pure geometry only: no FWVA is returned from the owner.
+    const fn slot_offset(index: usize) -> Option<usize> {
+        if index < fw::workqueue::G15_CHANNEL_STATE_SLOTS_PER_BACKING {
+            Some(index * fw::workqueue::G15_CHANNEL_STATE_BYTES)
+        } else {
+            None
+        }
+    }
+}
+
+const _: [(); 0x0000] = [(); G15ChannelStateBackingBlock::slot_offset(0).unwrap()];
+const _: [(); 0x24c0] = [(); G15ChannelStateBackingBlock::slot_offset(1).unwrap()];
+const _: [(); 0x4980] = [(); G15ChannelStateBackingBlock::slot_offset(2).unwrap()];
+
 /// Persistent exact 23J220 CL-channel command-resource backing used by the
 /// stock-empty Compute SKU stream. E114 proves J615 owns one normal option-3
 /// eGartRange-5 resource of logical size 0x1f400. The already-proven range-5

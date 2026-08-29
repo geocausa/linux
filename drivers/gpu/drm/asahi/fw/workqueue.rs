@@ -230,6 +230,24 @@ pub(crate) mod raw {
     const _: [(); 0xac] = [(); core::mem::offset_of!(QueueInfoG15V14_7<'static>, cdm_backoff_timeout_ac)];
 }
 
+/// Exact 23J220 G15 `_AGFIChannelState` resource-stack geometry.
+///
+/// E116 proves firmware owns range-8 backing blocks of 0x8000 bytes and
+/// hands AGXChannel one selected 0x24c0-byte slot from each block. Three
+/// complete slots fit in one block; selection/reset ownership remains host
+/// state and is deliberately not modeled by these constants.
+pub(crate) const G15_CHANNEL_STATE_BYTES: usize = 0x24c0;
+pub(crate) const G15_CHANNEL_STATE_BACKING_BYTES: usize = 0x8000;
+pub(crate) const G15_CHANNEL_STATE_SLOTS_PER_BACKING: usize = 3;
+pub(crate) const G15_CHANNEL_STATE_BACKING_SLACK_BYTES: usize =
+    G15_CHANNEL_STATE_BACKING_BYTES
+        - G15_CHANNEL_STATE_SLOTS_PER_BACKING * G15_CHANNEL_STATE_BYTES;
+
+const _: [(); 0x8000] = [(); G15_CHANNEL_STATE_BACKING_BYTES];
+const _: [(); 0x24c0] = [(); G15_CHANNEL_STATE_BYTES];
+const _: [(); 3] = [(); G15_CHANNEL_STATE_SLOTS_PER_BACKING];
+const _: [(); 0x11c0] = [(); G15_CHANNEL_STATE_BACKING_SLACK_BYTES];
+
 trivial_gpustruct!(RingState);
 
 #[versions(AGX)]
