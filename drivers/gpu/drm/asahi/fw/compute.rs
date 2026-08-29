@@ -307,8 +307,17 @@ const G15_SKU_FINISH_OFFSET: usize = 0x2b4;
 // Exact J615 CL-channel resource geometry from AGXCLChannel::init():
 // aligned `(num_cores * 0x1800 + num_mgpus * 0x40)` with 10 cores / 1 MGPU,
 // then one 0x800-byte MGPU span.
-const G15_J615_CL_SKU_REGION_STRIDE: u64 = 0xf400;
-const G15_J615_CL_SKU_MGPU_SPAN: u64 = 0x800;
+pub(crate) const G15_J615_CL_SKU_REGION_STRIDE: u64 = 0xf400;
+pub(crate) const G15_J615_CL_SKU_MGPU_SPAN: u64 = 0x800;
+/// Exact logical size of the persistent J615 CL-channel command-resource
+/// backing: two 0xf400 regions, one 0x800 MGPU span, and Apple's fixed 0x400
+/// low-bit term. E114 independently recovers the same geometry from 23J220.
+pub(crate) const G15_J615_CL_COMMAND_RESOURCE_BYTES: usize = 0x1f400;
+
+const _: [(); 0x1f400] = [();
+    ((2 * G15_J615_CL_SKU_REGION_STRIDE + G15_J615_CL_SKU_MGPU_SPAN) as usize) | 0x400
+];
+const _: [(); G15_J615_CL_COMMAND_RESOURCE_BYTES] = [(); 0x1f400];
 
 const _: [(); G15_STOCK_EMPTY_SKU_PRE_ROUND_SIZE] = [();
     G15_SKU_TYPE0B_PACKET_SIZE
