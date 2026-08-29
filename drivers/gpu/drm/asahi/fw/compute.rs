@@ -498,14 +498,38 @@ impl G15StockEmptySkuStream {
     }
 }
 
+/// One fully serialized but still-unpublished SKU slot. E107 allows the FWVA
+/// to exist only in this definition-only token; RunCompute has no consumer.
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
+pub(crate) struct G15PreparedSkuSlot {
+    index: u16,
+    fwva: u64,
+    size: u32,
+}
+
+#[allow(dead_code)]
+impl G15PreparedSkuSlot {
+    pub(crate) fn index(&self) -> usize {
+        self.index as usize
+    }
+
+    pub(crate) fn fwva(&self) -> u64 {
+        self.fwva
+    }
+
+    pub(crate) fn size(&self) -> u32 {
+        self.size
+    }
+}
+
 /// Persistent exact 23J220 Compute SKU backing owner.
 ///
 /// E103 proves one accelerator-owned special-range-8 mapping of exactly
-/// 0x30000 bytes, divided into 0xf0 slots at 0x300-byte stride. This owner is
-/// deliberately unreachable and exposes no slot/FWVA accessor, so E102's
-/// serializer cannot be published to RunCompute +0x760 through this type.
-/// Apple's separate 0xf0 x 0x40 host event array is not reproduced here; a
-/// future integration must bind slot reuse to an already-proven Linux lifetime.
+/// 0x30000 bytes, divided into 0xf0 slots at 0x300-byte stride. The E104 owner
+/// is deliberately unreachable. E107 adds only a controlled retired-slot copy
+/// method; RunCompute still has no consumer for the returned prepared token.
+/// Apple's separate 0xf0 x 0x40 host event array is not reproduced here.
 #[allow(dead_code)]
 pub(crate) struct G15SkuBacking {
     backing: alloc::G15SharedGpuArray<u8>,
@@ -537,6 +561,45 @@ impl G15SkuBacking {
         }
 
         Ok(Self { backing })
+    }
+
+    /// Copy one E102 stock-empty stream into a slot that the caller has already
+    /// proved retired/bound through the E106 guard. The entire 0x300-byte slot
+    /// is cleared first, preserving Apple's 0x40 bytes of stock-empty slack.
+    /// The returned FWVA is intentionally trapped in an unpublished token.
+    pub(crate) fn write_retired_stock_empty_slot(
+        &mut self,
+        index: usize,
+        stream: &G15StockEmptySkuStream,
+    ) -> Result<G15PreparedSkuSlot> {
+        if index >= G15_SKU_SLOT_COUNT {
+            return Err(EINVAL);
+        }
+        let start = index.checked_mul(G15_SKU_SLOT_STRIDE).ok_or(EOVERFLOW)?;
+        let end = start.checked_add(G15_SKU_SLOT_STRIDE).ok_or(EOVERFLOW)?;
+        if end > self.backing.len() {
+            return Err(EIO);
+        }
+
+        let slot = &mut self.backing.as_mut_slice()[start..end];
+        for byte in slot.iter_mut() {
+            *byte = 0;
+        }
+        slot[..G15_STOCK_EMPTY_SKU_STREAM_SIZE].copy_from_slice(stream.as_bytes());
+        if slot[G15_STOCK_EMPTY_SKU_STREAM_SIZE..]
+            .iter()
+            .any(|byte| *byte != 0)
+        {
+            return Err(EIO);
+        }
+
+        let base: u64 = self.backing.weak_pointer().into();
+        let fwva = base.checked_add(start as u64).ok_or(EOVERFLOW)?;
+        Ok(G15PreparedSkuSlot {
+            index: index.try_into().map_err(|_| EOVERFLOW)?,
+            fwva,
+            size: G15_STOCK_EMPTY_SKU_STREAM_SIZE as u32,
+        })
     }
 }
 
