@@ -127,8 +127,9 @@ impl SubQueueJob::ver {
 ///
 /// E092 proves two page-based mappings with logical data at page offset zero:
 /// 36 four-byte stamps in normal range 7 and 36 0xc0-byte controls in range 8.
-/// This owner remains unreachable and exposes no selected event-control FWVA;
-/// rotation-time `+0x10` configuration is still an explicit activation gate.
+/// This owner remains unreachable and exposes no selected event-control FWVA.
+/// E094 can seed the exact selected-state image only after its prior event has
+/// been retired; the event-machine reuse/selection lifecycle remains gated.
 #[allow(dead_code)]
 struct G15EventControlBacking {
     _stamps: alloc::G15SharedGpuArray<Stamp>,
@@ -181,6 +182,29 @@ impl G15EventControlBacking {
             _controls: controls,
             _selector: Default::default(),
         })
+    }
+
+    /// Seed one already-selected state after the previous event occupying that
+    /// slot has been retired. This is deliberately not a complete
+    /// `nextCommandBufferState()` implementation: the exact IOGPU finish-event
+    /// operation must happen before this reset and is not modeled here yet.
+    fn seed_selected_after_event_finish(&mut self, index: usize, stamp_index: u32) -> Result {
+        if index >= fw::event::G15_EVENT_CONTROL_STATE_COUNT {
+            return Err(EINVAL);
+        }
+
+        // Exact 23J220 rotation boundary: clear the selected 0xc0 control and
+        // matching four-byte stamp, then restore the per-state fields.
+        self._stamps[index].0.store(0, Ordering::Relaxed);
+        let stamp_fwva: u64 = self._stamps.weak_item_pointer(index).into();
+        self._controls[index] = Default::default();
+        self._controls[index].stamp_fwva = U64(stamp_fwva);
+        self._controls[index].stamp_index_08 = stamp_index;
+        self._controls[index].effective_record_count_10 =
+            fw::event::G15_EVENT_CONTROL_J615_EFFECTIVE_RECORD_COUNT;
+        self._controls[index].sentinel_a8 = U64(u64::MAX);
+
+        Ok(())
     }
 }
 

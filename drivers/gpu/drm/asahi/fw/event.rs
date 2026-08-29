@@ -18,6 +18,12 @@ pub(crate) const G15_EVENT_CONTROL_STAMP_SIZE: usize = core::mem::size_of::<Stam
 pub(crate) const G15_EVENT_CONTROL_STAMP_POOL_SIZE: usize =
     G15_EVENT_CONTROL_STATE_COUNT * G15_EVENT_CONTROL_STAMP_SIZE;
 pub(crate) const G15_EVENT_CONTROL_BLOCK_SIZE: usize = 0xc0;
+/// Exact normal-J615 value written at selected event-control +0x10.
+///
+/// 23J220 computes this as `record_count` when accelerator +0x2428 is zero,
+/// otherwise `min(record_count, +0x2428)`. The exact target leaves +0x2428
+/// zero and uses the G15 record-count fallback +0x678 = 0x50.
+pub(crate) const G15_EVENT_CONTROL_J615_EFFECTIVE_RECORD_COUNT: u32 = 0x50;
 pub(crate) const G15_EVENT_CONTROL_POOL_SIZE: usize =
     G15_EVENT_CONTROL_STATE_COUNT * G15_EVENT_CONTROL_BLOCK_SIZE;
 
@@ -45,9 +51,9 @@ pub(crate) mod raw {
     /// Partial exact 23J220 G15 command-buffer event-control state.
     ///
     /// E092 closes the construction/rotation writes below while leaving all
-    /// still-unnamed bytes as padding. In particular, `config_10` is named only
-    /// by producer/offset until its J615 value and semantic are independently
-    /// recovered. This must not be confused with the legacy Notifier layout.
+    /// still-unnamed bytes as padding. E094 closes `+0x10` by its exact host
+    /// producer: an effective record-count value, 0x50 on normal J615. This
+    /// must not be confused with the legacy Notifier layout.
     #[allow(dead_code)]
     #[derive(Debug, Clone, Copy)]
     #[repr(C)]
@@ -55,11 +61,11 @@ pub(crate) mod raw {
         pub(crate) stamp_fwva: U64,
         pub(crate) stamp_index_08: u32,
         zero_0c: u32,
-        config_10: u32,
+        pub(crate) effective_record_count_10: u32,
         zero_14: u32,
         zero_18: U64,
         __pad_20: Pad<0x88>,
-        sentinel_a8: U64,
+        pub(crate) sentinel_a8: U64,
         __pad_b0: Pad<0x10>,
     }
     default_zeroed!(G15EventControlBlock);
@@ -83,7 +89,8 @@ pub(crate) mod raw {
     const _: [(); 0x00] = [(); core::mem::offset_of!(G15EventControlBlock, stamp_fwva)];
     const _: [(); 0x08] = [(); core::mem::offset_of!(G15EventControlBlock, stamp_index_08)];
     const _: [(); 0x0c] = [(); core::mem::offset_of!(G15EventControlBlock, zero_0c)];
-    const _: [(); 0x10] = [(); core::mem::offset_of!(G15EventControlBlock, config_10)];
+    const _: [(); 0x10] =
+        [(); core::mem::offset_of!(G15EventControlBlock, effective_record_count_10)];
     const _: [(); 0x14] = [(); core::mem::offset_of!(G15EventControlBlock, zero_14)];
     const _: [(); 0x18] = [(); core::mem::offset_of!(G15EventControlBlock, zero_18)];
     const _: [(); 0xa8] = [(); core::mem::offset_of!(G15EventControlBlock, sentinel_a8)];
