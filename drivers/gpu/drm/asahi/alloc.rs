@@ -539,6 +539,29 @@ impl G15SharedBank1Allocator {
         }
     }
 
+    /// Dedicated normal eGartRange-7 allocator for exact G15 timestamp-queue
+    /// resource-stack backings. E125 proves outer option 0x700000007, compact
+    /// option 0x007 and the established 0x...0447 firmware leaf class.
+    #[allow(dead_code)]
+    pub(crate) fn new_range7_timestamp_queue(
+        dev: &AsahiDevice,
+        bank1: mmu::G15SharedBank1,
+        min_align: usize,
+        mut cpu_maps: bool,
+        notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
+    ) -> Self {
+        if debug_enabled(DebugFlags::ForceCPUMaps) { cpu_maps = true; }
+        Self {
+            dev: dev.into(),
+            bank1,
+            aperture: mmu::G15SharedBank1Aperture::Range7,
+            prot: mmu::PROT_G15_RANGE7_FW,
+            min_align,
+            cpu_maps,
+            notifier,
+        }
+    }
+
     /// Dedicated normal eGartRange-7 allocator for exact G15 uncached
     /// firmware channel-memory resource-stack backings. E122 proves these use
     /// the same compact-0x007 / 0x...0447 class as ordinary range-7 firmware

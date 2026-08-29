@@ -183,6 +183,112 @@ impl G15HWMetricsBacking {
 
 const _: [(); 0x100] = [(); G15HWMetricsBacking::RECORD_COUNT];
 
+/// One exact 23J220 `_AGFITimeStampQueue` range-7 backing block.
+///
+/// E125 proves firmware allocates one page-rounded 0x4000 block containing
+/// 0x2aa complete 0x18-byte timestamp states. The global resource stack owns
+/// selection/release; this compile-only block has no externally reachable
+/// selected-state accessor.
+#[allow(dead_code)]
+struct G15TimestampQueueBackingBlock {
+    block: alloc::G15SharedGpuArray<u8>,
+}
+
+/// Private proof token for one caller-selected local timestamp state. Its FWVA
+/// is usable only by other definition-only exact-host models; there is no live
+/// QueueInfo/RunCompute conversion. The local index is deliberately not claimed
+/// to equal Apple's global firmware resource-stack index.
+#[derive(Debug)]
+#[allow(dead_code)]
+struct G15PreparedTimestampQueueState {
+    slot_index: usize,
+    fwva: u64,
+}
+
+#[allow(dead_code)]
+impl G15TimestampQueueBackingBlock {
+    fn new(
+        dev: &AsahiDevice,
+        bank1: mmu::G15SharedBank1,
+        mapping_notifier: Arc<Mutex<mmu::G15MappingNotifier>>,
+    ) -> Result<Self> {
+        let mut allocator = alloc::G15SharedBank1Allocator::new_range7_timestamp_queue(
+            dev,
+            bank1,
+            mmu::UAT_PGSZ,
+            true,
+            Some(mapping_notifier),
+        );
+        let block = allocator.array_empty_shared_data::<u8>(
+            fw::workqueue::G15_TIMESTAMP_QUEUE_BACKING_BYTES,
+        )?;
+        let base: u64 = block.weak_pointer().into();
+        if block.len() != fw::workqueue::G15_TIMESTAMP_QUEUE_BACKING_BYTES
+            || base == 0
+            || base & (mmu::UAT_PGSZ as u64 - 1) != 0
+            || fw::workqueue::G15_TIMESTAMP_QUEUE_STATES_PER_BACKING != 0x2aa
+        {
+            return Err(EIO);
+        }
+        Ok(Self { block })
+    }
+
+    const fn slot_offset(index: usize) -> Option<usize> {
+        if index < fw::workqueue::G15_TIMESTAMP_QUEUE_STATES_PER_BACKING {
+            Some(index * fw::workqueue::G15_TIMESTAMP_QUEUE_STATE_BYTES)
+        } else {
+            None
+        }
+    }
+
+    fn put_u32(slot: &mut [u8], offset: usize, value: u32) -> Result {
+        let end = offset.checked_add(4).ok_or(EOVERFLOW)?;
+        let dst = slot.get_mut(offset..end).ok_or(EINVAL)?;
+        dst.copy_from_slice(&value.to_le_bytes());
+        Ok(())
+    }
+
+    fn put_u64(slot: &mut [u8], offset: usize, value: u64) -> Result {
+        let end = offset.checked_add(8).ok_or(EOVERFLOW)?;
+        let dst = slot.get_mut(offset..end).ok_or(EINVAL)?;
+        dst.copy_from_slice(&value.to_le_bytes());
+        Ok(())
+    }
+
+    /// Exact `AGXTimeStampQueue::resetTimeStampQueueState()` image for one
+    /// caller-selected local state. The routine clears all 0x18 bytes, writes
+    /// its own translated GPUVA/FWVA at +0x08, then writes +0x10 as the
+    /// `(mode == 2)` flag while +0x14 remains zero. ChinookV9 conversion is
+    /// identity for this standard FW range. No global stack index is inferred.
+    fn reset_selected(
+        &mut self,
+        slot_index: usize,
+        update_mode_2: bool,
+    ) -> Result<G15PreparedTimestampQueueState> {
+        let offset = Self::slot_offset(slot_index).ok_or(EINVAL)?;
+        let end = offset
+            .checked_add(fw::workqueue::G15_TIMESTAMP_QUEUE_STATE_BYTES)
+            .ok_or(EOVERFLOW)?;
+        let base: u64 = self.block.weak_pointer().into();
+        let fwva = base.checked_add(offset as u64).ok_or(EOVERFLOW)?;
+        if fwva == 0 {
+            return Err(EIO);
+        }
+        let slot = self.block.as_mut_slice().get_mut(offset..end).ok_or(EIO)?;
+        for byte in slot.iter_mut() {
+            *byte = 0;
+        }
+        Self::put_u64(slot, 0x08, fwva)?;
+        Self::put_u32(slot, 0x10, update_mode_2 as u32)?;
+
+        Ok(G15PreparedTimestampQueueState { slot_index, fwva })
+    }
+}
+
+const _: [(); 0x0000] = [(); G15TimestampQueueBackingBlock::slot_offset(0).unwrap()];
+const _: [(); 0x0018] = [(); G15TimestampQueueBackingBlock::slot_offset(1).unwrap()];
+const _: [(); 0x3fd8] = [(); G15TimestampQueueBackingBlock::slot_offset(0x2a9).unwrap()];
+
 /// One exact 23J220 firmware `_AGFIChannelState` backing block.
 ///
 /// E116 proves the global firmware resource stack allocates page-base 0x8000
@@ -204,7 +310,7 @@ struct G15ChannelStateBackingBlock {
 struct G15ChannelStateResetInputs {
     state_fwva: u64,
     ring_fwva: u64,
-    notifier_list_fwva: u64,
+    timestamp_queue_state_fwva: u64,
     channel_4c_value: u32,
     gpu_context_fwva: u64,
     effective_priority: u32,
@@ -282,7 +388,7 @@ impl G15ChannelStateBackingBlock {
     ) -> Result<G15PreparedChannelState> {
         if input.state_fwva == 0
             || input.ring_fwva == 0
-            || input.notifier_list_fwva == 0
+            || input.timestamp_queue_state_fwva == 0
             || input.gpu_context_fwva == 0
         {
             return Err(EINVAL);
@@ -312,7 +418,9 @@ impl G15ChannelStateBackingBlock {
         }
         Self::put_u64(slot, 0x00, input.state_fwva)?;
         Self::put_u64(slot, 0x08, input.ring_fwva)?;
-        Self::put_u64(slot, 0x10, input.notifier_list_fwva)?;
+        // E125: exact G15 QueueInfo +0x10 is the selected timestamp-queue
+        // state FWVA; the inherited queue-wide notifier semantic is wrong here.
+        Self::put_u64(slot, 0x10, input.timestamp_queue_state_fwva)?;
         // E121: AGXChannel::init() derives channel +0x88 from selected-state
         // GPUVA +0xb0; resetChannelState() then publishes that value at +0x18.
         Self::put_u64(slot, 0x18, gpu_buf_fwva)?;

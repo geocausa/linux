@@ -188,6 +188,10 @@ pub(crate) mod raw {
     pub(crate) struct QueueInfo<'a> {
         pub(crate) state: GpuPointer<'a, super::RingState>,
         pub(crate) ring: GpuPointer<'a, &'a [u64]>,
+        // Historical inherited name. E125 proves exact G15 QueueInfo +0x10 is
+        // the selected AGXTimeStampQueue state FWVA, not the queue-wide
+        // NotifierList. The live WorkQueue constructor is deliberately left
+        // unchanged/fail-closed until that owner is integrated.
         pub(crate) notifier_list: GpuPointer<'a, event::NotifierList>,
         pub(crate) gpu_buf: GpuPointer<'a, &'a [u8]>,
         pub(crate) gpu_rptr1: AtomicU32,
@@ -277,6 +281,23 @@ const _: [(); 0x2860] = [(); G15_J615_CHANNEL_MEMORY_BYTES];
 const _: [(); 0x8000] = [(); G15_J615_CHANNEL_MEMORY_BACKING_BYTES];
 const _: [(); 3] = [(); G15_J615_CHANNEL_MEMORY_SLOTS_PER_BACKING];
 const _: [(); 0x6e0] = [(); G15_J615_CHANNEL_MEMORY_BACKING_SLACK_BYTES];
+
+/// Exact 23J220 `_AGFITimeStampQueue` firmware resource-stack geometry.
+/// E125 proves a 0x18-byte state in normal range 7; the generic stack rounds
+/// two elements to one exact 0x4000 J615 host page, yielding 0x2aa complete
+/// states and 0x10 bytes trailing slack.
+pub(crate) const G15_TIMESTAMP_QUEUE_STATE_BYTES: usize = 0x18;
+pub(crate) const G15_TIMESTAMP_QUEUE_BACKING_BYTES: usize = 0x4000;
+pub(crate) const G15_TIMESTAMP_QUEUE_STATES_PER_BACKING: usize =
+    G15_TIMESTAMP_QUEUE_BACKING_BYTES / G15_TIMESTAMP_QUEUE_STATE_BYTES;
+pub(crate) const G15_TIMESTAMP_QUEUE_BACKING_SLACK_BYTES: usize =
+    G15_TIMESTAMP_QUEUE_BACKING_BYTES
+        - G15_TIMESTAMP_QUEUE_STATES_PER_BACKING * G15_TIMESTAMP_QUEUE_STATE_BYTES;
+
+const _: [(); 0x18] = [(); G15_TIMESTAMP_QUEUE_STATE_BYTES];
+const _: [(); 0x4000] = [(); G15_TIMESTAMP_QUEUE_BACKING_BYTES];
+const _: [(); 0x2aa] = [(); G15_TIMESTAMP_QUEUE_STATES_PER_BACKING];
+const _: [(); 0x10] = [(); G15_TIMESTAMP_QUEUE_BACKING_SLACK_BYTES];
 
 /// Exact normal-J615 CL-channel constructor values closed by E119.
 #[allow(dead_code)]
