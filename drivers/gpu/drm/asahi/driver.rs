@@ -366,13 +366,13 @@ impl platform::Driver for AsahiDriver {
 
             (*drm).gpu.init()?;
 
-            // E160 keeps discovery live and opens only private VM create/destroy.
-            // GEM, VM mapping, Queue/QueueInfo, q22 runtime publication, channel
-            // construction, and submission remain independently fail-closed.
+            // E161 opens only host GEM create/mmap-offset on top of E160.
+            // VM GPU mapping, special binding, Queue/QueueInfo, q22 runtime
+            // publication, channel construction, and submission remain blocked.
             drm::driver::Registration::new_foreign_owned(&drm, pdev.as_ref(), 0)?;
             dev_info!(
                 pdev.as_ref(),
-                "T8122 G15 E160 persistent manager + private VM lifecycle PASS; Queue/submission blocked\n"
+                "T8122 G15 E161 persistent manager + VM/GEM host lifecycle PASS; GPU mapping/Queue/submission blocked\n"
             );
             return Ok(Self { drm });
         }
