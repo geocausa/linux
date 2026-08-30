@@ -183,544 +183,10 @@ impl G15HWMetricsBacking {
 
 const _: [(); 0x100] = [(); G15HWMetricsBacking::RECORD_COUNT];
 
-/// One exact 23J220 `_AGFITimeStampQueue` range-7 backing block.
-///
-/// E125 proves firmware allocates one page-rounded 0x4000 block containing
-/// 0x2aa complete 0x18-byte timestamp states. The global resource stack owns
-/// selection/release; this compile-only block has no externally reachable
-/// selected-state accessor.
-#[allow(dead_code)]
-struct G15TimestampQueueBackingBlock {
-    block: alloc::G15SharedGpuArray<u8>,
-}
-
-/// Private proof token for one caller-selected local timestamp state. Its FWVA
-/// is usable only by other definition-only exact-host models; there is no live
-/// QueueInfo/RunCompute conversion. The local index is deliberately not claimed
-/// to equal Apple's global firmware resource-stack index.
-#[derive(Debug)]
-#[allow(dead_code)]
-struct G15PreparedTimestampQueueState {
-    slot_index: usize,
-    fwva: u64,
-}
-
-#[allow(dead_code)]
-impl G15TimestampQueueBackingBlock {
-    fn new(
-        dev: &AsahiDevice,
-        bank1: mmu::G15SharedBank1,
-        mapping_notifier: Arc<Mutex<mmu::G15MappingNotifier>>,
-    ) -> Result<Self> {
-        let mut allocator = alloc::G15SharedBank1Allocator::new_range7_timestamp_queue(
-            dev,
-            bank1,
-            mmu::UAT_PGSZ,
-            true,
-            Some(mapping_notifier),
-        );
-        let block = allocator.array_empty_shared_data::<u8>(
-            fw::workqueue::G15_TIMESTAMP_QUEUE_BACKING_BYTES,
-        )?;
-        let base: u64 = block.weak_pointer().into();
-        if block.len() != fw::workqueue::G15_TIMESTAMP_QUEUE_BACKING_BYTES
-            || base == 0
-            || base & (mmu::UAT_PGSZ as u64 - 1) != 0
-            || fw::workqueue::G15_TIMESTAMP_QUEUE_STATES_PER_BACKING != 0x2aa
-        {
-            return Err(EIO);
-        }
-        Ok(Self { block })
-    }
-
-    const fn slot_offset(index: usize) -> Option<usize> {
-        if index < fw::workqueue::G15_TIMESTAMP_QUEUE_STATES_PER_BACKING {
-            Some(index * fw::workqueue::G15_TIMESTAMP_QUEUE_STATE_BYTES)
-        } else {
-            None
-        }
-    }
-
-    fn put_u32(slot: &mut [u8], offset: usize, value: u32) -> Result {
-        let end = offset.checked_add(4).ok_or(EOVERFLOW)?;
-        let dst = slot.get_mut(offset..end).ok_or(EINVAL)?;
-        dst.copy_from_slice(&value.to_le_bytes());
-        Ok(())
-    }
-
-    fn put_u64(slot: &mut [u8], offset: usize, value: u64) -> Result {
-        let end = offset.checked_add(8).ok_or(EOVERFLOW)?;
-        let dst = slot.get_mut(offset..end).ok_or(EINVAL)?;
-        dst.copy_from_slice(&value.to_le_bytes());
-        Ok(())
-    }
-
-    /// Exact `AGXTimeStampQueue::resetTimeStampQueueState()` image for one
-    /// caller-selected local state. The routine clears all 0x18 bytes, writes
-    /// its own translated GPUVA/FWVA at +0x08, then writes +0x10 as the
-    /// `(mode == 2)` flag while +0x14 remains zero. ChinookV9 conversion is
-    /// identity for this standard FW range. No global stack index is inferred.
-    fn reset_selected(
-        &mut self,
-        slot_index: usize,
-        update_mode_2: bool,
-    ) -> Result<G15PreparedTimestampQueueState> {
-        let offset = Self::slot_offset(slot_index).ok_or(EINVAL)?;
-        let end = offset
-            .checked_add(fw::workqueue::G15_TIMESTAMP_QUEUE_STATE_BYTES)
-            .ok_or(EOVERFLOW)?;
-        let base: u64 = self.block.weak_pointer().into();
-        let fwva = base.checked_add(offset as u64).ok_or(EOVERFLOW)?;
-        if fwva == 0 {
-            return Err(EIO);
-        }
-        let slot = self.block.as_mut_slice().get_mut(offset..end).ok_or(EIO)?;
-        for byte in slot.iter_mut() {
-            *byte = 0;
-        }
-        Self::put_u64(slot, 0x08, fwva)?;
-        Self::put_u32(slot, 0x10, update_mode_2 as u32)?;
-
-        Ok(G15PreparedTimestampQueueState { slot_index, fwva })
-    }
-}
-
-const _: [(); 0x0000] = [(); G15TimestampQueueBackingBlock::slot_offset(0).unwrap()];
-const _: [(); 0x0018] = [(); G15TimestampQueueBackingBlock::slot_offset(1).unwrap()];
-const _: [(); 0x3fd8] = [(); G15TimestampQueueBackingBlock::slot_offset(0x2a9).unwrap()];
-
-/// One exact 23J220 `_AGFISchedulerState` range-8 backing block.
-///
-/// E126 proves one page-rounded 0x4000 block contains exactly 0x100 complete
-/// 0x40-byte states. The global firmware resource stack owns selection/release;
-/// this compile-only block has no externally reachable selected-state accessor.
-#[allow(dead_code)]
-struct G15SchedulerStateBackingBlock {
-    block: alloc::G15SharedGpuArray<u8>,
-}
-
-/// Private proof token for one caller-selected local scheduler state. The FWVA
-/// is consumed only by definition-only channel-state reconstruction; the local
-/// index is deliberately not claimed to equal Apple's global stack index.
-#[derive(Debug)]
-#[allow(dead_code)]
-struct G15PreparedSchedulerState {
-    slot_index: usize,
-    fwva: u64,
-}
-
-#[allow(dead_code)]
-impl G15SchedulerStateBackingBlock {
-    fn new(
-        dev: &AsahiDevice,
-        bank1: mmu::G15SharedBank1,
-        mapping_notifier: Arc<Mutex<mmu::G15MappingNotifier>>,
-    ) -> Result<Self> {
-        let mut allocator = alloc::G15SharedBank1Allocator::new_range8_scheduler_state(
-            dev,
-            bank1,
-            mmu::UAT_PGSZ,
-            true,
-            Some(mapping_notifier),
-        );
-        let block = allocator.array_empty_shared_data::<u8>(
-            fw::workqueue::G15_SCHEDULER_STATE_BACKING_BYTES,
-        )?;
-        let base: u64 = block.weak_pointer().into();
-        if block.len() != fw::workqueue::G15_SCHEDULER_STATE_BACKING_BYTES
-            || base == 0
-            || base & (mmu::UAT_PGSZ as u64 - 1) != 0
-            || fw::workqueue::G15_SCHEDULER_STATES_PER_BACKING != 0x100
-        {
-            return Err(EIO);
-        }
-        Ok(Self { block })
-    }
-
-    const fn slot_offset(index: usize) -> Option<usize> {
-        if index < fw::workqueue::G15_SCHEDULER_STATES_PER_BACKING {
-            Some(index * fw::workqueue::G15_SCHEDULER_STATE_BYTES)
-        } else {
-            None
-        }
-    }
-
-    fn put_u16(slot: &mut [u8], offset: usize, value: u16) -> Result {
-        let end = offset.checked_add(2).ok_or(EOVERFLOW)?;
-        let dst = slot.get_mut(offset..end).ok_or(EINVAL)?;
-        dst.copy_from_slice(&value.to_le_bytes());
-        Ok(())
-    }
-
-    fn put_u32(slot: &mut [u8], offset: usize, value: u32) -> Result {
-        let end = offset.checked_add(4).ok_or(EOVERFLOW)?;
-        let dst = slot.get_mut(offset..end).ok_or(EINVAL)?;
-        dst.copy_from_slice(&value.to_le_bytes());
-        Ok(())
-    }
-
-    /// Exact normal-J615 `AGXCommandQueue::init()` host reset of one already
-    /// selected scheduler state. Apple clears exactly the first 0x38 bytes,
-    /// then writes +0x00/+0x01=0xff, +0x05=1, +0x22=0xff, zero at +0x23..26,
-    /// and AGXShared+0x100 (=2) at +0x27. Bytes +0x38..0x3f are deliberately
-    /// preserved because the exact host constructor does not clear them.
-    fn reset_selected_j615(
-        &mut self,
-        slot_index: usize,
-    ) -> Result<G15PreparedSchedulerState> {
-        let offset = Self::slot_offset(slot_index).ok_or(EINVAL)?;
-        let end = offset
-            .checked_add(fw::workqueue::G15_SCHEDULER_STATE_BYTES)
-            .ok_or(EOVERFLOW)?;
-        let base: u64 = self.block.weak_pointer().into();
-        let fwva = base.checked_add(offset as u64).ok_or(EOVERFLOW)?;
-        if fwva == 0 {
-            return Err(EIO);
-        }
-        let slot = self.block.as_mut_slice().get_mut(offset..end).ok_or(EIO)?;
-        let reset = slot
-            .get_mut(..fw::workqueue::G15_SCHEDULER_STATE_HOST_RESET_BYTES)
-            .ok_or(EIO)?;
-        for byte in reset.iter_mut() {
-            *byte = 0;
-        }
-        Self::put_u16(slot, 0x00, u16::MAX)?;
-        slot[0x05] = 1;
-        slot[0x22] = 0xff;
-        Self::put_u32(slot, 0x23, 0)?;
-        slot[0x27] = fw::workqueue::G15_J615_SCHEDULER_SHARED_BYTE_27;
-
-        Ok(G15PreparedSchedulerState { slot_index, fwva })
-    }
-}
-
-const _: [(); 0x0000] = [(); G15SchedulerStateBackingBlock::slot_offset(0).unwrap()];
-const _: [(); 0x0040] = [(); G15SchedulerStateBackingBlock::slot_offset(1).unwrap()];
-const _: [(); 0x3fc0] = [(); G15SchedulerStateBackingBlock::slot_offset(0xff).unwrap()];
-
-/// One exact 23J220 firmware `_AGFIChannelState` backing block.
-///
-/// E116 proves the global firmware resource stack allocates page-base 0x8000
-/// blocks in the already-proven special range-8 class and slices each block
-/// into three 0x24c0-byte channel states. This compile-only owner deliberately
-/// does not select a slot, expose a slot FWVA, or initialize QueueInfo; those
-/// are separate channel-lifetime gates.
-#[allow(dead_code)]
-struct G15ChannelStateBackingBlock {
-    block: alloc::G15SharedGpuArray<u8>,
-}
-
-/// Exact host inputs for rebuilding the first 0xb0 bytes of one selected G15
-/// `_AGFIChannelState` after Apple's full 0x24c0 reset. These are deliberately
-/// FW addresses/runtime values, not borrowed Linux QueueInfo objects: E118/E119
-/// close the byte image while the eventual live owner bridges remain gated.
-#[derive(Clone, Copy, Debug)]
-#[allow(dead_code)]
-struct G15ChannelStateResetInputs {
-    uncached_channel_fwva: u64,
-    cached_channel_fwva: u64,
-    timestamp_queue_state_fwva: u64,
-    channel_4c_value: u32,
-    scheduler_state_fwva: u64,
-    effective_priority: u32,
-    queue_qos: u32,
-}
-
-/// Private proof token for one reset/prioritized channel-state slot. It has no
-/// conversion to a SKU input or RunCompute field and no external call site.
-#[derive(Debug)]
-#[allow(dead_code)]
-struct G15PreparedChannelState {
-    slot_index: usize,
-    fwva: u64,
-}
-
-#[allow(dead_code)]
-impl G15ChannelStateBackingBlock {
-    fn new(
-        dev: &AsahiDevice,
-        bank1: mmu::G15SharedBank1,
-        mapping_notifier: Arc<Mutex<mmu::G15MappingNotifier>>,
-    ) -> Result<Self> {
-        let mut state_alloc = alloc::G15SharedBank1Allocator::new_range8(
-            dev,
-            bank1,
-            mmu::UAT_PGSZ,
-            true,
-            Some(mapping_notifier),
-        );
-        let block = state_alloc.array_empty_shared_data::<u8>(
-            fw::workqueue::G15_CHANNEL_STATE_BACKING_BYTES,
-        )?;
-        let base: u64 = block.weak_pointer().into();
-        if block.len() != fw::workqueue::G15_CHANNEL_STATE_BACKING_BYTES
-            || base == 0
-            || base & (mmu::UAT_PGSZ as u64 - 1) != 0
-            || fw::workqueue::G15_CHANNEL_STATE_SLOTS_PER_BACKING != 3
-        {
-            return Err(EIO);
-        }
-        Ok(Self { block })
-    }
-
-    /// Pure geometry only: no FWVA is returned from the owner.
-    const fn slot_offset(index: usize) -> Option<usize> {
-        if index < fw::workqueue::G15_CHANNEL_STATE_SLOTS_PER_BACKING {
-            Some(index * fw::workqueue::G15_CHANNEL_STATE_BYTES)
-        } else {
-            None
-        }
-    }
-
-    fn put_u32(slot: &mut [u8], offset: usize, value: u32) -> Result {
-        let end = offset.checked_add(4).ok_or(EOVERFLOW)?;
-        let dst = slot.get_mut(offset..end).ok_or(EINVAL)?;
-        dst.copy_from_slice(&value.to_le_bytes());
-        Ok(())
-    }
-
-    fn put_u64(slot: &mut [u8], offset: usize, value: u64) -> Result {
-        let end = offset.checked_add(8).ok_or(EOVERFLOW)?;
-        let dst = slot.get_mut(offset..end).ok_or(EINVAL)?;
-        dst.copy_from_slice(&value.to_le_bytes());
-        Ok(())
-    }
-
-    /// Rebuild one already-selected channel state at the exact E118/E119 host
-    /// boundary. This models neither resource-stack allocation/release nor a
-    /// live channel. It clears exactly one 0x24c0 slot, writes Apple's reset
-    /// QueueInfo image, then applies the exact normal-J615 priority mutation.
-    fn reset_selected_j615_cl(
-        &mut self,
-        slot_index: usize,
-        input: G15ChannelStateResetInputs,
-    ) -> Result<G15PreparedChannelState> {
-        if input.uncached_channel_fwva == 0
-            || input.cached_channel_fwva == 0
-            || input.timestamp_queue_state_fwva == 0
-            || input.scheduler_state_fwva == 0
-        {
-            return Err(EINVAL);
-        }
-        let priority = fw::workqueue::g15_j615_cl_priority_image(
-            input.effective_priority,
-            input.queue_qos,
-        )
-        .ok_or(EINVAL)?;
-        let offset = Self::slot_offset(slot_index).ok_or(EINVAL)?;
-        let base: u64 = self.block.weak_pointer().into();
-        let fwva = base.checked_add(offset as u64).ok_or(EOVERFLOW)?;
-        let gpu_buf_fwva = fwva
-            .checked_add(fw::workqueue::G15_CHANNEL_STATE_GPU_BUF_OFFSET as u64)
-            .ok_or(EOVERFLOW)?;
-        if fwva == 0 || gpu_buf_fwva == 0 {
-            return Err(EIO);
-        }
-        let end = offset
-            .checked_add(fw::workqueue::G15_CHANNEL_STATE_BYTES)
-            .ok_or(EOVERFLOW)?;
-        let slot = self.block.as_mut_slice().get_mut(offset..end).ok_or(EIO)?;
-
-        // Exact resetChannelState(): bulk zero selected 0x24c0 state first.
-        for byte in slot.iter_mut() {
-            *byte = 0;
-        }
-        // E122/E127: QueueInfo +0x00/+0x08 are the selected uncached/cached
-        // channel-memory FWVAs, not independent external QueueInfo objects.
-        Self::put_u64(slot, 0x00, input.uncached_channel_fwva)?;
-        Self::put_u64(slot, 0x08, input.cached_channel_fwva)?;
-        // E125: exact G15 QueueInfo +0x10 is the selected timestamp-queue
-        // state FWVA; the inherited queue-wide notifier semantic is wrong here.
-        Self::put_u64(slot, 0x10, input.timestamp_queue_state_fwva)?;
-        // E121: AGXChannel::init() derives channel +0x88 from selected-state
-        // GPUVA +0xb0; resetChannelState() then publishes that value at +0x18.
-        Self::put_u64(slot, 0x18, gpu_buf_fwva)?;
-        Self::put_u32(slot, 0x2c, u32::MAX)?;
-        Self::put_u32(slot, 0x30, 4)?;
-        Self::put_u32(slot, 0x4c, u32::MAX)?;
-        Self::put_u32(slot, 0x50, input.channel_4c_value)?;
-        // E126: exact G15 QueueInfo +0xa4 is selected scheduler-state FWVA.
-        Self::put_u64(slot, 0xa4, input.scheduler_state_fwva)?;
-        slot[0xac] = fw::workqueue::G15_J615_CDM_BACKOFF_TIMEOUT;
-
-        // Exact later setChannelPriority() mutation. +0x30/+0x34 carry the
-        // same class; +0x44 is the E119 constant 2. All other reset bytes stay
-        // untouched/zero unless explicitly written here.
-        Self::put_u32(slot, 0x30, priority.class_30)?;
-        Self::put_u32(slot, 0x34, priority.class_30)?;
-        Self::put_u64(slot, 0x38, priority.mask_38)?;
-        Self::put_u32(slot, 0x40, priority.control_40)?;
-        Self::put_u32(slot, 0x44, priority.integer_arg_44)?;
-        Self::put_u32(slot, 0x48, priority.qos_value_48)?;
-
-        Ok(G15PreparedChannelState { slot_index, fwva })
-    }
-}
-
-const _: [(); 0x0000] = [(); G15ChannelStateBackingBlock::slot_offset(0).unwrap()];
-const _: [(); 0x24c0] = [(); G15ChannelStateBackingBlock::slot_offset(1).unwrap()];
-const _: [(); 0x4980] = [(); G15ChannelStateBackingBlock::slot_offset(2).unwrap()];
-
-/// One exact 23J220 `AGXUncachedFWChannelMem` resource-stack backing block.
-/// E122 proves this is a normal range-7 0x8000-byte allocation containing
-/// three 0x2860-byte elements. Selection/index lifetime is deliberately not
-/// modeled here and no element FWVA accessor exists.
-#[allow(dead_code)]
-struct G15UncachedChannelMemoryBackingBlock {
-    block: alloc::G15SharedGpuArray<u8>,
-}
-
-/// Private E127 token for one caller-selected uncached channel-memory element.
-/// It carries the locally derived FWVA only inside the unreachable owner graph;
-/// the local index is not claimed to equal Apple's global resource-stack index.
-#[derive(Debug)]
-#[allow(dead_code)]
-struct G15PreparedUncachedChannelMemory {
-    slot_index: usize,
-    fwva: u64,
-}
-
-#[allow(dead_code)]
-impl G15UncachedChannelMemoryBackingBlock {
-    fn new(
-        dev: &AsahiDevice,
-        bank1: mmu::G15SharedBank1,
-        mapping_notifier: Arc<Mutex<mmu::G15MappingNotifier>>,
-    ) -> Result<Self> {
-        let mut allocator = alloc::G15SharedBank1Allocator::new_range7_channel_memory(
-            dev,
-            bank1,
-            mmu::UAT_PGSZ,
-            true,
-            Some(mapping_notifier),
-        );
-        let block = allocator.array_empty_shared_data::<u8>(
-            fw::workqueue::G15_J615_CHANNEL_MEMORY_BACKING_BYTES,
-        )?;
-        let base: u64 = block.weak_pointer().into();
-        if block.len() != fw::workqueue::G15_J615_CHANNEL_MEMORY_BACKING_BYTES
-            || base == 0
-            || base & (mmu::UAT_PGSZ as u64 - 1) != 0
-            || fw::workqueue::G15_J615_CHANNEL_MEMORY_SLOTS_PER_BACKING != 3
-        {
-            return Err(EIO);
-        }
-        Ok(Self { block })
-    }
-
-    fn put_u32(slot: &mut [u8], offset: usize, value: u32) -> Result {
-        let end = offset.checked_add(4).ok_or(EOVERFLOW)?;
-        let dst = slot.get_mut(offset..end).ok_or(EINVAL)?;
-        dst.copy_from_slice(&value.to_le_bytes());
-        Ok(())
-    }
-
-    /// Apply only the exact E124 `resetChannelState()` writes to one already
-    /// selected local uncached-memory element. Apple does not bulk-clear this
-    /// element in resetChannelState(), so this helper deliberately touches only
-    /// the six proven u32 header locations. E127 additionally returns the
-    /// locally derived FWVA only to the unreachable combined owner graph.
-    fn reset_selected_j615_cl(
-        &mut self,
-        slot_index: usize,
-    ) -> Result<G15PreparedUncachedChannelMemory> {
-        let offset = g15_j615_channel_memory_slot_offset(slot_index).ok_or(EINVAL)?;
-        let end = offset
-            .checked_add(fw::workqueue::G15_J615_CHANNEL_MEMORY_BYTES)
-            .ok_or(EOVERFLOW)?;
-        let base: u64 = self.block.weak_pointer().into();
-        let fwva = base.checked_add(offset as u64).ok_or(EOVERFLOW)?;
-        if fwva == 0 {
-            return Err(EIO);
-        }
-        let slot = self.block.as_mut_slice().get_mut(offset..end).ok_or(EIO)?;
-
-        Self::put_u32(slot, 0x00, 0)?;
-        Self::put_u32(slot, 0x10, 0)?;
-        Self::put_u32(slot, 0x20, 0)?;
-        Self::put_u32(slot, 0x30, 0)?;
-        Self::put_u32(slot, 0x40, 0)?;
-        Self::put_u32(
-            slot,
-            0x50,
-            fw::workqueue::G15_J615_CL_UNCACHED_CHANNEL_VALUE_50,
-        )?;
-
-        Ok(G15PreparedUncachedChannelMemory { slot_index, fwva })
-    }
-}
-
-/// One exact 23J220 `AGXCachedFWChannelMem` resource-stack backing block.
-/// It has the same element/block geometry as the uncached stack but uses the
-/// independently proven special range-8 class. E127 permits only a private
-/// local selection token; live channel publication remains absent.
-#[allow(dead_code)]
-struct G15CachedChannelMemoryBackingBlock {
-    block: alloc::G15SharedGpuArray<u8>,
-}
-
-/// Private E127 token for one caller-selected cached channel-memory element.
-/// resetChannelState() does not modify this object; only its exact selected
-/// FWVA is needed for QueueInfo +0x08 inside the dormant channel image.
-#[derive(Debug)]
-#[allow(dead_code)]
-struct G15PreparedCachedChannelMemory {
-    slot_index: usize,
-    fwva: u64,
-}
-
-#[allow(dead_code)]
-impl G15CachedChannelMemoryBackingBlock {
-    fn new(
-        dev: &AsahiDevice,
-        bank1: mmu::G15SharedBank1,
-        mapping_notifier: Arc<Mutex<mmu::G15MappingNotifier>>,
-    ) -> Result<Self> {
-        let mut allocator = alloc::G15SharedBank1Allocator::new_range8_channel_memory(
-            dev,
-            bank1,
-            mmu::UAT_PGSZ,
-            true,
-            Some(mapping_notifier),
-        );
-        let block = allocator.array_empty_shared_data::<u8>(
-            fw::workqueue::G15_J615_CHANNEL_MEMORY_BACKING_BYTES,
-        )?;
-        let base: u64 = block.weak_pointer().into();
-        if block.len() != fw::workqueue::G15_J615_CHANNEL_MEMORY_BACKING_BYTES
-            || base == 0
-            || base & (mmu::UAT_PGSZ as u64 - 1) != 0
-            || fw::workqueue::G15_J615_CHANNEL_MEMORY_SLOTS_PER_BACKING != 3
-        {
-            return Err(EIO);
-        }
-        Ok(Self { block })
-    }
-
-    fn select_local(&self, slot_index: usize) -> Result<G15PreparedCachedChannelMemory> {
-        let offset = g15_j615_channel_memory_slot_offset(slot_index).ok_or(EINVAL)?;
-        let base: u64 = self.block.weak_pointer().into();
-        let fwva = base.checked_add(offset as u64).ok_or(EOVERFLOW)?;
-        if fwva == 0 {
-            return Err(EIO);
-        }
-        Ok(G15PreparedCachedChannelMemory { slot_index, fwva })
-    }
-}
-
-/// Pure E122 geometry helper used only by compile-time assertions. It does not
-/// expose an address from either backing owner.
-const fn g15_j615_channel_memory_slot_offset(index: usize) -> Option<usize> {
-    if index < fw::workqueue::G15_J615_CHANNEL_MEMORY_SLOTS_PER_BACKING {
-        Some(index * fw::workqueue::G15_J615_CHANNEL_MEMORY_BYTES)
-    } else {
-        None
-    }
-}
-
-const _: [(); 0x0000] = [(); g15_j615_channel_memory_slot_offset(0).unwrap()];
-const _: [(); 0x2860] = [(); g15_j615_channel_memory_slot_offset(1).unwrap()];
-const _: [(); 0x50c0] = [(); g15_j615_channel_memory_slot_offset(2).unwrap()];
+/// E153 retires the E125-E127 duplicate local timestamp/scheduler/channel
+/// backing objects. Their exact reset byte images now execute through the real
+/// mapped accelerator-global resource leases in `buffer.rs`, at Queue/channel
+/// construction lifetime rather than command preparation.
 
 /// Persistent exact 23J220 CL-channel command-resource backing used by the
 /// stock-empty Compute SKU stream. E114 proves J615 owns one normal option-3
@@ -761,20 +227,14 @@ impl G15ClCommandResourceBacking {
     }
 }
 
-/// Definition-only E127 local-backing selection inputs for one coherent
-/// CL-channel byte image. E148 now separately owns the exact global stack
-/// indices as lifetime leases; these local indices are proof coordinates only
-/// and must never be equated with those global selectors. Runtime queue values
-/// that are not yet bridged remain explicit rather than being guessed.
+/// Remaining exact runtime inputs required when the dormant CL/Compute channel
+/// itself is constructed. Resource indices/FWVAs and timestamp mode are no
+/// longer caller inputs: E147-E153 derive them from the real global leases and
+/// exact ordinary queue construction. These three values remain explicit until
+/// their existing Linux producers are bridged.
 #[derive(Clone, Copy, Debug)]
 #[allow(dead_code)]
-struct G15ChannelPrepareInputs {
-    timestamp_queue_slot: usize,
-    scheduler_state_slot: usize,
-    channel_state_slot: usize,
-    uncached_channel_slot: usize,
-    cached_channel_slot: usize,
-    timestamp_update_mode_2: bool,
+struct G15ComputeChannelInitInputs {
     channel_4c_value: u32,
     effective_priority: u32,
     queue_qos: u32,
@@ -789,7 +249,7 @@ struct G15UnpublishedStockEmptyPrepare {
     event_index: usize,
     event_control_fwva: u64,
     sku: fw::compute::G15ReservedSkuSlot,
-    channel_state: G15PreparedChannelState,
+    channel_state_fwva: u64,
     page_pool_state_fwva: u64,
     hwmetrics_fwva: u64,
     hardware_buffer_id: u32,
@@ -874,11 +334,7 @@ struct G15StockEmptyComputeChannelOwners {
     _compute_stats: GpuWeakPointer<fw::initdata::G15StatsComp>,
     _event_control: G15EventControlBacking,
     _hwmetrics: G15HWMetricsBacking,
-    _timestamp_queue: G15TimestampQueueBackingBlock,
-    _scheduler_state: G15SchedulerStateBackingBlock,
-    _channel_state: G15ChannelStateBackingBlock,
-    _uncached_channel_memory: G15UncachedChannelMemoryBackingBlock,
-    _cached_channel_memory: G15CachedChannelMemoryBackingBlock,
+    _channel_resources: buffer::G15InitializedFirmwareChannelResources,
     _cl_command_resource: G15ClCommandResourceBacking,
     _sku: fw::compute::G15SkuBacking,
 }
@@ -889,6 +345,7 @@ impl G15StockEmptyComputeChannelOwners {
     fn new_unpublished(
         dev: &AsahiDevice,
         compute_stats: GpuWeakPointer<fw::initdata::G15StatsComp>,
+        channel_resources: buffer::G15InitializedFirmwareChannelResources,
         range5_uncached_alloc: &mut alloc::DefaultAllocator,
         bank1: mmu::G15SharedBank1,
         mapping_notifier: Arc<Mutex<mmu::G15MappingNotifier>>,
@@ -907,31 +364,6 @@ impl G15StockEmptyComputeChannelOwners {
             bank1.clone(),
             mapping_notifier.clone(),
         )?;
-        let timestamp_queue = G15TimestampQueueBackingBlock::new(
-            dev,
-            bank1.clone(),
-            mapping_notifier.clone(),
-        )?;
-        let scheduler_state = G15SchedulerStateBackingBlock::new(
-            dev,
-            bank1.clone(),
-            mapping_notifier.clone(),
-        )?;
-        let channel_state = G15ChannelStateBackingBlock::new(
-            dev,
-            bank1.clone(),
-            mapping_notifier.clone(),
-        )?;
-        let uncached_channel_memory = G15UncachedChannelMemoryBackingBlock::new(
-            dev,
-            bank1.clone(),
-            mapping_notifier.clone(),
-        )?;
-        let cached_channel_memory = G15CachedChannelMemoryBackingBlock::new(
-            dev,
-            bank1.clone(),
-            mapping_notifier.clone(),
-        )?;
         let cl_command_resource = G15ClCommandResourceBacking::new(range5_uncached_alloc)?;
         let sku = fw::compute::G15SkuBacking::new(dev, bank1, mapping_notifier)?;
 
@@ -939,11 +371,7 @@ impl G15StockEmptyComputeChannelOwners {
             _compute_stats: compute_stats,
             _event_control: event_control,
             _hwmetrics: hwmetrics,
-            _timestamp_queue: timestamp_queue,
-            _scheduler_state: scheduler_state,
-            _channel_state: channel_state,
-            _uncached_channel_memory: uncached_channel_memory,
-            _cached_channel_memory: cached_channel_memory,
+            _channel_resources: channel_resources,
             _cl_command_resource: cl_command_resource,
             _sku: sku,
         })
@@ -960,33 +388,11 @@ impl G15StockEmptyComputeChannelOwners {
         state_sequence: u32,
         sku_index: usize,
         priority: u32,
-        channel: G15ChannelPrepareInputs,
     ) -> Result<G15UnpublishedStockEmptyPrepare> {
-        let timestamp_queue = self._timestamp_queue.reset_selected(
-            channel.timestamp_queue_slot,
-            channel.timestamp_update_mode_2,
-        )?;
-        let scheduler_state = self
-            ._scheduler_state
-            .reset_selected_j615(channel.scheduler_state_slot)?;
-        let uncached_channel = self
-            ._uncached_channel_memory
-            .reset_selected_j615_cl(channel.uncached_channel_slot)?;
-        let cached_channel = self
-            ._cached_channel_memory
-            .select_local(channel.cached_channel_slot)?;
-        let channel_state = self._channel_state.reset_selected_j615_cl(
-            channel.channel_state_slot,
-            G15ChannelStateResetInputs {
-                uncached_channel_fwva: uncached_channel.fwva,
-                cached_channel_fwva: cached_channel.fwva,
-                timestamp_queue_state_fwva: timestamp_queue.fwva,
-                channel_4c_value: channel.channel_4c_value,
-                scheduler_state_fwva: scheduler_state.fwva,
-                effective_priority: channel.effective_priority,
-                queue_qos: channel.queue_qos,
-            },
-        )?;
+        let channel_state_fwva = self._channel_resources.channel_state_fwva();
+        if channel_state_fwva == 0 {
+            return Err(EIO);
+        }
 
         self._event_control
             .seed_selected_after_event_finish(event_index, state_sequence)?;
@@ -1020,7 +426,7 @@ impl G15StockEmptyComputeChannelOwners {
             event_index,
             event_control_fwva,
             sku,
-            channel_state,
+            channel_state_fwva,
             page_pool_state_fwva,
             hwmetrics_fwva,
             hardware_buffer_id: lease.hardware_buffer_id,
@@ -1057,7 +463,7 @@ impl G15StockEmptyComputeChannelOwners {
             // E130: manager-owned G15StatsComp is the exact Linux counterpart
             // of Apple AGXFirmware +0x268 used by the stock-empty SKU stream.
             firmware_state_fwva: self._compute_stats.into(),
-            channel_state_fwva: prepared.channel_state.fwva,
+            channel_state_fwva: prepared.channel_state_fwva,
             channel_command_region_base_fwva,
             event_control_fwva: prepared.event_control_fwva,
             page_pool_state_fwva: prepared.page_pool_state_fwva,
@@ -1311,8 +717,8 @@ pub(crate) struct QueueInner {
     _g15_shared_bank1: Option<mmu::G15SharedBank1>,
     #[ver(G == G15)]
     _g15_mapping_notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
-    // E148 exact AGXCommandQueue-lifetime logical selections from the global
-    // timestamp and scheduler resource stacks. These own no GPU backing yet.
+    // E153 exact AGXCommandQueue-lifetime mapped selections from the global
+    // timestamp/scheduler stacks, initialized once during Queue construction.
     #[ver(G == G15)]
     _g15_fw_queue_resources: buffer::G15FirmwareCommandQueueResourceLeases,
     // Exact 0x2800 GPU-facing PM record backing. Apple uses range 5 with
@@ -1596,7 +1002,6 @@ impl G15StockEmptyAssetGuards::ver {
         fence: &UserFence<JobFence::ver>,
         state_sequence: u32,
         priority: u32,
-        channel: G15ChannelPrepareInputs,
     ) -> Result<G15ArmedUnpublishedStockEmptyPrepare::ver> {
         let arm = G15CommandFenceArm::ver::new(fence);
 
@@ -1625,7 +1030,6 @@ impl G15StockEmptyAssetGuards::ver {
             state_sequence,
             sku_index,
             priority,
-            channel,
         ) {
             Ok(prepared) => Ok(G15ArmedUnpublishedStockEmptyPrepare::ver { arm, prepared }),
             Err(err) => {
@@ -1698,8 +1102,9 @@ impl G15StockEmptyAssetGuards::ver {
 
 /// One fully assembled but unpublished J615 Compute-channel host lifetime.
 ///
-/// E145 couples the E142 shared-pool channel reference to the E127 channel/
-/// command owners and E110 retirement guards. The pool itself remains owned by
+/// E153 couples the E142 shared-pool channel reference to the real mapped
+/// global channel-resource selections, command owners, and E110 retirement
+/// guards. The pool itself remains owned by
 /// the client-VM selection container and is reached only through the identity-
 /// checked channel reference. Dropping this object therefore tears down channel
 /// resources and then releases the modeled direct/active pool references without
@@ -1733,10 +1138,11 @@ impl QueueInner::ver {
     fn g15_assemble_unpublished_compute_channel(
         &self,
         gpu: &gpu::GpuManager::ver,
+        channel: G15ComputeChannelInitInputs,
     ) -> Result<G15UnpublishedComputeChannel::ver> {
         #[ver(G != G15)]
         {
-            let _ = gpu;
+            let _ = (gpu, channel);
             return Err(EINVAL);
         }
 
@@ -1765,17 +1171,23 @@ impl QueueInner::ver {
             // Exact AGXChannel::init() releases the shared-container selection
             // lock before continuing with channel-local resources. `pool` now
             // owns the modeled direct/active reference while this allocation
-            // proceeds independently. E148 additionally acquires the three
-            // device-global channel resource-stack indices at this lifetime.
-            // They are logical leases only: E127's local backing slot inputs
-            // remain deliberately independent until real global GPU backings
-            // replace them. Any later failure drops all three leases.
+            // proceeds independently. E153 acquires and initializes the three
+            // real accelerator-global selected resources here, at channel
+            // lifetime, using the already-initialized Queue timestamp/scheduler
+            // leases. Any later failure drops all three selections.
             let fw_channel_resources = gpu.g15_select_channel_resources()?;
+            let initialized_channel_resources = fw_channel_resources.initialize_j615_cl(
+                &self._g15_fw_queue_resources,
+                channel.channel_4c_value,
+                channel.effective_priority,
+                channel.queue_qos,
+            )?;
             let owners = {
                 let mut range5_uncached = range5_uncached.lock();
                 G15StockEmptyComputeChannelOwners::new_unpublished(
                     &self.dev,
                     gpu.initdata.runtime_pointers.g15_stats_comp.weak_pointer(),
+                    initialized_channel_resources,
                     &mut range5_uncached,
                     bank1,
                     mapping_notifier,
@@ -2110,6 +1522,8 @@ impl Queue::ver {
 
         #[ver(G == G15)]
         let g15_fw_queue_resources = _g15_fw_queue_resources.ok_or(EINVAL)?;
+        #[ver(G == G15)]
+        g15_fw_queue_resources.initialize_j615_stock()?;
 
         #[ver(G == G15)]
         let g15_pm_scene_alloc = _g15_ualloc_range5_uncached

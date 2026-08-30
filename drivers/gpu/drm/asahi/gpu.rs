@@ -2303,8 +2303,9 @@ impl GpuManager::ver {
         self.dyncfg.id.core_masks_packed.as_slice()
     }
 
-    /// E148 host-only command-queue lifetime selection from the two exact
-    /// device-global firmware resource stacks. No GPU backing/FWVA is exposed.
+    /// E153 command-queue lifetime selection from the two exact mapped
+    /// device-global firmware resource stacks. Queue construction initializes
+    /// the selected timestamp/scheduler states before retaining these leases.
     pub(crate) fn g15_select_command_queue_resources(
         &self,
     ) -> Result<buffer::G15FirmwareCommandQueueResourceLeases> {
@@ -2318,9 +2319,9 @@ impl GpuManager::ver {
         }
     }
 
-    /// E148 dormant AGXChannel-lifetime selection from the three exact shared
-    /// channel resource stacks. The resulting global indices are bookkeeping
-    /// leases only and are not mapped onto E127's local proof backings.
+    /// E153 dormant AGXChannel-lifetime selection from the three exact mapped
+    /// global channel-resource stacks. The unpublished CL-channel constructor
+    /// initializes these selected states directly and retains all three leases.
     #[allow(dead_code)]
     pub(crate) fn g15_select_channel_resources(
         &self,
