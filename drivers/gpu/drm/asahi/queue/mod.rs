@@ -1296,6 +1296,12 @@ pub(crate) struct QueueInner {
     // disabled; retaining the allocation here only reconstructs channel state.
     #[ver(G == G15)]
     g15_ta_object_payload: GpuArray<u8>,
+    // Exact E139-E142 AGXShared/client address-space bridge. This retains only
+    // the per-VM shared-pool selection container so future G15 Compute channel
+    // creation can stay lazy. E143 performs no pool selection/construction and
+    // consumes no device-global pool ID.
+    #[ver(G == G15)]
+    _g15_uma_shared_pools: Option<Arc<Mutex<buffer::G15ClientUmaPoolContainerState>>>,
     // Exact 0x2800 GPU-facing PM record backing. Apple uses range 5 with
     // compact PTE class 0x300; the separate 0x40 tail is intentionally absent.
     #[ver(G == G15)]
@@ -1936,6 +1942,7 @@ impl Queue::ver {
         ualloc_priv: Arc<Mutex<alloc::DefaultAllocator>>,
         _g15_ualloc_range5_uncached: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
         _g15_ualloc_range5_cached: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
+        _g15_uma_shared_pools: Option<Arc<Mutex<buffer::G15ClientUmaPoolContainerState>>>,
         _g15_shared_bank1: Option<mmu::G15SharedBank1>,
         _g15_mapping_notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
         event_manager: Arc<event::EventManager>,
@@ -2067,6 +2074,8 @@ impl Queue::ver {
                 g15_pm_scene_alloc,
                 #[ver(G == G15)]
                 g15_ta_object_payload,
+                #[ver(G == G15)]
+                _g15_uma_shared_pools,
                 #[ver(G == G15)]
                 g15_pm_records,
                 #[ver(G == G15)]

@@ -1003,7 +1003,9 @@ impl File {
         let ualloc_priv = file_vm.ualloc_priv.clone();
         let g15_ualloc_range5_uncached = file_vm.g15_ualloc_range5_uncached.clone();
         let g15_ualloc_range5_cached = file_vm.g15_ualloc_range5_cached.clone();
-        // Drop the vms lock eagerly
+        let g15_uma_shared_pools = file_vm._g15_uma_shared_pools.clone();
+        // Drop the vms lock eagerly. The Arc above is the exact client-VM
+        // lifetime bridge retained by a future lazy G15 channel transaction.
         let _ = file_vm;
         core::mem::drop(guard);
 
@@ -1013,6 +1015,7 @@ impl File {
             ualloc_priv,
             g15_ualloc_range5_uncached,
             g15_ualloc_range5_cached,
+            g15_uma_shared_pools,
             // TODO: Plumb deeper the enum
             uapi::drm_asahi_priority_DRM_ASAHI_PRIORITY_REALTIME - data.priority,
             data.usc_exec_base,
