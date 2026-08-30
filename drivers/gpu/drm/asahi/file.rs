@@ -261,9 +261,9 @@ impl drm::file::DriverFile for File {
 unsafe impl AnyBitPattern for uapi::drm_asahi_gem_bind_op {}
 
 impl File {
-    /// E162 G15 userspace gate beyond the unbound VM-mapping boundary. Normal
-    /// VM_BIND may edit only the private bank-0 root; special shared mappings,
-    /// Queue/context publication, and submission remain fail-closed.
+    /// E163 G15 userspace gate beyond passive Queue lifetime. Queue creation
+    /// may allocate private/unpublished QueueInfo state and q22-tracked resource
+    /// mappings, but special shared-object binding and submission remain blocked.
     fn reject_g15_client_mutation(device: &AsahiDevice) -> Result<()> {
         if device.gpu.get_cfg().gpu_gen == hw::GpuGen::G15 {
             Err(ENODEV)
@@ -981,7 +981,6 @@ impl File {
         data: &mut uapi::drm_asahi_queue_create,
         file: &DrmFile,
     ) -> Result<u32> {
-        Self::reject_g15_client_mutation(device)?;
         let file_id = file.inner().id;
 
         mod_dev_dbg!(
@@ -1041,11 +1040,10 @@ impl File {
 
     /// IOCTL: queue_destroy: Destroy a command submission queue.
     pub(crate) fn queue_destroy(
-        device: &AsahiDevice,
+        _device: &AsahiDevice,
         data: &mut uapi::drm_asahi_queue_destroy,
         file: &DrmFile,
     ) -> Result<u32> {
-        Self::reject_g15_client_mutation(device)?;
         // grab the queue so the xarray spinlock is dropped first
         let queue = file.inner().queues().remove(data.queue_id as usize);
         if queue.is_none() {

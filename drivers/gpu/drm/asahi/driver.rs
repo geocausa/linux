@@ -366,13 +366,13 @@ impl platform::Driver for AsahiDriver {
 
             (*drm).gpu.init()?;
 
-            // E162 opens only unbound private-root VM_BIND on top of E161.
-            // Special/shared bindings, Queue/QueueInfo context publication,
-            // channel construction, q22 runtime publication and submit stay blocked.
+            // E163 opens passive Queue create/destroy on top of E162. Queue
+            // construction may exercise q22-tracked resource map/unmap, but no
+            // firmware context/QueueInfo publication, channel ensure, or submit.
             drm::driver::Registration::new_foreign_owned(&drm, pdev.as_ref(), 0)?;
             dev_info!(
                 pdev.as_ref(),
-                "T8122 G15 E162 persistent manager + unbound VM mapping PASS; Queue/context/submission blocked\n"
+                "T8122 G15 E163 passive Queue lifecycle PASS; context/channel/submission blocked\n"
             );
             return Ok(Self { drm });
         }
