@@ -821,16 +821,17 @@ pub(crate) struct G15FirmwareChannelResourceLeases {
 impl Drop for G15FirmwareResourceLease {
     fn drop(&mut self) {
         // A lease can only be constructed by a successful selection. Failure
-        // here therefore indicates an internal bookkeeping invariant violation;
-        // E149 still has no GPU-backing consumer, so keep Drop infallible while
-        // retaining the error as a fail-closed no-op rather than panicking.
+        // here therefore indicates an internal bookkeeping invariant violation.
+        // Keep Drop infallible; E152 may own a mapped backing, but failed release
+        // must not fabricate a free index or tear down an address still leased.
         let _ = self.manager.0.lock().release(self.index);
     }
 }
 
-/// Accelerator/device-global host placement of the five exact 23J220 firmware
-/// resource stacks recovered by E147. This is bookkeeping only: no GPU backing,
-/// QueueInfo address, WorkQueue, or RunCompute field is created here.
+/// Accelerator/device-global placement of the five exact 23J220 firmware
+/// resource stacks recovered by E147. E152 gives the manager graph their exact
+/// mapped eager backings, but still creates no QueueInfo/WorkQueue/RunCompute
+/// writer and exposes selected FWVAs only through explicit resource leases.
 ///
 /// Each manager is constructed at a distinct `new_mutex!` callsite so lockdep
 /// keeps the five independent Apple stack locks as distinct classes.
@@ -901,11 +902,11 @@ impl G15DeviceFirmwareResourceState {
         })
     }
 
-    /// Definition-only E150 mapped variant. It eagerly allocates one exact
+    /// E150/E152 mapped device-global variant. It eagerly allocates one exact
     /// first backing for each stack, and later growth/release owns real mapped
-    /// blocks behind E149's mode-0 slot transaction. No current GpuManager path
-    /// calls this constructor; boot-time q22 publication ordering remains the
-    /// next gate before replacing `new_device_global()`.
+    /// blocks behind E149's mode-0 slot transaction. E151 marks those eager
+    /// mappings bootstrap-silent; E152 installs this constructor in the G15
+    /// pre-RTKit manager graph and activates q22 only after firmware_ready.
     pub(crate) fn new_mapped_device_global(
         dev: &AsahiDevice,
         bank1: mmu::G15SharedBank1,

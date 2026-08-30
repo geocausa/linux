@@ -254,9 +254,10 @@ pub(crate) struct GpuManager {
     #[ver(G == G15)]
     #[pin]
     g15_uma: Mutex<buffer::G15DeviceUmaOwnerState>,
-    /// E147/E148 exact accelerator-global firmware resource-stack bookkeeping.
-    /// Queue/channel lifetimes may hold logical index leases, but no GPU backing
-    /// or firmware-visible address is exposed by this host-only state.
+    /// E147-E152 exact accelerator-global firmware resource stacks. Their
+    /// initial mapped backings are created in the pre-RTKit manager graph with
+    /// E151 bootstrap-silent q22 policy; Queue/channel leases remain the only
+    /// path that can select an element/FWVA, and Compute still has no live writer.
     #[ver(G == G15)]
     g15_fw_resources: buffer::G15DeviceFirmwareResourceState,
     #[pin]
@@ -1923,7 +1924,11 @@ impl GpuManager::ver {
         #[ver(G == G15)]
         let g15_uma = buffer::G15DeviceUmaOwnerState::new_device_global()?;
         #[ver(G == G15)]
-        let g15_fw_resources = buffer::G15DeviceFirmwareResourceState::new_device_global()?;
+        let g15_fw_resources = buffer::G15DeviceFirmwareResourceState::new_mapped_device_global(
+            dev,
+            uat.g15_shared_bank1().ok_or(EINVAL)?,
+            initdata.g15_mapping_notifier.arc(),
+        )?;
 
         let x = UniqueArc::pin_init(
             try_pin_init!(GpuManager::ver {
@@ -2780,6 +2785,13 @@ impl GpuManager for GpuManager::ver {
                 }
                 fsleep(Delta::from_millis(1));
             }
+
+            // E152: q21 firmware_ready is the first Linux boundary at which the
+            // native q22 consumer is known operational. The exact Apple eager
+            // firmware-resource backings were already mapped before its gate was
+            // enabled, so activation does not replay them. From this point on,
+            // dynamic backing growth and teardown must publish q22 normally.
+            self.initdata.g15_mapping_notifier.lock().activate()?;
         }
 
         Ok(())
