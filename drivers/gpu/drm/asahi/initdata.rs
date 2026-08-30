@@ -218,9 +218,9 @@ impl<'a> InitDataBuilder::ver<'a> {
 
     /// Construct the exact J615/C0 G15 HwDataA pre-tail at +0x3a9c.
     ///
-    /// The DPE dynamic patch count is zero on this path, so the C0 payload is
-    /// deterministic. SoCHot discovers MTR sensors 3,6,8,9,11,14 on J615
-    /// (bitmap 0x4b48) and masks them with 0x4248, yielding 0x4248.
+    /// The DPE/PPT dynamic patch count is zero on this path. The trailing
+    /// +0x4188 block is the separately populated G15G DPE leakage-update image
+    /// reconstructed exactly by E056.
     fn g15_hwdata_a_pretail() -> impl Init<raw::G15HwDataAPreTail> {
         pin_init::init_zeroed::<raw::G15HwDataAPreTail>().chain(|ret| {
             const Q_BANK: u64 = 0x03ff_ffff_03ff_ffff;
@@ -260,8 +260,19 @@ impl<'a> InitDataBuilder::ver<'a> {
             }
             dpe.control_5d4 = U64(0x0000_0000_00c0_0000);
 
-            ret.sochot_6ec.sensor_mask_010 = U64(0x4248);
-            ret.sochot_6ec.constant_018 = U64(125);
+            let leak = &mut ret.dpe_leakage_6ec;
+            leak.value_000 = 0;
+            leak.value_004 = 1;
+            leak.value_008 = U64(0x0000_0005_0000_01f4);
+            leak.value_010 = U64(0x0000_30d4_0000_30d4);
+            leak.value_018 = U64(0x0000_30d4_0000_30d4);
+            leak.value_020 = U64(0x0000_0bb8_0000_30d4);
+            leak.value_028 = U64(0x0000_0bb8_0000_0bb8);
+            leak.value_030 = U64(0x0000_30d4_0000_30d4);
+            leak.value_038 = U64(0x0000_30d4_0000_30d4);
+            leak.value_040 = U64(0x0000_30d4_0000_30d4);
+            leak.value_048 = U64(0x0000_30d4_0000_30d4);
+            leak.value_050 = 1;
             Ok(())
         })
     }
@@ -478,6 +489,12 @@ impl<'a> InitDataBuilder::ver<'a> {
                     fast_die1_sensor_mask_2: U64(cfg.fast_sensor_mask[1]),
                     unk_e24: cfg.da.unk_e24,
                     unk_e28: 1,
+                    #[ver(G == G15)]
+                    g15_sochot_sensor_mask_1288: U64(cfg.fast_sensor_mask[0]),
+                    #[ver(G == G15)]
+                    g15_sochot_constant_1290: 0x7d,
+                    #[ver(G == G15)]
+                    g15_sochot_control_bit_1294: 1,
                     fast_die0_sensor_mask_alt: U64(cfg.fast_sensor_mask_alt[0]),
                     #[ver(G >= G14X)]
                     fast_die1_sensor_mask_alt: U64(cfg.fast_sensor_mask_alt[1]),
@@ -1577,8 +1594,20 @@ impl<'a> InitDataBuilder::ver<'a> {
         let g15_q23 = self.alloc.shared.new_object(
             Default::default(),
             |_inner| raw::G15Q23Shared {
-                // Apple explicitly clears these host-visible update fields;
-                // all unresolved/runtime-owned fields retain their zeroed base.
+                // Exact E056 mirror of the G15G DPE leakage-update image.
+                snapshot_update_158: U32(0),
+                snapshot_15c: U32(1),
+                snapshot_160: U32(500),
+                snapshot_164: U32(5),
+                snapshot_168: U64(0x0000_30d4_0000_30d4),
+                snapshot_170: U64(0x0000_30d4_0000_30d4),
+                snapshot_178: U64(0x0000_0bb8_0000_30d4),
+                snapshot_180: U64(0x0000_0bb8_0000_0bb8),
+                snapshot_188: U64(0x0000_30d4_0000_30d4),
+                snapshot_190: U64(0x0000_30d4_0000_30d4),
+                snapshot_198: U64(0x0000_30d4_0000_30d4),
+                snapshot_1a0: U64(0x0000_30d4_0000_30d4),
+                snapshot_1a8: U32(1),
                 tuning_update_1d0: 0,
                 host_zero_1e8: U32(0),
                 ..Default::default()

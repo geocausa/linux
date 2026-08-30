@@ -900,8 +900,18 @@ impl GpuManager::ver {
                         .iter()
                         .all(|v| u64_is(v, 0x03ff_ffff_03ff_ffff))
                     && u64_is(&dpe.control_5d4, 0x0000_0000_00c0_0000)
-                    && u64_is(&pre.sochot_6ec.sensor_mask_010, 0x4248)
-                    && u64_is(&pre.sochot_6ec.constant_018, 125)
+                    && pre.dpe_leakage_6ec.value_000 == 0
+                    && pre.dpe_leakage_6ec.value_004 == 1
+                    && u64_is(&pre.dpe_leakage_6ec.value_008, 0x0000_0005_0000_01f4)
+                    && u64_is(&pre.dpe_leakage_6ec.value_010, 0x0000_30d4_0000_30d4)
+                    && u64_is(&pre.dpe_leakage_6ec.value_018, 0x0000_30d4_0000_30d4)
+                    && u64_is(&pre.dpe_leakage_6ec.value_020, 0x0000_0bb8_0000_30d4)
+                    && u64_is(&pre.dpe_leakage_6ec.value_028, 0x0000_0bb8_0000_0bb8)
+                    && u64_is(&pre.dpe_leakage_6ec.value_030, 0x0000_30d4_0000_30d4)
+                    && u64_is(&pre.dpe_leakage_6ec.value_038, 0x0000_30d4_0000_30d4)
+                    && u64_is(&pre.dpe_leakage_6ec.value_040, 0x0000_30d4_0000_30d4)
+                    && u64_is(&pre.dpe_leakage_6ec.value_048, 0x0000_30d4_0000_30d4)
+                    && pre.dpe_leakage_6ec.value_050 == 1
             });
 
             if !pre_ok {
@@ -1136,7 +1146,20 @@ impl GpuManager::ver {
                     && raw.firmware_ready.load(Ordering::Relaxed) == 0
                     && raw.power_state.load(Ordering::Relaxed) == 0
             }) && mgr.initdata.g15_q23.with(|raw, _inner| {
-                raw.tuning_update_1d0 == 0
+                raw.snapshot_update_158.0 == 0
+                    && raw.snapshot_15c.0 == 1
+                    && raw.snapshot_160.0 == 500
+                    && raw.snapshot_164.0 == 5
+                    && raw.snapshot_168.0 == 0x0000_30d4_0000_30d4
+                    && raw.snapshot_170.0 == 0x0000_30d4_0000_30d4
+                    && raw.snapshot_178.0 == 0x0000_0bb8_0000_30d4
+                    && raw.snapshot_180.0 == 0x0000_0bb8_0000_0bb8
+                    && raw.snapshot_188.0 == 0x0000_30d4_0000_30d4
+                    && raw.snapshot_190.0 == 0x0000_30d4_0000_30d4
+                    && raw.snapshot_198.0 == 0x0000_30d4_0000_30d4
+                    && raw.snapshot_1a0.0 == 0x0000_30d4_0000_30d4
+                    && raw.snapshot_1a8.0 == 1
+                    && raw.tuning_update_1d0 == 0
                     && raw.host_zero_1e8.0 == 0
             });
 
@@ -2675,6 +2698,27 @@ impl GpuManager::ver {
         });
 
         mod_dev_dbg!(self.dev, "Context invalidation command: {:?}\n", &dc);
+
+        #[ver(G == G15)]
+        {
+            // E060 exact-target guard: legacy V13.3 Unk0d must not shift G15
+            // ReleaseResource away from native opcode 0x11.
+            let tag = unsafe {
+                core::ptr::read_unaligned(core::ptr::addr_of!(dc).cast::<u32>())
+            };
+            if tag != 0x11 {
+                dev_err!(
+                    self.dev.as_ref(),
+                    "T8122 G15 E170 refusing malformed ReleaseResource tag {:#x}\n",
+                    tag
+                );
+                return Err(EIO);
+            }
+            dev_info!(
+                self.dev.as_ref(),
+                "T8122 G15 E170 ReleaseResource tag=0x11 ABI check PASS\n"
+            );
+        }
 
         let mut txch = self.tx_channels.lock();
 

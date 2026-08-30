@@ -422,7 +422,7 @@ pub(crate) mod raw {
         // Firmware clears +0x158 after importing the following snapshot into
         // HwDataA +0x4190..+0x41d8.
         pub(crate) snapshot_update_158: U32,
-        pub(crate) pad_15c: Pad<0x04>,
+        pub(crate) snapshot_15c: U32,
         pub(crate) snapshot_160: U32,
         pub(crate) snapshot_164: U32,
         pub(crate) snapshot_168: U64,
@@ -464,6 +464,7 @@ pub(crate) mod raw {
     const _: [(); 0x0f4] = [(); core::mem::offset_of!(G15Q23Shared, override_0f4)];
     const _: [(); 0x130] = [(); core::mem::offset_of!(G15Q23Shared, value_130)];
     const _: [(); 0x158] = [(); core::mem::offset_of!(G15Q23Shared, snapshot_update_158)];
+    const _: [(); 0x15c] = [(); core::mem::offset_of!(G15Q23Shared, snapshot_15c)];
     const _: [(); 0x160] = [(); core::mem::offset_of!(G15Q23Shared, snapshot_160)];
     const _: [(); 0x1a8] = [(); core::mem::offset_of!(G15Q23Shared, snapshot_1a8)];
     const _: [(); 0x1b4] = [(); core::mem::offset_of!(G15Q23Shared, idle_entry_count_1b4)];
@@ -674,19 +675,32 @@ pub(crate) mod raw {
     const _: [(); 0x3cc] = [(); core::mem::offset_of!(G15DpePptConfig, bank2_3cc)];
     const _: [(); 0x5d4] = [(); core::mem::offset_of!(G15DpePptConfig, control_5d4)];
 
-    /// Sparse SoCHot payload copied to HwDataA +0x4188 on J615/C0.
+    /// J615/C0 DPE leakage-update image copied to HwDataA +0x4188.
+    ///
+    /// Exact E056 23J220 reconstruction: the G15G +0xcb8 callback builds ten
+    /// qwords and initPowerAndPerformanceData() rearranges them into this
+    /// 0x54-byte firmware-facing image.
     #[derive(Debug)]
     #[repr(C)]
-    pub(crate) struct G15SoCHotConfig {
-        pub(crate) pad_000: Pad<0x10>,
-        pub(crate) sensor_mask_010: U64,
-        pub(crate) constant_018: U64,
-        pub(crate) pad_020: Pad<0x34>,
+    pub(crate) struct G15DpeLeakageUpdateConfig {
+        pub(crate) value_000: u32,
+        pub(crate) value_004: u32,
+        pub(crate) value_008: U64,
+        pub(crate) value_010: U64,
+        pub(crate) value_018: U64,
+        pub(crate) value_020: U64,
+        pub(crate) value_028: U64,
+        pub(crate) value_030: U64,
+        pub(crate) value_038: U64,
+        pub(crate) value_040: U64,
+        pub(crate) value_048: U64,
+        pub(crate) value_050: u32,
     }
-    default_zeroed!(G15SoCHotConfig);
-    const _: [(); 0x54] = [(); core::mem::size_of::<G15SoCHotConfig>()];
-    const _: [(); 0x10] = [(); core::mem::offset_of!(G15SoCHotConfig, sensor_mask_010)];
-    const _: [(); 0x18] = [(); core::mem::offset_of!(G15SoCHotConfig, constant_018)];
+    default_zeroed!(G15DpeLeakageUpdateConfig);
+    const _: [(); 0x54] = [(); core::mem::size_of::<G15DpeLeakageUpdateConfig>()];
+    const _: [(); 0x008] = [(); core::mem::offset_of!(G15DpeLeakageUpdateConfig, value_008)];
+    const _: [(); 0x010] = [(); core::mem::offset_of!(G15DpeLeakageUpdateConfig, value_010)];
+    const _: [(); 0x050] = [(); core::mem::offset_of!(G15DpeLeakageUpdateConfig, value_050)];
 
     /// G15 replacement for the inherited Shared1/2/3 through leakage-coef
     /// region, spanning HwDataA +0x3a9c..+0x421b exactly.
@@ -697,14 +711,14 @@ pub(crate) mod raw {
         pub(crate) constant_008: F32,
         pub(crate) dpe_00c: G15DpePptConfig,
         pub(crate) pad_5e8: Pad<0x104>,
-        pub(crate) sochot_6ec: G15SoCHotConfig,
+        pub(crate) dpe_leakage_6ec: G15DpeLeakageUpdateConfig,
         pub(crate) pad_740: Pad<0x40>,
     }
     default_zeroed!(G15HwDataAPreTail);
     const _: [(); 0x780] = [(); core::mem::size_of::<G15HwDataAPreTail>()];
     const _: [(); 0x008] = [(); core::mem::offset_of!(G15HwDataAPreTail, constant_008)];
     const _: [(); 0x00c] = [(); core::mem::offset_of!(G15HwDataAPreTail, dpe_00c)];
-    const _: [(); 0x6ec] = [(); core::mem::offset_of!(G15HwDataAPreTail, sochot_6ec)];
+    const _: [(); 0x6ec] = [(); core::mem::offset_of!(G15HwDataAPreTail, dpe_leakage_6ec)];
 
     /// G15-only extension at HwDataA +0x421c.
     ///
@@ -1037,7 +1051,16 @@ pub(crate) mod raw {
 
         pub(crate) unk_e24: u32,
         pub(crate) unk_e28: u32,
+        #[ver(G != G15)]
         pub(crate) unk_e2c: Pad<0x1c>,
+        #[ver(G == G15)]
+        pub(crate) g15_sochot_sensor_mask_1288: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_sochot_constant_1290: u32,
+        #[ver(G == G15)]
+        pub(crate) g15_sochot_control_bit_1294: u32,
+        #[ver(G == G15)]
+        pub(crate) g15_sochot_pad_1298: Pad<0x0c>,
         pub(crate) unk_coef_b1: Array<8, Array<MAX_CORES_PER_CLUSTER::ver, F32>>,
         pub(crate) unk_coef_b2: Array<8, Array<MAX_CORES_PER_CLUSTER::ver, F32>>,
 
@@ -1141,6 +1164,14 @@ pub(crate) mod raw {
     const _: [(); 0x1a94] = [(); core::mem::offset_of!(HwDataAG15V14_7, unk_1640)];
     const _: [(); 0x1a98] =
         [(); core::mem::offset_of!(HwDataAG15V14_7, unk_1640) + 0x04];
+    const _: [(); 0x1288] =
+        [(); core::mem::offset_of!(HwDataAG15V14_7, g15_sochot_sensor_mask_1288)];
+    const _: [(); 0x1290] =
+        [(); core::mem::offset_of!(HwDataAG15V14_7, g15_sochot_constant_1290)];
+    const _: [(); 0x1294] =
+        [(); core::mem::offset_of!(HwDataAG15V14_7, g15_sochot_control_bit_1294)];
+    const _: [(); 0x1298] =
+        [(); core::mem::offset_of!(HwDataAG15V14_7, g15_sochot_pad_1298)];
     const _: [(); 0x1aa4] =
         [(); core::mem::offset_of!(HwDataAG15V14_7, unk_1640) + 0x10];
     const _: [(); 0x3a94] = [(); core::mem::offset_of!(HwDataAG15V14_7, unk_3640)];

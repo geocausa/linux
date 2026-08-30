@@ -203,7 +203,9 @@ pub(crate) enum DeviceControlMsg {
     Unk0a(Array<DEVICECONTROL_SZ::ver, u8>),
     Unk0b(Array<DEVICECONTROL_SZ::ver, u8>),
     Unk0c(Array<DEVICECONTROL_SZ::ver, u8>),
-    #[ver(V >= V13_3)]
+    // E060 exact G15 DeviceControl numbering: the legacy V13.3 0x0d
+    // placeholder is absent, otherwise ReleaseResource shifts 0x11 -> 0x12.
+    #[ver(V >= V13_3 && G != G15)]
     Unk0d(Array<DEVICECONTROL_SZ::ver, u8>),
     GrowTVBAck {
         unk_4: u32,
