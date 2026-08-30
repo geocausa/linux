@@ -372,7 +372,7 @@ impl platform::Driver for AsahiDriver {
             drm::driver::Registration::new_foreign_owned(&drm, pdev.as_ref(), 0)?;
             dev_info!(
                 pdev.as_ref(),
-                "T8122 G15 E163 passive Queue lifecycle PASS; context/channel/submission blocked\n"
+                "T8122 G15 E165 passive Queue + signed VM-context probe ready; QueueInfo/channel/commands blocked\n"
             );
             return Ok(Self { drm });
         }

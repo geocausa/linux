@@ -65,7 +65,7 @@ pub(crate) trait Queue: Send + Sync {
     /// Publish this queue's VM in a UAT user slot without constructing or
     /// submitting any GPU work. This is used only by the bounded G15 bring-up
     /// gate immediately before the real submission path.
-    fn preflight_vm_bind(&mut self) -> Result<u32>;
+    fn preflight_vm_bind_only(&mut self) -> Result<u32>;
 
     fn submit(
         &mut self,
@@ -1803,42 +1803,9 @@ fn build_attachments(reader: &mut Reader<'_>, size: usize) -> Result<microseq::A
 
 #[versions(AGX)]
 impl Queue for Queue::ver {
-    fn preflight_vm_bind(&mut self) -> Result<u32> {
+    fn preflight_vm_bind_only(&mut self) -> Result<u32> {
         let bind = (*self.dev).gpu.bind_vm(&self.vm)?;
         let slot = bind.slot();
-
-        #[ver(G == G15)]
-        {
-            let gpu = match (*self.dev)
-                .gpu
-                .clone()
-                .arc_as_any()
-                .downcast::<gpu::GpuManager::ver>()
-            {
-                Ok(gpu) => gpu,
-                Err(_) => return Err(EIO),
-            };
-
-            // Use the compute subqueue for the bounded publication probe. With
-            // wptr=0 the common scheduler path returns before any command entry
-            // is dereferenced, and this avoids render/TVB-specific work.
-            gpu.g15_set_command_submission_enabled(true)?;
-            let publish_result = self
-                .q_comp
-                .as_ref()
-                .ok_or(EIO)?
-                .wq
-                .g15_publish_empty(&gpu);
-
-            // Restore the host runtime gate only after both the accelerator TX
-            // entry and native ReleaseResource completed successfully. On any
-            // ambiguous failure leave it enabled and fail-stop until reboot.
-            if publish_result.is_ok() {
-                gpu.g15_set_command_submission_enabled(false)?;
-            }
-            publish_result?;
-        }
-
         core::mem::drop(bind);
         Ok(slot)
     }
