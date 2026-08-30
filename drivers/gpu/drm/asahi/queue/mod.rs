@@ -1727,11 +1727,10 @@ impl QueueInner::ver {
     fn g15_assemble_unpublished_compute_channel(
         &self,
         gpu: &gpu::GpuManager::ver,
-        priority_class: u32,
     ) -> Result<G15UnpublishedComputeChannel::ver> {
         #[ver(G != G15)]
         {
-            let _ = (gpu, priority_class);
+            let _ = gpu;
             return Err(EINVAL);
         }
 
@@ -1752,7 +1751,6 @@ impl QueueInner::ver {
             // next device-global identity before FList construction, as Apple.
             let pool = gpu.g15_select_or_create_compute_pool(
                 container,
-                priority_class,
                 range5_cached,
                 bank1.clone(),
                 mapping_notifier.clone(),

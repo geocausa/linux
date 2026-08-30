@@ -318,6 +318,14 @@ pub(crate) struct G15DeviceUmaOwnerState {
     next_pool_id: u64,
 }
 
+/// Exact normal-J615 shared Compute UMAPool priority class.
+///
+/// AGXChannel::init() derives the shared-pool class as 0 only for context
+/// priority types 0 or 5 and as 1 otherwise. Exact IOGPU command-queue state
+/// starts at type 3 and the ordinary runtime branches select types 1 or 2, so
+/// the normal CL/Compute path always selects class 1.
+pub(crate) const G15_J615_NORMAL_COMPUTE_POOL_PRIORITY_CLASS: u32 = 1;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(dead_code)]
 pub(crate) struct G15UmaPoolIdentity(u64);

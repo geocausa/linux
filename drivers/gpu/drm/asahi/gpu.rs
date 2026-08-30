@@ -2299,7 +2299,6 @@ impl GpuManager::ver {
     pub(crate) fn g15_select_or_create_compute_pool(
         &self,
         container: &Arc<Mutex<buffer::G15ClientUmaPoolContainerState>>,
-        priority_class: u32,
         range5_cached: &Arc<Mutex<alloc::DefaultAllocator>>,
         bank1: mmu::G15SharedBank1,
         mapping_notifier: Arc<Mutex<mmu::G15MappingNotifier>>,
@@ -2308,7 +2307,6 @@ impl GpuManager::ver {
         {
             let _ = (
                 container,
-                priority_class,
                 range5_cached,
                 bank1,
                 mapping_notifier,
@@ -2320,7 +2318,7 @@ impl GpuManager::ver {
         {
             buffer::G15ClientUmaPoolContainerState::select_or_create_compute_channel(
                 container,
-                priority_class,
+                buffer::G15_J615_NORMAL_COMPUTE_POOL_PRIORITY_CLASS,
                 || {
                     // Exact host ordering holds the shared-container lock while
                     // replacement construction runs. The wider UMA namespace
@@ -2331,7 +2329,7 @@ impl GpuManager::ver {
                     buffer::G15SharedComputeUmaPoolOwner::new_j615_unprepared(
                         &self.dev,
                         &mut device_uma,
-                        priority_class,
+                        buffer::G15_J615_NORMAL_COMPUTE_POOL_PRIORITY_CLASS,
                         &mut range5,
                         bank1,
                         Some(mapping_notifier),
