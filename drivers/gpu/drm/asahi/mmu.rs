@@ -1670,6 +1670,10 @@ impl G15SharedBank1State {
 pub(crate) struct G15MappingNotifier {
     dev: driver::AsahiDevRef,
     backing: alloc::G15SharedGpuObject<fw::initdata::G15MappingRingBacking>,
+    // Exact 23J220 firmware+0x1288 gate semantics are monotonic for the
+    // reconstructed startup/runtime lifetime: bootstrap resource mappings are
+    // established while false; later dynamic changes are q22-visible once true.
+    active: bool,
 }
 
 /// Cloneable, debug-safe strong owner for the q22 producer. Kernel Mutex does
@@ -1733,7 +1737,30 @@ impl G15MappingNotifier {
         dev: &driver::AsahiDevice,
         backing: alloc::G15SharedGpuObject<fw::initdata::G15MappingRingBacking>,
     ) -> Self {
-        Self { dev: dev.into(), backing }
+        Self {
+            dev: dev.into(),
+            backing,
+            active: false,
+        }
+    }
+
+    /// Arm q22 publication after the bootstrap mapping set is complete. The
+    /// transition is one-way so a mapping created after activation can never
+    /// later lose its required unmap notification.
+    #[allow(dead_code)]
+    pub(crate) fn activate(&mut self) -> Result {
+        if self.active {
+            return Ok(());
+        }
+        if !self.is_empty() {
+            return Err(EBUSY);
+        }
+        self.active = true;
+        Ok(())
+    }
+
+    pub(crate) fn is_active(&self) -> bool {
+        self.active
     }
 
     pub(crate) fn state_gpu_va(&self) -> u64 {
@@ -1923,6 +1950,7 @@ pub(crate) struct G15SharedBank1Mapping {
     node: Option<mm::Node<(), G15SharedBank1MappingInner>>,
     inner: Arc<UatInner>,
     notifier: Option<Arc<Mutex<G15MappingNotifier>>>,
+    notify_mode: G15MappingNotifyMode,
     phys_pages: KVec<u64>,
 }
 
@@ -1939,7 +1967,12 @@ impl Drop for G15SharedBank1Mapping {
         let iova = node.start();
         let size = node.mapped_size;
         if let Some(notifier) = self.notifier.as_ref() {
-            if notifier.lock().publish_unmapping(iova, &self.phys_pages).is_err() {
+            let mut notifier = notifier.lock();
+            let publish = match self.notify_mode {
+                G15MappingNotifyMode::Immediate => true,
+                G15MappingNotifyMode::AfterActivation => notifier.is_active(),
+            };
+            if publish && notifier.publish_unmapping(iova, &self.phys_pages).is_err() {
                 pr_err!(
                     "MMU: failed to publish G15 shared bank-1 unmapping {:#x}:{:#x}; preserving PTE and VA reservation\n",
                     iova,
@@ -1984,6 +2017,16 @@ impl Drop for G15SharedBank1Mapping {
 /// separate prevents a range-8 Page-Pool-State allocation from consuming a
 /// PM/range-7 VA (or vice versa) even though both share one page-table root.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum G15MappingNotifyMode {
+    /// Ordinary runtime mapping: q22 publication is part of map/unmap.
+    Immediate,
+    /// Apple bootstrap resource backing: suppress q22 traffic until the
+    /// monotonic producer gate is activated, then publish subsequent map/unmap
+    /// changes normally.
+    AfterActivation,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum G15SharedBank1Aperture {
     /// PM/q22 resource class, compact SecureGart option 0x007.
     Range7,
@@ -2013,6 +2056,7 @@ impl G15SharedBank1 {
         prot: Prot,
         guard: bool,
         notifier: Option<Arc<Mutex<G15MappingNotifier>>>,
+        notify_mode: G15MappingNotifyMode,
     ) -> Result<G15SharedBank1Mapping> {
         let sgt = gem.owned_sg_table()?;
         if size & UAT_PGMSK != 0 {
@@ -2119,32 +2163,39 @@ impl G15SharedBank1 {
         mem::sync();
 
         if let Some(q22) = notifier.as_ref() {
-            if let Err(err) = q22.lock().publish_mapping(base, &phys_pages) {
-                // Native G15 ordering is secure-GART map first, q22 publication
-                // second. If publication fails, undo the just-created PTEs before
-                // allowing the VA reservation to be released/reused.
-                let rollback = {
-                    let mut shared = self.inner.lock();
-                    match shared.g15_shared_bank1.as_mut() {
-                        Some(bank1) => bank1
-                            .page_table
-                            .unmap_pages(base..(base + size as u64)),
-                        None => Err(EINVAL),
+            let mut q22 = q22.lock();
+            let publish = match notify_mode {
+                G15MappingNotifyMode::Immediate => true,
+                G15MappingNotifyMode::AfterActivation => q22.is_active(),
+            };
+            if publish {
+                if let Err(err) = q22.publish_mapping(base, &phys_pages) {
+                    // Native G15 ordering is secure-GART map first, q22 publication
+                    // second. If publication fails, undo the just-created PTEs before
+                    // allowing the VA reservation to be released/reused.
+                    let rollback = {
+                        let mut shared = self.inner.lock();
+                        match shared.g15_shared_bank1.as_mut() {
+                            Some(bank1) => bank1
+                                .page_table
+                                .unmap_pages(base..(base + size as u64)),
+                            None => Err(EINVAL),
+                        }
+                    };
+                    fence(Ordering::SeqCst);
+                    mem::tlbi_all();
+                    mem::sync();
+                    if rollback.is_err() {
+                        dev_err!(
+                            self.dev.as_ref(),
+                            "MMU: failed to roll back unpublished G15 shared bank-1 mapping {:#x}:{:#x}; leaking VA reservation\n",
+                            base,
+                            size
+                        );
+                        core::mem::forget(node);
                     }
-                };
-                fence(Ordering::SeqCst);
-                mem::tlbi_all();
-                mem::sync();
-                if rollback.is_err() {
-                    dev_err!(
-                        self.dev.as_ref(),
-                        "MMU: failed to roll back unpublished G15 shared bank-1 mapping {:#x}:{:#x}; leaking VA reservation\n",
-                        base,
-                        size
-                    );
-                    core::mem::forget(node);
+                    return Err(err);
                 }
-                return Err(err);
             }
         }
 
@@ -2152,6 +2203,7 @@ impl G15SharedBank1 {
             node: Some(node),
             inner: self.inner.clone(),
             notifier,
+            notify_mode,
             phys_pages,
         })
     }

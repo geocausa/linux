@@ -458,6 +458,7 @@ pub(crate) struct G15SharedBank1Allocator {
     min_align: usize,
     cpu_maps: bool,
     notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
+    notify_mode: mmu::G15MappingNotifyMode,
 }
 
 impl G15SharedBank1Allocator {
@@ -513,6 +514,7 @@ impl G15SharedBank1Allocator {
             min_align,
             cpu_maps,
             notifier,
+            notify_mode: mmu::G15MappingNotifyMode::Immediate,
         }
     }
 
@@ -536,6 +538,7 @@ impl G15SharedBank1Allocator {
             min_align,
             cpu_maps,
             notifier,
+            notify_mode: mmu::G15MappingNotifyMode::Immediate,
         }
     }
 
@@ -559,6 +562,7 @@ impl G15SharedBank1Allocator {
             min_align,
             cpu_maps,
             notifier,
+            notify_mode: mmu::G15MappingNotifyMode::Immediate,
         }
     }
 
@@ -583,6 +587,7 @@ impl G15SharedBank1Allocator {
             min_align,
             cpu_maps,
             notifier,
+            notify_mode: mmu::G15MappingNotifyMode::Immediate,
         }
     }
 
@@ -606,6 +611,7 @@ impl G15SharedBank1Allocator {
             min_align,
             cpu_maps,
             notifier,
+            notify_mode: mmu::G15MappingNotifyMode::Immediate,
         }
     }
 
@@ -629,6 +635,7 @@ impl G15SharedBank1Allocator {
             min_align,
             cpu_maps,
             notifier,
+            notify_mode: mmu::G15MappingNotifyMode::Immediate,
         }
     }
 
@@ -653,6 +660,7 @@ impl G15SharedBank1Allocator {
             min_align,
             cpu_maps,
             notifier,
+            notify_mode: mmu::G15MappingNotifyMode::Immediate,
         }
     }
 
@@ -677,6 +685,7 @@ impl G15SharedBank1Allocator {
             min_align,
             cpu_maps,
             notifier,
+            notify_mode: mmu::G15MappingNotifyMode::Immediate,
         }
     }
 
@@ -701,6 +710,7 @@ impl G15SharedBank1Allocator {
             min_align,
             cpu_maps,
             notifier,
+            notify_mode: mmu::G15MappingNotifyMode::Immediate,
         }
     }
 
@@ -724,7 +734,18 @@ impl G15SharedBank1Allocator {
             min_align,
             cpu_maps,
             notifier,
+            notify_mode: mmu::G15MappingNotifyMode::Immediate,
         }
+    }
+
+    /// Exact 23J220 bootstrap resource policy: the PTE exists before the q22
+    /// producer gate is enabled, so the initial map is intentionally silent.
+    /// Once the shared notifier is activated, later growth and eventual
+    /// teardown use ordinary q22 map/unmap publication.
+    #[allow(dead_code)]
+    pub(crate) fn after_q22_activation(mut self) -> Self {
+        self.notify_mode = mmu::G15MappingNotifyMode::AfterActivation;
+        self
     }
 }
 
@@ -748,6 +769,7 @@ impl Allocator for G15SharedBank1Allocator {
             self.prot,
             true,
             self.notifier.clone(),
+            self.notify_mode,
         )?;
         let iova = mapping.iova();
         let ptr = unsafe { p.add(offset) };

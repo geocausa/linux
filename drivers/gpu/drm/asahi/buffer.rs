@@ -382,8 +382,11 @@ impl G15FirmwareResourceKind {
 
 /// Inputs retained by a future mapped device-global resource stack. E125/E126/
 /// E122/E116 already close each range/protection class and exact block geometry.
-/// E150 merely type-connects those proven allocators to E149's dynamic backing
-/// slots; no current `GpuManager` constructor calls this factory.
+/// E150 type-connects those proven allocators to E149's dynamic backing slots.
+/// E151 additionally marks these exact firmware-resource allocations as
+/// pre-q22 bootstrap mappings: initial PTEs are silent until the producer gate
+/// becomes active, while post-activation growth/teardown remains q22-visible.
+/// No current `GpuManager` constructor calls this factory.
 #[allow(dead_code)]
 struct G15FirmwareResourceBackingFactory {
     dev: AsahiDevRef,
@@ -456,7 +459,8 @@ impl G15FirmwareResourceBackingFactory {
                     notifier,
                 )
             }
-        };
+        }
+        .after_q22_activation();
         let backing = allocator.array_empty_shared_data::<u8>(self.kind.backing_bytes())?;
         let base: u64 = backing.weak_pointer().into();
         if backing.len() != self.kind.backing_bytes()
