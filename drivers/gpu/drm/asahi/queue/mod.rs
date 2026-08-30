@@ -1296,12 +1296,20 @@ pub(crate) struct QueueInner {
     // disabled; retaining the allocation here only reconstructs channel state.
     #[ver(G == G15)]
     g15_ta_object_payload: GpuArray<u8>,
-    // Exact E139-E142 AGXShared/client address-space bridge. This retains only
-    // the per-VM shared-pool selection container so future G15 Compute channel
-    // creation can stay lazy. E143 performs no pool selection/construction and
-    // consumes no device-global pool ID.
+    // Exact E139-E143 AGXShared/client address-space bridge plus the allocator
+    // and bank-1/q22 handles required by the future lazy CL-channel transaction.
+    // E144 only retains these handles; no owner constructor or pool selector is
+    // called and no device-global pool ID is consumed.
     #[ver(G == G15)]
     _g15_uma_shared_pools: Option<Arc<Mutex<buffer::G15ClientUmaPoolContainerState>>>,
+    #[ver(G == G15)]
+    _g15_range5_uncached: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
+    #[ver(G == G15)]
+    _g15_range5_cached: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
+    #[ver(G == G15)]
+    _g15_shared_bank1: Option<mmu::G15SharedBank1>,
+    #[ver(G == G15)]
+    _g15_mapping_notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
     // Exact 0x2800 GPU-facing PM record backing. Apple uses range 5 with
     // compact PTE class 0x300; the separate 0x40 tail is intentionally absent.
     #[ver(G == G15)]
@@ -1989,6 +1997,15 @@ impl Queue::ver {
             buffer::Buffer::ver::new(&*(*dev).gpu, alloc, ualloc.clone(), ualloc_priv, mgr)?;
 
         #[ver(G == G15)]
+        let g15_lazy_range5_uncached = _g15_ualloc_range5_uncached.clone();
+        #[ver(G == G15)]
+        let g15_lazy_range5_cached = _g15_ualloc_range5_cached.clone();
+        #[ver(G == G15)]
+        let g15_lazy_shared_bank1 = _g15_shared_bank1.clone();
+        #[ver(G == G15)]
+        let g15_lazy_mapping_notifier = _g15_mapping_notifier.clone();
+
+        #[ver(G == G15)]
         let g15_pm_scene_alloc = _g15_ualloc_range5_uncached
             .as_ref()
             .ok_or(EINVAL)?
@@ -2076,6 +2093,14 @@ impl Queue::ver {
                 g15_ta_object_payload,
                 #[ver(G == G15)]
                 _g15_uma_shared_pools,
+                #[ver(G == G15)]
+                _g15_range5_uncached: g15_lazy_range5_uncached,
+                #[ver(G == G15)]
+                _g15_range5_cached: g15_lazy_range5_cached,
+                #[ver(G == G15)]
+                _g15_shared_bank1: g15_lazy_shared_bank1,
+                #[ver(G == G15)]
+                _g15_mapping_notifier: g15_lazy_mapping_notifier,
                 #[ver(G == G15)]
                 g15_pm_records,
                 #[ver(G == G15)]
