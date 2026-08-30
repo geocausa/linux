@@ -299,6 +299,13 @@ struct WorkQueueInner {
 #[versions(AGX)]
 #[pin_data]
 pub(crate) struct WorkQueue {
+    // E155 exact CL WorkQueue -> channel strong ownership. The type is opaque
+    // here to keep the generic WorkQueue layer independent of Queue's G15
+    // channel implementation, but the anchor is intentionally the first field:
+    // the final WorkQueue Arc therefore releases the channel lifetime before
+    // any base WorkQueue state is torn down. Every Job/Event WorkQueue Arc clone
+    // implicitly retains this same anchor.
+    _g15_owned_channel_lifetime: Option<Arc<dyn core::any::Any + Send + Sync>>,
     info_pointer: GpuWeakPointer<QueueInfo::ver>,
     #[pin]
     inner: Mutex<WorkQueueInner::ver>,
@@ -704,6 +711,7 @@ impl WorkQueue::ver {
         event_manager: Arc<event::EventManager>,
         gpu_context: Arc<GpuContext>,
         notifier_list: Arc<GpuObject<fw::event::NotifierList>>,
+        g15_owned_channel_lifetime: Option<Arc<dyn core::any::Any + Send + Sync>>,
         pipe_type: PipeType,
         id: u64,
         priority: u32,
@@ -800,6 +808,7 @@ impl WorkQueue::ver {
 
         Arc::pin_init(
             pin_init!(Self {
+                _g15_owned_channel_lifetime: g15_owned_channel_lifetime,
                 info_pointer,
                 inner <- match pipe_type {
                     PipeType::Vertex => new_mutex!(inner, "WorkQueue::inner (Vertex)"),

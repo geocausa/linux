@@ -9,6 +9,7 @@ use kernel::dma_fence::*;
 use kernel::prelude::*;
 use kernel::{
     c_str,
+    new_mutex,
     dma_fence,
     drm::sched,
     macros::versions,
@@ -78,6 +79,14 @@ pub(crate) trait Queue: Send + Sync {
 
 #[versions(AGX)]
 struct SubQueue {
+    // E155 exact AGXCLWorkQueue lifetime anchor. The concrete slot is also
+    // retained opaquely by the WorkQueue itself, so WorkQueue::Job/Event Arc
+    // clones cannot outlive an activated channel. Keep this host-side clone
+    // physically before `wq`; if this is the last external slot reference it
+    // is dropped before the WorkQueue Arc, while the WorkQueue's own anchor
+    // still preserves exact channel-before-base-WorkQueue destruction.
+    #[ver(G == G15)]
+    _g15_compute_channel: Option<Arc<Mutex<Option<G15UnpublishedComputeChannel::ver>>>>,
     wq: Arc<workqueue::WorkQueue::ver>,
 }
 
@@ -1640,12 +1649,15 @@ impl Queue::ver {
         ret.inner.buffer.ensure_blocks(tvb_blocks)?;
 
         ret.q_vtx = Some(SubQueue::ver {
+            #[ver(G == G15)]
+            _g15_compute_channel: None,
             wq: workqueue::WorkQueue::ver::new(
                 dev,
                 alloc,
                 event_manager.clone(),
                 ret.inner.gpu_context.clone(),
                 ret.inner.notifier_list.clone(),
+                None,
                 channel::PipeType::Vertex,
                 id,
                 priority,
@@ -1654,12 +1666,15 @@ impl Queue::ver {
         });
 
         ret.q_frag = Some(SubQueue::ver {
+            #[ver(G == G15)]
+            _g15_compute_channel: None,
             wq: workqueue::WorkQueue::ver::new(
                 dev,
                 alloc,
                 event_manager.clone(),
                 ret.inner.gpu_context.clone(),
                 ret.inner.notifier_list.clone(),
+                None,
                 channel::PipeType::Fragment,
                 id,
                 priority,
@@ -1667,14 +1682,31 @@ impl Queue::ver {
             )?,
         });
 
-        // Compute structures
+        // Compute structures. Exact 23J220 AGXCLWorkQueue owns its channel;
+        // create only an empty lifetime slot here. E155 deliberately provides
+        // no setter and makes no call to the unpublished channel assembler.
+        #[ver(G == G15)]
+        let g15_compute_channel = Arc::pin_init(
+            new_mutex!(None, "g15_compute_channel_lifetime"),
+            GFP_KERNEL,
+        )?;
+        #[ver(G == G15)]
+        let g15_compute_wq_lifetime = Some(
+            g15_compute_channel.clone() as Arc<dyn core::any::Any + Send + Sync>
+        );
+        #[ver(G != G15)]
+        let g15_compute_wq_lifetime = None;
+
         ret.q_comp = Some(SubQueue::ver {
+            #[ver(G == G15)]
+            _g15_compute_channel: Some(g15_compute_channel),
             wq: workqueue::WorkQueue::ver::new(
                 dev,
                 alloc,
                 event_manager,
                 ret.inner.gpu_context.clone(),
                 ret.inner.notifier_list.clone(),
+                g15_compute_wq_lifetime,
                 channel::PipeType::Compute,
                 id,
                 priority,
