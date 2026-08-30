@@ -1066,15 +1066,19 @@ impl File {
         const G15_VM_BIND_PROBE_PAD: u32 = 0x4531_3635; // "E165"
         const G15_CL_CHANNEL_PROBE_FLAGS: u32 = 0x4731_3543; // "G15C"
         const G15_CL_CHANNEL_PROBE_PAD: u32 = 0x4531_3636; // "E166"
+        const G15_BARRIER_REG_PROBE_FLAGS: u32 = 0x4731_3552; // "G15R"
+        const G15_BARRIER_REG_PROBE_PAD: u32 = 0x4531_3639; // "E169"
 
         if is_g15 {
             let vm_bind_probe = data.flags == G15_VM_BIND_PROBE_FLAGS
                 && data.pad == G15_VM_BIND_PROBE_PAD;
             let cl_channel_probe = data.flags == G15_CL_CHANNEL_PROBE_FLAGS
                 && data.pad == G15_CL_CHANNEL_PROBE_PAD;
-            // Both lab probes are deliberately zero-payload. Ordinary G15
+            let barrier_reg_probe = data.flags == G15_BARRIER_REG_PROBE_FLAGS
+                && data.pad == G15_BARRIER_REG_PROBE_PAD;
+            // All lab probes are deliberately zero-payload. Ordinary G15
             // submissions remain fail-closed before Queue lookup.
-            if (!vm_bind_probe && !cl_channel_probe)
+            if (!vm_bind_probe && !cl_channel_probe && !barrier_reg_probe)
                 || data.syncs != 0
                 || data.cmdbuf != 0
                 || data.in_sync_count != 0
@@ -1098,11 +1102,19 @@ impl File {
                     "T8122 G15 E165 VM-context GPTBAT bind PASS (slot {}); QueueInfo/channel/commands blocked\n",
                     slot
                 );
-            } else {
+            } else if cl_channel_probe {
                 let pool_id = queue.lock().preflight_g15_lazy_compute_channel()?;
                 dev_info!(
                     device.as_ref(),
                     "T8122 G15 E166 lazy CL channel PASS (pool {}); QueueInfo/commands blocked\n",
+                    pool_id
+                );
+            } else {
+                let (slot, pool_id) = queue.lock().preflight_g15_barrier_registration()?;
+                dev_info!(
+                    device.as_ref(),
+                    "T8122 G15 E169 integrated Barrier registration PASS (slot {}, pool {}); GPU engine commands blocked\n",
+                    slot,
                     pool_id
                 );
             }

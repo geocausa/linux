@@ -20,6 +20,7 @@ use crate::fw::channels::{
 };
 use crate::fw::types::*;
 use crate::fw::workqueue::*;
+use crate::gpu::GpuManager as _;
 use crate::no_debug;
 use crate::object::OpaqueGpuObject;
 use crate::{
@@ -908,12 +909,14 @@ impl WorkQueue::ver {
         self.info_pointer
     }
 
-    /// Bounded G15 publication probe: publish a freshly-created QueueInfo with
-    /// wptr=0 and Apple's untouched stamp-index sentinel (0x80), wait until
-    /// RTKit consumes the accelerator-ring entry, then retire the shared
-    /// scheduler/context resource synchronously before any queue backing can be
-    /// dropped. No command-ring entry is ever made visible.
-    pub(crate) fn g15_publish_empty(&self, gpu: &gpu::GpuManager::ver) -> Result {
+    /// Bounded G15 scheduler-registration probe. Publish exactly one firmware
+    /// Barrier/type-4 record which waits on the allocation-zero Event slot 0
+    /// stamp, then synchronously retire the scheduler/context resource with
+    /// native G15 ReleaseResource. No GPU engine command is present.
+    pub(crate) fn g15_register_barrier(
+        self: &Arc<Self>,
+        gpu: &gpu::GpuManager::ver,
+    ) -> Result {
         #[ver(G != G15)]
         {
             let _ = gpu;
@@ -922,7 +925,16 @@ impl WorkQueue::ver {
 
         #[ver(G == G15)]
         {
-            let (context, pipe_type, priority, info_pointer) = {
+            let (
+                context,
+                pipe_type,
+                priority,
+                info_pointer,
+                event_slot,
+                wait_stamp,
+                wait_value,
+                stamp_self,
+            ) = {
                 let mut inner = self.inner.lock();
 
                 if !inner.new
@@ -934,42 +946,128 @@ impl WorkQueue::ver {
                     return Err(EBUSY);
                 }
 
-                // The probe is deliberately one-shot even if transport fails.
-                // A second new-queue registration against a context whose first
-                // outcome is uncertain would be a strictly weaker safety model.
-                inner.new = false;
+                let event = inner.event_manager.get(inner.last_token, self.clone())?;
+                let cur = event.current();
+                let event_slot: u8 = event.slot().try_into()?;
+
+                // This remains the exact E059 discriminator rather than a
+                // generalized command path: the first EventManager slot is 0,
+                // its private FW stamp backing is allocation-zero, and wait 0
+                // is therefore already satisfied before publication.
+                if event_slot != 0 || cur.raw() != 0 {
+                    return Err(EBUSY);
+                }
+
+                let wait_stamp = event.fw_stamp_pointer();
+                let stamp_self = cur.next();
+                inner.last_token = Some(event.token());
+                inner.last_submitted = Some(cur);
+                inner.last_completed = Some(cur);
+                inner.event = Some((event, cur));
+
                 let context = inner
                     .info
                     .with(|_raw, info_inner| info_inner.gpu_context.clone());
-                (context, inner.pipe_type, inner.priority, self.info_pointer)
+                (
+                    context,
+                    inner.pipe_type,
+                    inner.priority,
+                    self.info_pointer,
+                    event_slot,
+                    wait_stamp,
+                    cur,
+                    stamp_self,
+                )
             };
 
-            // Mark before the first possible transport side effect. A failed or
-            // timed-out send must be treated as potentially firmware-visible.
+            let barrier = {
+                let mut alloc = gpu.alloc();
+                // `try_init!` binds field names internally; keep the second
+                // identical pointer under a distinct local as E059 did.
+                let wait_stamp_2 = wait_stamp;
+                alloc.private.new_init(
+                    pin_init::zeroed::<fw::workqueue::Barrier::ver>(),
+                    |_inner, _p| {
+                        try_init!(fw::workqueue::raw::Barrier::ver {
+                            tag: fw::workqueue::CommandType::Barrier,
+                            wait_stamp,
+                            wait_stamp_2,
+                            wait_value,
+                            wait_slot: event_slot as u32,
+                            stamp_self,
+                            uuid: 0xffffbbbb,
+                            external_barrier: 0,
+                            internal_barrier_type: 1,
+                            padding: Default::default(),
+                        })
+                    },
+                )?
+            };
+            let barrier_va = barrier.gpu_va().get();
+
+            {
+                let mut inner = self.inner.lock();
+                if !inner.new
+                    || inner.wptr != 0
+                    || !inner.pending.is_empty()
+                    || inner.pending_jobs != 0
+                    || inner.event.as_ref().map(|e| e.0.slot()) != Some(event_slot as u32)
+                {
+                    return Err(EBUSY);
+                }
+
+                inner.info.ring[0] = barrier_va;
+                inner.info.state.with(|raw, _inner| {
+                    raw.cpu_wptr.store(1, Ordering::Release);
+                });
+                inner.wptr = 1;
+                // One-shot even if transport becomes uncertain.
+                inner.new = false;
+            }
+
+            dev_info!(
+                context.dev.as_ref(),
+                "T8122 G15 E169 barrier registration slot={} barrier={:#x} wptr=1 wait=0 stamp_self={:?}\n",
+                event_slot,
+                barrier_va,
+                stamp_self
+            );
+
+            // Mark before the first transport side effect. Queue::drop() will
+            // retain QueueInfo backing if release does not reach known-good.
             context.mark_published_to_firmware();
 
-            let publish_result =
-                gpu.g15_publish_empty_queue(pipe_type, priority, info_pointer);
+            let publish_result = gpu.g15_publish_barrier_queue(
+                pipe_type,
+                priority,
+                info_pointer,
+                event_slot,
+                1,
+            );
+
+            // If pipe delivery/retirement is uncertain, retain the command
+            // backing so delayed firmware cannot fetch a freed Barrier object.
+            if publish_result.is_err() {
+                core::mem::forget(barrier);
+            }
 
             let fields = context
                 .data()
                 .with(|raw, _inner| raw.g15_release_resource_fields());
             dev_info!(
                 context.dev.as_ref(),
-                "T8122 G15 E033 empty QueueInfo publish result={:?}, context fields={:02x?}\n",
+                "T8122 G15 E169 QueueInfo registration result={:?}, context fields={:02x?}\n",
                 publish_result,
                 fields
             );
 
-            // Opcode 0x11 is also a proven no-op when ctx0/ctx1 are still 0xff,
-            // so it is safe to issue after an uncertain publication attempt.
             let release_result = gpu.release_context_now(context.data());
             if release_result.is_ok() {
                 context.mark_released_from_firmware();
             }
             dev_info!(
                 context.dev.as_ref(),
-                "T8122 G15 E033 ReleaseResource result={:?}\n",
+                "T8122 G15 E169 ReleaseResource result={:?}\n",
                 release_result
             );
 

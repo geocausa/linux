@@ -69,6 +69,8 @@ pub(crate) trait Queue: Send + Sync {
 
     fn preflight_g15_lazy_compute_channel(&mut self) -> Result<u64>;
 
+    fn preflight_g15_barrier_registration(&mut self) -> Result<(u32, u64)>;
+
     fn submit(
         &mut self,
         id: u64,
@@ -1828,6 +1830,54 @@ impl Queue for Queue::ver {
                 .downcast::<gpu::GpuManager::ver>()
                 .map_err(|_| EIO)?;
             self.g15_ensure_unpublished_nonforeground_compute_channel(&gpu)
+        }
+    }
+
+
+    fn preflight_g15_barrier_registration(&mut self) -> Result<(u32, u64)> {
+        #[ver(G != G15)]
+        {
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            let gpu = (*self.dev)
+                .gpu
+                .clone()
+                .arc_as_any()
+                .downcast::<gpu::GpuManager::ver>()
+                .map_err(|_| EIO)?;
+
+            // Keep firmware-visible VM context exposure narrower than the
+            // fallible channel construction. E168 already proves this complete
+            // channel/pool owner graph can be assembled and retired privately.
+            let pool_id = self.g15_ensure_unpublished_nonforeground_compute_channel(&gpu)?;
+
+            // E059/E060 kept the GPTBAT bind guard alive through QueueInfo
+            // registration and native ReleaseResource. Preserve that lifetime
+            // exactly; drop it only after both transport stages complete.
+            let bind = (*self.dev).gpu.bind_vm(&self.vm)?;
+            let slot = bind.slot();
+
+            gpu.g15_set_command_submission_enabled(true)?;
+            let registration_result = self
+                .q_comp
+                .as_ref()
+                .ok_or(EIO)?
+                .wq
+                .g15_register_barrier(&gpu);
+
+            // An ambiguous registration/release failure leaves the q4 gate on
+            // and QueueInfo backing retained fail-closed until reboot. Restore
+            // the gate only after the complete known-good E060 lifecycle.
+            if registration_result.is_ok() {
+                gpu.g15_set_command_submission_enabled(false)?;
+            }
+            registration_result?;
+
+            core::mem::drop(bind);
+            Ok((slot, pool_id))
         }
     }
 

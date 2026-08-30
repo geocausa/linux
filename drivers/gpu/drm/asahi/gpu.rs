@@ -2448,18 +2448,21 @@ impl GpuManager::ver {
         }
     }
 
-    /// Publish a fresh G15 QueueInfo without publishing any command-ring
-    /// entry. RTKit-2419 copies wptr=0 into QueueInfo +0x28 and returns from the
-    /// scheduler walker immediately because QueueInfo +0x20 is also zero.
-    pub(crate) fn g15_publish_empty_queue(
+    /// Publish the bounded G15 QueueInfo registration record. The caller owns
+    /// one already-satisfied firmware Barrier at ring[0], so `wptr=1` and the
+    /// EventManager-owned slot are firmware-visible without exposing any
+    /// RunVertex/RunFragment/RunCompute command.
+    pub(crate) fn g15_publish_barrier_queue(
         &self,
         pipe_type: PipeType,
         priority: u32,
         work_queue: fw::types::GpuWeakPointer<fw::workqueue::QueueInfo::ver>,
+        event_slot: u8,
+        wptr: u16,
     ) -> Result {
         #[ver(G != G15)]
         {
-            let _ = (pipe_type, priority, work_queue);
+            let _ = (pipe_type, priority, work_queue, event_slot, wptr);
             return Err(EINVAL);
         }
 
@@ -2500,10 +2503,10 @@ impl GpuManager::ver {
                 g15_timestamp: U64(workqueue::g15_submission_timestamp()),
                 work_queue: Some(work_queue),
                 g15_pipe_type: pipe_type,
-                g15_wptr: 0,
-                // Exact untouched IOGPUChannel::stampIndex sentinel. Firmware
-                // has an explicit 0x80 path and no event object is allocated.
-                g15_event_slot: 0x80,
+                g15_wptr: wptr,
+                // E059 proved that the scheduler needs the EventManager-owned
+                // slot when ring[0] contains the satisfied Barrier record.
+                g15_event_slot: event_slot,
                 g15_is_new: true,
             };
 

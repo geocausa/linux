@@ -372,7 +372,7 @@ impl platform::Driver for AsahiDriver {
             drm::driver::Registration::new_foreign_owned(&drm, pdev.as_ref(), 0)?;
             dev_info!(
                 pdev.as_ref(),
-                "T8122 G15 E166 signed VM-context + lazy-CL probes ready; QueueInfo/commands blocked\n"
+                "T8122 G15 E169 signed VM-context + lazy-CL + Barrier-registration probes ready; GPU engine commands blocked\n"
             );
             return Ok(Self { drm });
         }
