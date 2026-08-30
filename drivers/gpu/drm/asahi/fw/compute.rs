@@ -144,20 +144,21 @@ pub(crate) mod raw {
         pub(crate) registers: job::raw::RegisterArray,
         #[ver(G != G15)]
         pub(crate) __pad1: Array<0x20, u8>,
-        // processComputeSetup() snapshots AGXCommandQueue state into a local
-        // record. In the active branch descriptor +0x3f0 receives queue +0x20
-        // and descriptor +0x3f8 receives queue +0x38; submitBuffer() exports the
-        // latter qword around the command's 4-byte gap.
+        // Exact 23J220 AGXComputeHardwareKernelCommand::parseAndValidate()
+        // copies raw Compute +0xc0 -> wrapper +0x20 and raw +0xd8 -> wrapper
+        // +0x38. The register-specialized processCompute()/processComputeSetup()
+        // path carries that Compute wrapper to the pre-micro snapshot: descriptor
+        // +0x3f0 receives wrapper +0x20 and +0x3f8 receives wrapper +0x38.
         #[ver(G == G15)]
         pub(crate) g15_pre_micro_730: Array<0x10, u8>,
         #[ver(G == G15)]
-        pub(crate) g15_queue_state_20_740: U64,
+        pub(crate) g15_raw_compute_c0_740: U64,
         #[ver(G == G15)]
-        pub(crate) g15_queue_state_38_lo_748: U32,
+        pub(crate) g15_raw_compute_d8_lo_748: U32,
         #[ver(G == G15)]
         pub(crate) g15_pre_micro_74c: Array<0x04, u8>,
         #[ver(G == G15)]
-        pub(crate) g15_queue_state_38_hi_750: U32,
+        pub(crate) g15_raw_compute_d8_hi_750: U32,
         #[ver(G == G15)]
         pub(crate) g15_pre_micro_754: Array<0x0c, u8>,
         pub(crate) microsequence: GpuPointer<'a, &'a [u8]>,
@@ -253,10 +254,13 @@ pub(crate) mod raw {
     const _: [(); 0x1c] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, unk_pointee)];
     const _: [(); 0x20] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, registers)];
     const _: [(); 0x730] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_pre_micro_730)];
-    const _: [(); 0x740] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_queue_state_20_740)];
-    const _: [(); 0x748] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_queue_state_38_lo_748)];
+    const _: [(); 0x740] =
+        [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_raw_compute_c0_740)];
+    const _: [(); 0x748] =
+        [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_raw_compute_d8_lo_748)];
     const _: [(); 0x74c] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_pre_micro_74c)];
-    const _: [(); 0x750] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_queue_state_38_hi_750)];
+    const _: [(); 0x750] =
+        [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_raw_compute_d8_hi_750)];
     const _: [(); 0x754] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_pre_micro_754)];
     const _: [(); 0x760] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, microsequence)];
     const _: [(); 0x768] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, microsequence_size)];
