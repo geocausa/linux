@@ -261,9 +261,9 @@ impl drm::file::DriverFile for File {
 unsafe impl AnyBitPattern for uapi::drm_asahi_gem_bind_op {}
 
 impl File {
-    /// E161 G15 userspace gate beyond the host GEM-lifecycle boundary. File
-    /// discovery, private VM lifecycle, GEM_CREATE and GEM_MMAP_OFFSET are
-    /// allowed; GPU mapping/publication, Queue, and submission stay fail-closed.
+    /// E162 G15 userspace gate beyond the unbound VM-mapping boundary. Normal
+    /// VM_BIND may edit only the private bank-0 root; special shared mappings,
+    /// Queue/context publication, and submission remain fail-closed.
     fn reject_g15_client_mutation(device: &AsahiDevice) -> Result<()> {
         if device.gpu.get_cfg().gpu_gen == hw::GpuGen::G15 {
             Err(ENODEV)
@@ -622,7 +622,6 @@ impl File {
         data: &uapi::drm_asahi_vm_bind,
         file: &DrmFile,
     ) -> Result<u32> {
-        Self::reject_g15_client_mutation(device)?;
         mod_dev_dbg!(
             device,
             "[File {} VM {}]: IOCTL: vm_bind\n",
