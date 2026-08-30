@@ -248,6 +248,12 @@ pub(crate) struct GpuManager {
     g15_preflight_rx_doorbells: AtomicU64,
     #[ver(G == G15)]
     g15_preflight_unknown_messages: AtomicU64,
+    /// Exact J615 accelerator-global UMA host state. E138 places only the
+    /// 0x100 HardwareBuffer-ID namespace plus zero-seeded pool-ID sequence;
+    /// it allocates no UMAPool and has no live Queue/RunCompute consumer.
+    #[ver(G == G15)]
+    #[pin]
+    g15_uma: Mutex<buffer::G15DeviceUmaOwnerState>,
     #[pin]
     alloc: Mutex<KernelAllocators>,
     io_mappings: KVec<mmu::KernelMapping>,
@@ -1908,6 +1914,9 @@ impl GpuManager::ver {
             GFP_KERNEL,
         )?;
 
+        #[ver(G == G15)]
+        let g15_uma = buffer::G15DeviceUmaOwnerState::new_device_global()?;
+
         let x = UniqueArc::pin_init(
             try_pin_init!(GpuManager::ver {
                 dev: dev.into(),
@@ -1925,6 +1934,8 @@ impl GpuManager::ver {
                 g15_preflight_rx_doorbells: AtomicU64::new(0),
                 #[ver(G == G15)]
                 g15_preflight_unknown_messages: AtomicU64::new(0),
+                #[ver(G == G15)]
+                g15_uma <- new_mutex!(g15_uma, "g15_uma"),
                 event_manager,
                 alloc <- new_mutex!(alloc, "alloc"),
                 #[ver(G != G15)]

@@ -308,9 +308,10 @@ impl G15HardwareBufferIdManager {
 /// namespaces together here so a future live owner cannot accidentally create
 /// one manager/counter per Queue.
 ///
-/// This type remains definition-only. In particular, it is not instantiated in
-/// GpuManager yet, and no caller may treat the pool-ID sequence as Compute-only:
-/// eventual TA/3D/CL pool creation must all consume this same sequence.
+/// E138 places this host-only state once in the G15 `GpuManager`, matching the
+/// accelerator-global lifetime without allocating a UMAPool or consuming a pool
+/// ID. No caller may treat the pool-ID sequence as Compute-only: eventual
+/// TA/3D/CL pool creation must all consume this same sequence.
 #[allow(dead_code)]
 pub(crate) struct G15DeviceUmaOwnerState {
     hardware_buffer_ids: G15HardwareBufferIdManager,
@@ -330,7 +331,7 @@ impl G15UmaPoolIdentity {
 
 #[allow(dead_code)]
 impl G15DeviceUmaOwnerState {
-    pub(crate) fn new_unpublished() -> Result<Self> {
+    pub(crate) fn new_device_global() -> Result<Self> {
         Ok(Self {
             hardware_buffer_ids: G15HardwareBufferIdManager::new()?,
             // Exact kernel-image initial value of the global pool-ID counter.
