@@ -1717,6 +1717,44 @@ impl Queue::ver {
         mod_dev_dbg!(dev, "[Queue {}] Queue created\n", id);
         Ok(ret)
     }
+
+    /// E156 definition-only lazy first-CL transaction. Exact 23J220 constructs
+    /// the WorkQueue/channel pair privately and publishes the new CL WorkQueue
+    /// in the command-queue array only after channel init/priority succeeds.
+    /// Linux already owns the inherited Compute WorkQueue, so serialize on its
+    /// E155 child slot, construct the complete channel into a local RAII value,
+    /// and publish `Some` only after every constructor step succeeds.
+    #[allow(dead_code)]
+    fn g15_ensure_unpublished_nonforeground_compute_channel(
+        &self,
+        gpu: &gpu::GpuManager::ver,
+    ) -> Result {
+        #[ver(G != G15)]
+        {
+            let _ = gpu;
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            let subqueue = self.q_comp.as_ref().ok_or(EINVAL)?;
+            let slot = subqueue._g15_compute_channel.as_ref().ok_or(EINVAL)?;
+            let mut channel = slot.lock();
+            if channel.is_some() {
+                return Ok(());
+            }
+
+            // Keep the slot lock across construction. This prevents duplicate
+            // pool/resource/channel acquisition if a later activation boundary
+            // permits concurrent first-use attempts. No existing lock path can
+            // reach this private slot in reverse; E156 adds no caller.
+            let new_channel = self
+                .inner
+                .g15_assemble_unpublished_nonforeground_compute_channel(gpu)?;
+            *channel = Some(new_channel);
+            Ok(())
+        }
+    }
 }
 
 const SQ_RENDER: usize = 0;
