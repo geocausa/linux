@@ -366,15 +366,14 @@ impl platform::Driver for AsahiDriver {
 
             (*drm).gpu.init()?;
 
-            // E157 bounded persistent checkpoint. Successful init means MSG_INIT
-            // was consumed, q21 firmware_ready reached 1, and E152's q22 mapping
-            // notifier activated from an empty ring. Keep the manager/RTKit alive
-            // by binding the platform driver, but do not register DRM yet: no
-            // File::open(), VM, Queue, channel ensure, QueueInfo publication, or
-            // command path can be reached in this checkpoint.
+            // E158 advances exactly one boundary beyond E157: register DRM only
+            // after the persistent manager reaches q21-ready/q22-active. G15
+            // File::open() is independently fail-closed in this checkpoint, so
+            // no userspace VM/Queue/QueueInfo/channel/submission path can start.
+            drm::driver::Registration::new_foreign_owned(&drm, pdev.as_ref(), 0)?;
             dev_info!(
                 pdev.as_ref(),
-                "T8122 G15 E157 persistent manager + RTKit + q21-ready/q22-active PASS; DRM registration blocked\n"
+                "T8122 G15 E158 persistent manager + DRM registration PASS; all G15 DRM file opens blocked\n"
             );
             return Ok(Self { drm });
         }

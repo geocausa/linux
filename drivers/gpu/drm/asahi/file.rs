@@ -241,6 +241,12 @@ impl drm::file::DriverFile for File {
         debug::update_debug_flags();
 
         let gpu = &device.gpu;
+        if gpu.get_cfg().gpu_gen == hw::GpuGen::G15 {
+            // E158 registration-only checkpoint. Expose the render node while
+            // rejecting every G15 client before File state, VM allocation,
+            // Queue construction, q22 runtime mappings, or submission can exist.
+            return Err(ENODEV);
+        }
         let id = gpu.ids().file.next();
         let owner_pid: u32 = kernel::current!()
             .group_leader()
