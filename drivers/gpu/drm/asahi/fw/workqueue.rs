@@ -333,6 +333,14 @@ pub(crate) const G15_J615_CL_UNCACHED_CHANNEL_VALUE_50: u32 =
     G15_J615_CL_SECOND_CONSTRUCTOR_INTEGER << 4;
 const _: [(); 0x500] = [(); G15_J615_CL_UNCACHED_CHANNEL_VALUE_50 as usize];
 pub(crate) const G15_J615_CL_PRIORITY_INTEGER_ARGUMENT: u32 = 2;
+/// Exact E154 non-foreground IOGPU priority branch. `updatePriority()` checks
+/// `clientHasPrivilege(task, "foreground")`; when that privilege is absent it
+/// selects queue +0x448, whose normal constructor value is 2. Linux currently
+/// has no equivalent foreground entitlement model, so the dormant first-CL
+/// profile supports only this mechanically closed branch.
+pub(crate) const G15_J615_NONFOREGROUND_EFFECTIVE_PRIORITY: u32 = 2;
+/// Exact `chooseCLWorkQueue()` QoS argument when effective priority != 1.
+pub(crate) const G15_J615_NONFOREGROUND_CL_QOS_ARGUMENT: u32 = 2;
 pub(crate) const G15_J615_CDM_BACKOFF_TIMEOUT: u8 = 4;
 
 /// Exact six-field priority image written by

@@ -211,6 +211,11 @@ pub(crate) enum Object {
 // #[pin_data]
 pub(crate) struct File {
     id: u64,
+    // E154 exact J615 IOGPUDevice +0x60 counterpart. Apple snapshots
+    // proc_pid(get_bsdtask_info(task)) at per-client device construction and
+    // copies it through IOGPUCommandQueue +0x490 -> AGXChannel +0x4c. Capture
+    // the opening process once so fd handoff cannot silently change identity.
+    owner_pid: u32,
     // #[pin]
     vms: xarray::XArray<KBox<Vm>>,
     // #[pin]
@@ -237,9 +242,14 @@ impl drm::file::DriverFile for File {
 
         let gpu = &device.gpu;
         let id = gpu.ids().file.next();
+        let owner_pid: u32 = kernel::current!()
+            .group_leader()
+            .pid()
+            .try_into()
+            .map_err(|_| EINVAL)?;
 
         mod_dev_dbg!(device, "[File {}]: DRM device opened\n", id);
-        Ok(KBox::pin_init(File::new(id), GFP_KERNEL)?)
+        Ok(KBox::pin_init(File::new(id, owner_pid), GFP_KERNEL)?)
     }
 
     fn as_raw(&self) -> *mut bindings::drm_file {
@@ -263,7 +273,7 @@ impl File {
         }
     }
 
-    fn new(id: u64) -> impl PinInit<Self, Error> {
+    fn new(id: u64, owner_pid: u32) -> impl PinInit<Self, Error> {
         unsafe {
             pin_init::pin_init_from_closure(move |slot: *mut Self| {
                 let raw_vms = addr_of_mut!((*slot).vms);
@@ -281,6 +291,7 @@ impl File {
                     .__pinned_init(raw_objects)?;
 
                 (*slot).id = id;
+                (*slot).owner_pid = owner_pid;
                 Ok(())
             })
         }
@@ -1016,6 +1027,7 @@ impl File {
             g15_ualloc_range5_uncached,
             g15_ualloc_range5_cached,
             g15_uma_shared_pools,
+            file.inner().owner_pid,
             // TODO: Plumb deeper the enum
             uapi::drm_asahi_priority_DRM_ASAHI_PRIORITY_REALTIME - data.priority,
             data.usc_exec_base,

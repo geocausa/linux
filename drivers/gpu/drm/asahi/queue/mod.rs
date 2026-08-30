@@ -227,19 +227,6 @@ impl G15ClCommandResourceBacking {
     }
 }
 
-/// Remaining exact runtime inputs required when the dormant CL/Compute channel
-/// itself is constructed. Resource indices/FWVAs and timestamp mode are no
-/// longer caller inputs: E147-E153 derive them from the real global leases and
-/// exact ordinary queue construction. These three values remain explicit until
-/// their existing Linux producers are bridged.
-#[derive(Clone, Copy, Debug)]
-#[allow(dead_code)]
-struct G15ComputeChannelInitInputs {
-    channel_4c_value: u32,
-    effective_priority: u32,
-    queue_qos: u32,
-}
-
 /// First phase of the E112 two-phase transaction. The rotating slots and
 /// command-independent UMA/HWMetrics assets are known, but the SKU bytes have
 /// not been serialized or written because the RunCompute FWVA is not known yet.
@@ -717,6 +704,11 @@ pub(crate) struct QueueInner {
     _g15_shared_bank1: Option<mmu::G15SharedBank1>,
     #[ver(G == G15)]
     _g15_mapping_notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
+    // E154 exact per-client process identity captured at DRM File open. Apple
+    // copies IOGPUDevice +0x60 (proc_pid of the owning task) through command
+    // queue +0x490 into AGXChannel +0x4c / selected QueueInfo +0x50.
+    #[ver(G == G15)]
+    _g15_owner_pid: u32,
     // E153 exact AGXCommandQueue-lifetime mapped selections from the global
     // timestamp/scheduler stacks, initialized once during Queue construction.
     #[ver(G == G15)]
@@ -1132,17 +1124,17 @@ impl G15UnpublishedComputeChannel::ver {
 #[versions(AGX)]
 #[allow(dead_code)]
 impl QueueInner::ver {
-    /// Assemble the exact owner tiers required by a future lazy CL/Compute
-    /// channel, but return only a private host object with no WorkQueue/submit
-    /// attachment and no firmware-command writer.
-    fn g15_assemble_unpublished_compute_channel(
+    /// Assemble the exact owner tiers for the future first normal
+    /// non-foreground J615 CL/Compute channel, but return only a private host
+    /// object with no WorkQueue/submit attachment and no firmware-command
+    /// writer. Foreground-priority policy remains a separate future bridge.
+    fn g15_assemble_unpublished_nonforeground_compute_channel(
         &self,
         gpu: &gpu::GpuManager::ver,
-        channel: G15ComputeChannelInitInputs,
     ) -> Result<G15UnpublishedComputeChannel::ver> {
         #[ver(G != G15)]
         {
-            let _ = (gpu, channel);
+            let _ = gpu;
             return Err(EINVAL);
         }
 
@@ -1176,11 +1168,18 @@ impl QueueInner::ver {
             // lifetime, using the already-initialized Queue timestamp/scheduler
             // leases. Any later failure drops all three selections.
             let fw_channel_resources = gpu.g15_select_channel_resources()?;
+            // E154 closes the final E127-era scalar inputs. Apple sources
+            // QueueInfo +0x50 from the owning process PID. Its normal
+            // non-foreground updatePriority() branch selects effective type 2,
+            // and chooseCLWorkQueue() then supplies literal QoS 2. Linux has no
+            // IOGPU foreground entitlement model yet, so keep the dormant path
+            // fail-closed to that exact non-foreground profile rather than
+            // inventing a foreground mapping.
             let initialized_channel_resources = fw_channel_resources.initialize_j615_cl(
                 &self._g15_fw_queue_resources,
-                channel.channel_4c_value,
-                channel.effective_priority,
-                channel.queue_qos,
+                self._g15_owner_pid,
+                fw::workqueue::G15_J615_NONFOREGROUND_EFFECTIVE_PRIORITY,
+                fw::workqueue::G15_J615_NONFOREGROUND_CL_QOS_ARGUMENT,
             )?;
             let owners = {
                 let mut range5_uncached = range5_uncached.lock();
@@ -1465,6 +1464,7 @@ impl Queue::ver {
         _g15_ualloc_range5_uncached: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
         _g15_ualloc_range5_cached: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
         _g15_uma_shared_pools: Option<Arc<Mutex<buffer::G15ClientUmaPoolContainerState>>>,
+        _owner_pid: u32,
         _g15_shared_bank1: Option<mmu::G15SharedBank1>,
         _g15_mapping_notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
         _g15_fw_queue_resources: Option<buffer::G15FirmwareCommandQueueResourceLeases>,
@@ -1621,6 +1621,8 @@ impl Queue::ver {
                 _g15_shared_bank1: g15_lazy_shared_bank1,
                 #[ver(G == G15)]
                 _g15_mapping_notifier: g15_lazy_mapping_notifier,
+                #[ver(G == G15)]
+                _g15_owner_pid: _owner_pid,
                 #[ver(G == G15)]
                 _g15_fw_queue_resources: g15_fw_queue_resources,
                 #[ver(G == G15)]

@@ -312,6 +312,7 @@ pub(crate) trait GpuManager: Send + Sync {
         g15_ualloc_range5_uncached: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
         g15_ualloc_range5_cached: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
         g15_uma_shared_pools: Option<Arc<Mutex<buffer::G15ClientUmaPoolContainerState>>>,
+        owner_pid: u32,
         priority: u32,
         usc_exec_base: u64,
     ) -> Result<KBox<dyn queue::Queue>>;
@@ -2875,6 +2876,7 @@ impl GpuManager for GpuManager::ver {
         g15_ualloc_range5_uncached: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
         g15_ualloc_range5_cached: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
         g15_uma_shared_pools: Option<Arc<Mutex<buffer::G15ClientUmaPoolContainerState>>>,
+        owner_pid: u32,
         priority: u32,
         usc_exec_base: u64,
     ) -> Result<KBox<dyn queue::Queue>> {
@@ -2901,6 +2903,7 @@ impl GpuManager for GpuManager::ver {
                 g15_ualloc_range5_uncached,
                 g15_ualloc_range5_cached,
                 g15_uma_shared_pools,
+                owner_pid,
                 self.uat.g15_shared_bank1(),
                 g15_mapping_notifier,
                 g15_fw_queue_resources,
