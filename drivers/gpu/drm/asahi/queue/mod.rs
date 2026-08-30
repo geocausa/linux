@@ -761,10 +761,11 @@ impl G15ClCommandResourceBacking {
     }
 }
 
-/// Definition-only E127 selection inputs for one coherent local CL-channel
-/// image. Every firmware resource stack keeps its own index; callers must pass
-/// them independently. Runtime queue values that are not yet bridged from the
-/// live constructor remain explicit rather than being guessed.
+/// Definition-only E127 local-backing selection inputs for one coherent
+/// CL-channel byte image. E148 now separately owns the exact global stack
+/// indices as lifetime leases; these local indices are proof coordinates only
+/// and must never be equated with those global selectors. Runtime queue values
+/// that are not yet bridged remain explicit rather than being guessed.
 #[derive(Clone, Copy, Debug)]
 #[allow(dead_code)]
 struct G15ChannelPrepareInputs {
@@ -1310,6 +1311,10 @@ pub(crate) struct QueueInner {
     _g15_shared_bank1: Option<mmu::G15SharedBank1>,
     #[ver(G == G15)]
     _g15_mapping_notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
+    // E148 exact AGXCommandQueue-lifetime logical selections from the global
+    // timestamp and scheduler resource stacks. These own no GPU backing yet.
+    #[ver(G == G15)]
+    _g15_fw_queue_resources: buffer::G15FirmwareCommandQueueResourceLeases,
     // Exact 0x2800 GPU-facing PM record backing. Apple uses range 5 with
     // compact PTE class 0x300; the separate 0x40 tail is intentionally absent.
     #[ver(G == G15)]
@@ -1702,11 +1707,12 @@ impl G15StockEmptyAssetGuards::ver {
 #[versions(AGX)]
 #[allow(dead_code)]
 struct G15UnpublishedComputeChannel {
-    // Keep channel-local resources/guards physically ahead of the pool
-    // reference so normal Rust field-drop order releases the direct pool
-    // lifetime only after the channel-side ownership has been torn down.
+    // Keep channel-local resources/guards and the exact global resource-stack
+    // leases physically ahead of the pool reference so normal Rust field-drop
+    // order tears them down before the modeled direct pool lifetime.
     owners: G15StockEmptyComputeChannelOwners,
     guards: G15StockEmptyAssetGuards::ver,
+    _fw_channel_resources: buffer::G15FirmwareChannelResourceLeases,
     pool: buffer::G15ClientUmaComputeChannelRef,
 }
 
@@ -1759,7 +1765,12 @@ impl QueueInner::ver {
             // Exact AGXChannel::init() releases the shared-container selection
             // lock before continuing with channel-local resources. `pool` now
             // owns the modeled direct/active reference while this allocation
-            // proceeds independently. Any failure drops that reference.
+            // proceeds independently. E148 additionally acquires the three
+            // device-global channel resource-stack indices at this lifetime.
+            // They are logical leases only: E127's local backing slot inputs
+            // remain deliberately independent until real global GPU backings
+            // replace them. Any later failure drops all three leases.
+            let fw_channel_resources = gpu.g15_select_channel_resources()?;
             let owners = {
                 let mut range5_uncached = range5_uncached.lock();
                 G15StockEmptyComputeChannelOwners::new_unpublished(
@@ -1776,6 +1787,7 @@ impl QueueInner::ver {
                 pool,
                 owners,
                 guards,
+                _fw_channel_resources: fw_channel_resources,
             })
         }
     }
@@ -2043,6 +2055,7 @@ impl Queue::ver {
         _g15_uma_shared_pools: Option<Arc<Mutex<buffer::G15ClientUmaPoolContainerState>>>,
         _g15_shared_bank1: Option<mmu::G15SharedBank1>,
         _g15_mapping_notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
+        _g15_fw_queue_resources: Option<buffer::G15FirmwareCommandQueueResourceLeases>,
         event_manager: Arc<event::EventManager>,
         mgr: &buffer::BufferManager::ver,
         id: u64,
@@ -2094,6 +2107,9 @@ impl Queue::ver {
         let g15_lazy_shared_bank1 = _g15_shared_bank1.clone();
         #[ver(G == G15)]
         let g15_lazy_mapping_notifier = _g15_mapping_notifier.clone();
+
+        #[ver(G == G15)]
+        let g15_fw_queue_resources = _g15_fw_queue_resources.ok_or(EINVAL)?;
 
         #[ver(G == G15)]
         let g15_pm_scene_alloc = _g15_ualloc_range5_uncached
@@ -2191,6 +2207,8 @@ impl Queue::ver {
                 _g15_shared_bank1: g15_lazy_shared_bank1,
                 #[ver(G == G15)]
                 _g15_mapping_notifier: g15_lazy_mapping_notifier,
+                #[ver(G == G15)]
+                _g15_fw_queue_resources: g15_fw_queue_resources,
                 #[ver(G == G15)]
                 g15_pm_records,
                 #[ver(G == G15)]

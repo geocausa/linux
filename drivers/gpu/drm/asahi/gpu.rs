@@ -254,6 +254,11 @@ pub(crate) struct GpuManager {
     #[ver(G == G15)]
     #[pin]
     g15_uma: Mutex<buffer::G15DeviceUmaOwnerState>,
+    /// E147/E148 exact accelerator-global firmware resource-stack bookkeeping.
+    /// Queue/channel lifetimes may hold logical index leases, but no GPU backing
+    /// or firmware-visible address is exposed by this host-only state.
+    #[ver(G == G15)]
+    g15_fw_resources: buffer::G15DeviceFirmwareResourceState,
     #[pin]
     alloc: Mutex<KernelAllocators>,
     io_mappings: KVec<mmu::KernelMapping>,
@@ -1917,6 +1922,8 @@ impl GpuManager::ver {
 
         #[ver(G == G15)]
         let g15_uma = buffer::G15DeviceUmaOwnerState::new_device_global()?;
+        #[ver(G == G15)]
+        let g15_fw_resources = buffer::G15DeviceFirmwareResourceState::new_device_global()?;
 
         let x = UniqueArc::pin_init(
             try_pin_init!(GpuManager::ver {
@@ -1937,6 +1944,8 @@ impl GpuManager::ver {
                 g15_preflight_unknown_messages: AtomicU64::new(0),
                 #[ver(G == G15)]
                 g15_uma <- new_mutex!(g15_uma, "g15_uma"),
+                #[ver(G == G15)]
+                g15_fw_resources,
                 event_manager,
                 alloc <- new_mutex!(alloc, "alloc"),
                 #[ver(G != G15)]
@@ -2287,6 +2296,38 @@ impl GpuManager::ver {
     #[allow(dead_code)]
     pub(crate) fn core_masks_packed(&self) -> &[u32] {
         self.dyncfg.id.core_masks_packed.as_slice()
+    }
+
+    /// E148 host-only command-queue lifetime selection from the two exact
+    /// device-global firmware resource stacks. No GPU backing/FWVA is exposed.
+    pub(crate) fn g15_select_command_queue_resources(
+        &self,
+    ) -> Result<buffer::G15FirmwareCommandQueueResourceLeases> {
+        #[ver(G != G15)]
+        {
+            return Err(EINVAL);
+        }
+        #[ver(G == G15)]
+        {
+            self.g15_fw_resources.select_command_queue_resources()
+        }
+    }
+
+    /// E148 dormant AGXChannel-lifetime selection from the three exact shared
+    /// channel resource stacks. The resulting global indices are bookkeeping
+    /// leases only and are not mapped onto E127's local proof backings.
+    #[allow(dead_code)]
+    pub(crate) fn g15_select_channel_resources(
+        &self,
+    ) -> Result<buffer::G15FirmwareChannelResourceLeases> {
+        #[ver(G != G15)]
+        {
+            return Err(EINVAL);
+        }
+        #[ver(G == G15)]
+        {
+            self.g15_fw_resources.select_channel_resources()
+        }
     }
 
     /// Definition-only E145 bridge from one client-VM weak-pool container to
@@ -2824,6 +2865,13 @@ impl GpuManager for GpuManager::ver {
         priority: u32,
         usc_exec_base: u64,
     ) -> Result<KBox<dyn queue::Queue>> {
+        // Exact E147/E148 command-queue-lifetime resource indices are selected
+        // before taking the general kernel allocator lock. Any later queue
+        // construction failure drops the pair and returns both global indices.
+        #[ver(G == G15)]
+        let g15_fw_queue_resources = Some(self.g15_select_command_queue_resources()?);
+        #[ver(G != G15)]
+        let g15_fw_queue_resources = None;
         let mut kalloc = self.alloc();
         let id = self.ids.queue.next();
         #[ver(G == G15)]
@@ -2842,6 +2890,7 @@ impl GpuManager for GpuManager::ver {
                 g15_uma_shared_pools,
                 self.uat.g15_shared_bank1(),
                 g15_mapping_notifier,
+                g15_fw_queue_resources,
                 self.event_manager.clone(),
                 &self.buffer_mgr,
                 id,

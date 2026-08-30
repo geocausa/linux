@@ -318,6 +318,339 @@ pub(crate) struct G15DeviceUmaOwnerState {
     next_pool_id: u64,
 }
 
+/// Exact 23J220 firmware resource-stack global index ceiling.
+///
+/// E147 closes the shared template bookkeeping at 0x800 global elements per
+/// stack. This host-only model intentionally owns no GPU backing yet; it models
+/// only the allocator transaction that must exist before E127's local backing
+/// proofs can be replaced by device-global owners.
+const G15_FIRMWARE_RESOURCE_MAX_SLOTS: u32 = 0x800;
+const G15_FIRMWARE_RESOURCE_INNER_BITS: u32 = 32;
+const G15_FIRMWARE_RESOURCE_OUTER_WORDS: usize =
+    G15_FIRMWARE_RESOURCE_MAX_SLOTS as usize / G15_FIRMWARE_RESOURCE_INNER_BITS as usize;
+
+/// Host-side exact bitmap/use-count state for one 23J220 firmware resource
+/// stack. Apple owns one instance per resource type under AGXFirmware.
+///
+/// E148 deliberately stops before GPU backing allocation. `capacity` therefore
+/// means the global slots represented by logically created backings, not mapped
+/// GPU memory. The first logical backing is present eagerly, matching E147's
+/// createInitialBacking() ordering, and further logical backings appear only
+/// when no free global slot remains.
+#[allow(dead_code)]
+struct G15FirmwareResourceStackState {
+    elements_per_backing: u32,
+    capacity: u32,
+    outer_free: u64,
+    inner_free: [u32; G15_FIRMWARE_RESOURCE_OUTER_WORDS],
+    block_live: KVec<u32>,
+}
+
+#[allow(dead_code)]
+impl G15FirmwareResourceStackState {
+    fn new(elements_per_backing: u32) -> Result<Self> {
+        if elements_per_backing == 0 || elements_per_backing > G15_FIRMWARE_RESOURCE_MAX_SLOTS {
+            return Err(EINVAL);
+        }
+
+        let max_backings = (G15_FIRMWARE_RESOURCE_MAX_SLOTS as usize)
+            .div_ceil(elements_per_backing as usize);
+        let mut block_live = KVec::with_capacity(max_backings, GFP_KERNEL)?;
+        // The exact host creates the first backing during firmware allocation.
+        block_live.push(0, GFP_KERNEL)?;
+
+        let capacity = elements_per_backing.min(G15_FIRMWARE_RESOURCE_MAX_SLOTS);
+        let mut state = Self {
+            elements_per_backing,
+            capacity,
+            outer_free: 0,
+            inner_free: [0; G15_FIRMWARE_RESOURCE_OUTER_WORDS],
+            block_live,
+        };
+        state.mark_free_range(0, capacity)?;
+        Ok(state)
+    }
+
+    fn mark_free_range(&mut self, start: u32, count: u32) -> Result {
+        let end = start.checked_add(count).ok_or(EOVERFLOW)?;
+        if end > G15_FIRMWARE_RESOURCE_MAX_SLOTS {
+            return Err(EINVAL);
+        }
+
+        for index in start..end {
+            let outer = (index / G15_FIRMWARE_RESOURCE_INNER_BITS) as usize;
+            let inner = index % G15_FIRMWARE_RESOURCE_INNER_BITS;
+            let mask = 1u32 << inner;
+            let word = self.inner_free.get_mut(outer).ok_or(EIO)?;
+            if *word & mask != 0 {
+                return Err(EIO);
+            }
+            *word |= mask;
+            self.outer_free |= 1u64 << outer;
+        }
+        Ok(())
+    }
+
+    /// Exact grow ordering at the bookkeeping layer: append one allocation
+    /// block, then expose only its newly introduced global slots as free. The
+    /// KVec is fully reserved at construction, so a failed push cannot leave
+    /// availability bits describing a nonexistent logical backing.
+    fn grow_logical_backing(&mut self) -> Result {
+        if self.capacity >= G15_FIRMWARE_RESOURCE_MAX_SLOTS {
+            return Err(ENOSPC);
+        }
+
+        self.block_live.push(0, GFP_KERNEL)?;
+        let start = self.capacity;
+        let count = self
+            .elements_per_backing
+            .min(G15_FIRMWARE_RESOURCE_MAX_SLOTS - start);
+        self.capacity = start.checked_add(count).ok_or(EOVERFLOW)?;
+        self.mark_free_range(start, count)
+    }
+
+    /// E147 exact two-level lowest-free selector. `trailing_zeros()` is the
+    /// direct semantic equivalent of Apple's rbit/clz sequence.
+    fn select(&mut self) -> Result<u32> {
+        if self.outer_free == 0 {
+            self.grow_logical_backing()?;
+        }
+
+        let outer = self.outer_free.trailing_zeros();
+        if outer as usize >= G15_FIRMWARE_RESOURCE_OUTER_WORDS {
+            return Err(EIO);
+        }
+        let inner_word = self.inner_free[outer as usize];
+        if inner_word == 0 {
+            return Err(EIO);
+        }
+        let inner = inner_word.trailing_zeros();
+        let index = outer
+            .checked_mul(G15_FIRMWARE_RESOURCE_INNER_BITS)
+            .and_then(|v| v.checked_add(inner))
+            .ok_or(EOVERFLOW)?;
+        if index >= self.capacity {
+            return Err(EIO);
+        }
+
+        let block = index / self.elements_per_backing;
+        let live = self.block_live.get_mut(block as usize).ok_or(EIO)?;
+        *live = live.checked_add(1).ok_or(EOVERFLOW)?;
+
+        let mask = 1u32 << inner;
+        self.inner_free[outer as usize] &= !mask;
+        if self.inner_free[outer as usize] == 0 {
+            self.outer_free &= !(1u64 << outer);
+        }
+        Ok(index)
+    }
+
+    /// Inverse of E147 selection at the common bitmap/use-count layer. Block
+    /// shrink/free policy is intentionally not modeled until its exact normal
+    /// J615 policy is separately closed; retaining a logical block is the
+    /// conservative compile-only behavior.
+    fn release(&mut self, index: u32) -> Result {
+        if index >= self.capacity {
+            return Err(EINVAL);
+        }
+        let outer = (index / G15_FIRMWARE_RESOURCE_INNER_BITS) as usize;
+        let inner = index % G15_FIRMWARE_RESOURCE_INNER_BITS;
+        let mask = 1u32 << inner;
+        if self.inner_free.get(outer).ok_or(EIO)? & mask != 0 {
+            return Err(EINVAL);
+        }
+
+        let block = index / self.elements_per_backing;
+        let live = self.block_live.get_mut(block as usize).ok_or(EIO)?;
+        if *live == 0 {
+            return Err(EIO);
+        }
+        *live -= 1;
+        self.inner_free[outer] |= mask;
+        self.outer_free |= 1u64 << outer;
+        Ok(())
+    }
+}
+
+/// One independently locked device-global firmware resource stack. A lease is
+/// the only public result of selection and returns its exact global index on
+/// drop, preventing future callers from forgetting the release transaction.
+#[derive(Clone)]
+#[allow(dead_code)]
+pub(crate) struct G15FirmwareResourceStackManager(
+    Arc<Mutex<G15FirmwareResourceStackState>>,
+);
+
+#[allow(dead_code)]
+impl G15FirmwareResourceStackManager {
+    fn select(&self) -> Result<G15FirmwareResourceLease> {
+        let index = self.0.lock().select()?;
+        Ok(G15FirmwareResourceLease {
+            manager: self.clone(),
+            index,
+        })
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) struct G15FirmwareResourceLease {
+    manager: G15FirmwareResourceStackManager,
+    index: u32,
+}
+
+#[allow(dead_code)]
+impl G15FirmwareResourceLease {
+    pub(crate) fn index(&self) -> u32 {
+        self.index
+    }
+}
+
+/// Exact command-queue-lifetime resource selections. E147 proves the scheduler
+/// and timestamp namespaces are independent even though both are acquired by
+/// AGXCommandQueue construction.
+#[allow(dead_code)]
+pub(crate) struct G15FirmwareCommandQueueResourceLeases {
+    _timestamp_queue: G15FirmwareResourceLease,
+    _scheduler_state: G15FirmwareResourceLease,
+}
+
+/// Exact AGXChannel-lifetime selections from the three shared channel resource
+/// stacks. These global indices deliberately do not alias E127's local backing
+/// proof indices; actual GPU backing integration remains a later gate.
+#[allow(dead_code)]
+pub(crate) struct G15FirmwareChannelResourceLeases {
+    _channel_state: G15FirmwareResourceLease,
+    _uncached_channel_memory: G15FirmwareResourceLease,
+    _cached_channel_memory: G15FirmwareResourceLease,
+}
+
+#[allow(dead_code)]
+impl Drop for G15FirmwareResourceLease {
+    fn drop(&mut self) {
+        // A lease can only be constructed by a successful selection. Failure
+        // here therefore indicates an internal bookkeeping invariant violation;
+        // there is no live GPU consumer in E148, so keep Drop infallible while
+        // retaining the error as a fail-closed no-op rather than panicking.
+        let _ = self.manager.0.lock().release(self.index);
+    }
+}
+
+/// Accelerator/device-global host placement of the five exact 23J220 firmware
+/// resource stacks recovered by E147. This is bookkeeping only: no GPU backing,
+/// QueueInfo address, WorkQueue, or RunCompute field is created here.
+///
+/// Each manager is constructed at a distinct `new_mutex!` callsite so lockdep
+/// keeps the five independent Apple stack locks as distinct classes.
+#[allow(dead_code)]
+pub(crate) struct G15DeviceFirmwareResourceState {
+    timestamp_queue: G15FirmwareResourceStackManager,
+    scheduler_state: G15FirmwareResourceStackManager,
+    channel_state: G15FirmwareResourceStackManager,
+    uncached_channel_memory: G15FirmwareResourceStackManager,
+    cached_channel_memory: G15FirmwareResourceStackManager,
+}
+
+#[allow(dead_code)]
+impl G15DeviceFirmwareResourceState {
+    pub(crate) fn new_device_global() -> Result<Self> {
+        let timestamp_queue = G15FirmwareResourceStackManager(Arc::pin_init(
+            new_mutex!(
+                G15FirmwareResourceStackState::new(
+                    fw::workqueue::G15_TIMESTAMP_QUEUE_STATES_PER_BACKING as u32,
+                )?,
+                "g15_fw_timestamp_queue"
+            ),
+            GFP_KERNEL,
+        )?);
+        let scheduler_state = G15FirmwareResourceStackManager(Arc::pin_init(
+            new_mutex!(
+                G15FirmwareResourceStackState::new(
+                    fw::workqueue::G15_SCHEDULER_STATES_PER_BACKING as u32,
+                )?,
+                "g15_fw_scheduler_state"
+            ),
+            GFP_KERNEL,
+        )?);
+        let channel_state = G15FirmwareResourceStackManager(Arc::pin_init(
+            new_mutex!(
+                G15FirmwareResourceStackState::new(
+                    fw::workqueue::G15_CHANNEL_STATE_SLOTS_PER_BACKING as u32,
+                )?,
+                "g15_fw_channel_state"
+            ),
+            GFP_KERNEL,
+        )?);
+        let uncached_channel_memory = G15FirmwareResourceStackManager(Arc::pin_init(
+            new_mutex!(
+                G15FirmwareResourceStackState::new(
+                    fw::workqueue::G15_J615_CHANNEL_MEMORY_SLOTS_PER_BACKING as u32,
+                )?,
+                "g15_fw_uncached_channel_memory"
+            ),
+            GFP_KERNEL,
+        )?);
+        let cached_channel_memory = G15FirmwareResourceStackManager(Arc::pin_init(
+            new_mutex!(
+                G15FirmwareResourceStackState::new(
+                    fw::workqueue::G15_J615_CHANNEL_MEMORY_SLOTS_PER_BACKING as u32,
+                )?,
+                "g15_fw_cached_channel_memory"
+            ),
+            GFP_KERNEL,
+        )?);
+
+        Ok(Self {
+            timestamp_queue,
+            scheduler_state,
+            channel_state,
+            uncached_channel_memory,
+            cached_channel_memory,
+        })
+    }
+
+    pub(crate) fn select_timestamp_queue(&self) -> Result<G15FirmwareResourceLease> {
+        self.timestamp_queue.select()
+    }
+
+    pub(crate) fn select_scheduler_state(&self) -> Result<G15FirmwareResourceLease> {
+        self.scheduler_state.select()
+    }
+
+    pub(crate) fn select_channel_state(&self) -> Result<G15FirmwareResourceLease> {
+        self.channel_state.select()
+    }
+
+    pub(crate) fn select_uncached_channel_memory(&self) -> Result<G15FirmwareResourceLease> {
+        self.uncached_channel_memory.select()
+    }
+
+    pub(crate) fn select_cached_channel_memory(&self) -> Result<G15FirmwareResourceLease> {
+        self.cached_channel_memory.select()
+    }
+
+    pub(crate) fn select_command_queue_resources(
+        &self,
+    ) -> Result<G15FirmwareCommandQueueResourceLeases> {
+        let timestamp_queue = self.select_timestamp_queue()?;
+        let scheduler_state = self.select_scheduler_state()?;
+        Ok(G15FirmwareCommandQueueResourceLeases {
+            _timestamp_queue: timestamp_queue,
+            _scheduler_state: scheduler_state,
+        })
+    }
+
+    pub(crate) fn select_channel_resources(&self) -> Result<G15FirmwareChannelResourceLeases> {
+        let channel_state = self.select_channel_state()?;
+        let uncached_channel_memory = self.select_uncached_channel_memory()?;
+        let cached_channel_memory = self.select_cached_channel_memory()?;
+        Ok(G15FirmwareChannelResourceLeases {
+            _channel_state: channel_state,
+            _uncached_channel_memory: uncached_channel_memory,
+            _cached_channel_memory: cached_channel_memory,
+        })
+    }
+}
+
 /// Exact normal-J615 shared Compute UMAPool priority class.
 ///
 /// AGXChannel::init() derives the shared-pool class as 0 only for context
