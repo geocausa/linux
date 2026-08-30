@@ -632,6 +632,30 @@ impl G15SharedBank1Allocator {
         }
     }
 
+    /// Dedicated special eGartRange-8 allocator for exact G15
+    /// `_AGFIChannelState` resource-stack backings. E116 proves compact option
+    /// 0x003 / leaf 0x...0443, with a distinct semantic ownership boundary
+    /// from FList Page-Pool-State despite the bit-identical protection shape.
+    #[allow(dead_code)]
+    pub(crate) fn new_range8_channel_state(
+        dev: &AsahiDevice,
+        bank1: mmu::G15SharedBank1,
+        min_align: usize,
+        mut cpu_maps: bool,
+        notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
+    ) -> Self {
+        if debug_enabled(DebugFlags::ForceCPUMaps) { cpu_maps = true; }
+        Self {
+            dev: dev.into(),
+            bank1,
+            aperture: mmu::G15SharedBank1Aperture::Range8,
+            prot: mmu::PROT_G15_RANGE8_FW,
+            min_align,
+            cpu_maps,
+            notifier,
+        }
+    }
+
     /// Dedicated special eGartRange-8 allocator for exact G15 cached
     /// firmware channel-memory resource-stack backings. E122 proves compact
     /// option 0x003 / leaf 0x...0443, identical to the established range-8
