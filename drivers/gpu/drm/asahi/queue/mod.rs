@@ -67,6 +67,8 @@ pub(crate) trait Queue: Send + Sync {
     /// gate immediately before the real submission path.
     fn preflight_vm_bind_only(&mut self) -> Result<u32>;
 
+    fn preflight_g15_lazy_compute_channel(&mut self) -> Result<u64>;
+
     fn submit(
         &mut self,
         id: u64,
@@ -1728,7 +1730,7 @@ impl Queue::ver {
     fn g15_ensure_unpublished_nonforeground_compute_channel(
         &self,
         gpu: &gpu::GpuManager::ver,
-    ) -> Result {
+    ) -> Result<u64> {
         #[ver(G != G15)]
         {
             let _ = gpu;
@@ -1740,8 +1742,8 @@ impl Queue::ver {
             let subqueue = self.q_comp.as_ref().ok_or(EINVAL)?;
             let slot = subqueue._g15_compute_channel.as_ref().ok_or(EINVAL)?;
             let mut channel = slot.lock();
-            if channel.is_some() {
-                return Ok(());
+            if let Some(channel) = channel.as_ref() {
+                return Ok(channel.pool_id());
             }
 
             // Keep the slot lock across construction. This prevents duplicate
@@ -1751,8 +1753,9 @@ impl Queue::ver {
             let new_channel = self
                 .inner
                 .g15_assemble_unpublished_nonforeground_compute_channel(gpu)?;
+            let pool_id = new_channel.pool_id();
             *channel = Some(new_channel);
-            Ok(())
+            Ok(pool_id)
         }
     }
 }
@@ -1808,6 +1811,24 @@ impl Queue for Queue::ver {
         let slot = bind.slot();
         core::mem::drop(bind);
         Ok(slot)
+    }
+
+    fn preflight_g15_lazy_compute_channel(&mut self) -> Result<u64> {
+        #[ver(G != G15)]
+        {
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            let gpu = (*self.dev)
+                .gpu
+                .clone()
+                .arc_as_any()
+                .downcast::<gpu::GpuManager::ver>()
+                .map_err(|_| EIO)?;
+            self.g15_ensure_unpublished_nonforeground_compute_channel(&gpu)
+        }
     }
 
     fn submit(

@@ -1064,15 +1064,18 @@ impl File {
         let is_g15 = device.gpu.get_cfg().gpu_gen == hw::GpuGen::G15;
         const G15_VM_BIND_PROBE_FLAGS: u32 = 0x4731_3556; // "G15V"
         const G15_VM_BIND_PROBE_PAD: u32 = 0x4531_3635; // "E165"
+        const G15_CL_CHANNEL_PROBE_FLAGS: u32 = 0x4731_3543; // "G15C"
+        const G15_CL_CHANNEL_PROBE_PAD: u32 = 0x4531_3636; // "E166"
 
         if is_g15 {
-            // E165 is an explicit lab-only VM-context publication probe. Keep
-            // ordinary G15 submissions fail-closed before Queue lookup or any
-            // firmware-visible context mutation.
-            if data.flags != G15_VM_BIND_PROBE_FLAGS || data.pad != G15_VM_BIND_PROBE_PAD {
-                return Err(ENODEV);
-            }
-            if data.syncs != 0
+            let vm_bind_probe = data.flags == G15_VM_BIND_PROBE_FLAGS
+                && data.pad == G15_VM_BIND_PROBE_PAD;
+            let cl_channel_probe = data.flags == G15_CL_CHANNEL_PROBE_FLAGS
+                && data.pad == G15_CL_CHANNEL_PROBE_PAD;
+            // Both lab probes are deliberately zero-payload. Ordinary G15
+            // submissions remain fail-closed before Queue lookup.
+            if (!vm_bind_probe && !cl_channel_probe)
+                || data.syncs != 0
                 || data.cmdbuf != 0
                 || data.in_sync_count != 0
                 || data.out_sync_count != 0
@@ -1088,12 +1091,21 @@ impl File {
                 .get(data.queue_id.try_into()?)
                 .ok_or(ENOENT)?
                 .into();
-            let slot = queue.lock().preflight_vm_bind_only()?;
-            dev_info!(
-                device.as_ref(),
-                "T8122 G15 E165 VM-context GPTBAT bind PASS (slot {}); QueueInfo/channel/commands blocked\n",
-                slot
-            );
+            if vm_bind_probe {
+                let slot = queue.lock().preflight_vm_bind_only()?;
+                dev_info!(
+                    device.as_ref(),
+                    "T8122 G15 E165 VM-context GPTBAT bind PASS (slot {}); QueueInfo/channel/commands blocked\n",
+                    slot
+                );
+            } else {
+                let pool_id = queue.lock().preflight_g15_lazy_compute_channel()?;
+                dev_info!(
+                    device.as_ref(),
+                    "T8122 G15 E166 lazy CL channel PASS (pool {}); QueueInfo/commands blocked\n",
+                    pool_id
+                );
+            }
             return Err(ENODEV);
         }
 
