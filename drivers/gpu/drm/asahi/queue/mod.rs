@@ -1132,6 +1132,65 @@ impl G15UnpublishedComputeChannel::ver {
     fn pool_id(&self) -> u64 {
         self.pool.pool_id()
     }
+
+    /// E172 gives the dormant E134 transaction its exact persistent lifetime
+    /// home without making it reachable from Queue submission. All command-
+    /// local rotating state stays under this CL channel, while shared UMA/FList
+    /// state is reached only through the channel's identity-checked pool ref.
+    fn prepare_stock_empty_phase1(
+        &mut self,
+        fence: &UserFence<JobFence::ver>,
+        state_sequence: u32,
+    ) -> Result<G15ArmedUnpublishedStockEmptyPrepare::ver> {
+        let owners = &mut self.owners;
+        let guards = &mut self.guards;
+        self.pool.with_pool(|uma_pool| {
+            guards.prepare_unpublished_phase1(
+                owners,
+                uma_pool,
+                fence,
+                state_sequence,
+                buffer::G15_J615_NORMAL_COMPUTE_POOL_PRIORITY_CLASS,
+            )
+        })
+    }
+
+    fn finalize_stock_empty(
+        &mut self,
+        armed: G15ArmedUnpublishedStockEmptyPrepare::ver,
+        command_fwva: u64,
+        command: &fw::compute::raw::RunComputeG15V14_7<'_>,
+    ) -> Result<G15ArmedUnpublishedRunComputeFieldStage::ver> {
+        let owners = &mut self.owners;
+        let guards = &mut self.guards;
+        self.pool.with_pool(|uma_pool| {
+            guards.finalize_unpublished(owners, uma_pool, armed, command_fwva, command)
+        })
+    }
+
+    fn abort_stock_empty(
+        &mut self,
+        armed: G15ArmedUnpublishedStockEmptyPrepare::ver,
+    ) -> Result<bool> {
+        let owners = &self.owners;
+        let guards = &mut self.guards;
+        self.pool
+            .with_pool(|uma_pool| guards.abort_unpublished(owners, uma_pool, armed))
+    }
+
+    fn complete_stock_empty(
+        &mut self,
+        armed: G15ArmedUnpublishedRunComputeFieldStage::ver,
+    ) -> Result<bool> {
+        let owners = &self.owners;
+        let guards = &mut self.guards;
+        self.pool
+            .with_pool(|uma_pool| guards.complete_staged(owners, uma_pool, armed))
+    }
+
+    fn scrub_completed_stock_empty_slots(&mut self) {
+        self.guards.scrub_completed();
+    }
 }
 
 #[versions(AGX)]
