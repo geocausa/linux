@@ -241,12 +241,6 @@ impl drm::file::DriverFile for File {
         debug::update_debug_flags();
 
         let gpu = &device.gpu;
-        if gpu.get_cfg().gpu_gen == hw::GpuGen::G15 {
-            // E158 registration-only checkpoint. Expose the render node while
-            // rejecting every G15 client before File state, VM allocation,
-            // Queue construction, q22 runtime mappings, or submission can exist.
-            return Err(ENODEV);
-        }
         let id = gpu.ids().file.next();
         let owner_pid: u32 = kernel::current!()
             .group_leader()
@@ -267,11 +261,10 @@ impl drm::file::DriverFile for File {
 unsafe impl AnyBitPattern for uapi::drm_asahi_gem_bind_op {}
 
 impl File {
-    /// G15 userspace gate for operations that cross the current safe boundary.
-    /// Normal VM_BIND remains private/unbound and queue construction is now
-    /// passive apart from the native q22 range-7 resource notifications. Keep
-    /// special kernel object bindings and all submission paths fail-closed.
-    fn reject_g15_runtime_mutation(device: &AsahiDevice) -> Result<()> {
+    /// E159 discovery-only G15 userspace gate. File open plus GET_PARAMS/GET_TIME
+    /// are host-only, but every ioctl that creates, destroys, maps, publishes, or
+    /// submits client state remains fail-closed before its first mutation.
+    fn reject_g15_client_mutation(device: &AsahiDevice) -> Result<()> {
         if device.gpu.get_cfg().gpu_gen == hw::GpuGen::G15 {
             Err(ENODEV)
         } else {
@@ -393,6 +386,7 @@ impl File {
         data: &mut uapi::drm_asahi_vm_create,
         file: &DrmFile,
     ) -> Result<u32> {
+        Self::reject_g15_client_mutation(device)?;
         let kernel_range = data.kernel_start..data.kernel_end;
 
         // Validate requested kernel range
@@ -533,10 +527,11 @@ impl File {
 
     /// IOCTL: vm_destroy: Destroy a `Vm`.
     pub(crate) fn vm_destroy(
-        _device: &AsahiDevice,
+        device: &AsahiDevice,
         data: &mut uapi::drm_asahi_vm_destroy,
         file: &DrmFile,
     ) -> Result<u32> {
+        Self::reject_g15_client_mutation(device)?;
         let vm = file.inner().vms().remove(data.vm_id as usize);
         if vm.is_none() {
             Err(ENOENT)
@@ -551,6 +546,7 @@ impl File {
         data: &mut uapi::drm_asahi_gem_create,
         file: &DrmFile,
     ) -> Result<u32> {
+        Self::reject_g15_client_mutation(device)?;
         mod_dev_dbg!(
             device,
             "[File {}]: IOCTL: gem_create size={:#x?}\n",
@@ -606,6 +602,7 @@ impl File {
         data: &mut uapi::drm_asahi_gem_mmap_offset,
         file: &DrmFile,
     ) -> Result<u32> {
+        Self::reject_g15_client_mutation(device)?;
         mod_dev_dbg!(
             device,
             "[File {}]: IOCTL: gem_mmap_offset handle={:#x?}\n",
@@ -629,6 +626,7 @@ impl File {
         data: &uapi::drm_asahi_vm_bind,
         file: &DrmFile,
     ) -> Result<u32> {
+        Self::reject_g15_client_mutation(device)?;
         mod_dev_dbg!(
             device,
             "[File {} VM {}]: IOCTL: vm_bind\n",
@@ -860,7 +858,7 @@ impl File {
         data: &mut uapi::drm_asahi_gem_bind_object,
         file: &DrmFile,
     ) -> Result<u32> {
-        Self::reject_g15_runtime_mutation(device)?;
+        Self::reject_g15_client_mutation(device)?;
         mod_dev_dbg!(
             device,
             "[File {} VM {}]: IOCTL: gem_bind_object op={:?} handle={:#x?} flags={:#x?} {:#x?}:{:#x?} object_handle={:#x?}\n",
@@ -988,6 +986,7 @@ impl File {
         data: &mut uapi::drm_asahi_queue_create,
         file: &DrmFile,
     ) -> Result<u32> {
+        Self::reject_g15_client_mutation(device)?;
         let file_id = file.inner().id;
 
         mod_dev_dbg!(
@@ -1047,10 +1046,11 @@ impl File {
 
     /// IOCTL: queue_destroy: Destroy a command submission queue.
     pub(crate) fn queue_destroy(
-        _device: &AsahiDevice,
+        device: &AsahiDevice,
         data: &mut uapi::drm_asahi_queue_destroy,
         file: &DrmFile,
     ) -> Result<u32> {
+        Self::reject_g15_client_mutation(device)?;
         // grab the queue so the xarray spinlock is dropped first
         let queue = file.inner().queues().remove(data.queue_id as usize);
         if queue.is_none() {
@@ -1066,6 +1066,7 @@ impl File {
         data: &mut uapi::drm_asahi_submit,
         file: &DrmFile,
     ) -> Result<u32> {
+        Self::reject_g15_client_mutation(device)?;
         debug::update_debug_flags();
 
         let is_g15 = device.gpu.get_cfg().gpu_gen == hw::GpuGen::G15;
