@@ -1714,6 +1714,9 @@ impl core::fmt::Debug for G15MappingNotifierHandle {
 impl G15MappingNotifier {
     const RING_LEN: u32 = 0x100;
     const PRESSURE_MASK: u32 = 0xc0;
+    // Exact J615/23J220 AGXAccelerator +0x1e04 value passed to
+    // AGXArmFirmware::blockForRingEmpty() before SecureGart unmap.
+    const DRAIN_TIMEOUT: Delta = Delta::from_millis(150);
 
     /// Exact 23J220 q22 mapping flags for the bank-1 apertures Linux owns.
     /// Range 8 is Apple's special 64-MiB aperture: its bit remains set for
@@ -1938,6 +1941,58 @@ impl G15MappingNotifier {
     fn publish_unmapping(&mut self, base: u64, phys_pages: &[u64]) -> Result {
         self.publish_pages(base, phys_pages, false)
     }
+
+    /// Exact G15 SecureGart lifetime fence used after unmap notification and
+    /// before the host tears down the corresponding PTE/VA. Apple sends the
+    /// q22 FWCTL note unconditionally, then waits until firmware has consumed
+    /// every descriptor published before that point.
+    fn drain_before_unmap(&mut self) -> Result {
+        if !self.active {
+            return Ok(());
+        }
+
+        self.dev.gpu.g15_mapping_pressure_kick()?;
+        let start = Instant::<Monotonic>::now();
+
+        loop {
+            if self.dev.gpu.is_crashed() {
+                return Err(ENODEV);
+            }
+
+            let (read, write) = self.backing.with(|raw, _inner| {
+                (
+                    raw.state.read_idx.load(Ordering::Relaxed),
+                    raw.state.write_idx.load(Ordering::Relaxed),
+                )
+            });
+            if read >= Self::RING_LEN || write >= Self::RING_LEN {
+                dev_err!(
+                    self.dev.as_ref(),
+                    "MMU: invalid G15 q22 drain cursors read={} write={}\n",
+                    read,
+                    write
+                );
+                return Err(EIO);
+            }
+            if read == write {
+                return Ok(());
+            }
+            if start.elapsed() >= Self::DRAIN_TIMEOUT {
+                dev_err!(
+                    self.dev.as_ref(),
+                    "MMU: G15 q22 drain timed out after 150 ms (read={} write={})\n",
+                    read,
+                    write
+                );
+                return Err(ETIMEDOUT);
+            }
+
+            // Keep the host serialized on the notifier while firmware advances
+            // the shared read cursor; a 1-ms sleep avoids a hot CPU poll while
+            // remaining well inside Apple's exact 150-ms lifetime bound.
+            fsleep(Delta::from_millis(1));
+        }
+    }
 }
 
 struct G15SharedBank1MappingInner {
@@ -1972,19 +2027,35 @@ impl Drop for G15SharedBank1Mapping {
                 G15MappingNotifyMode::Immediate => true,
                 G15MappingNotifyMode::AfterActivation => notifier.is_active(),
             };
-            if publish && notifier.publish_unmapping(iova, &self.phys_pages).is_err() {
-                pr_err!(
-                    "MMU: failed to publish G15 shared bank-1 unmapping {:#x}:{:#x}; preserving PTE and VA reservation\n",
-                    iova,
-                    size
-                );
-                // Apple publishes the q22 unmap record before AGXSecureGart::unmap().
-                // If that publication cannot be completed, removing the PTE would
-                // leave firmware with stale mapping state. Leak the reservation and
-                // its GEM reference instead of making the VA reusable underneath
-                // firmware. This is a terminal fail-closed path (RTKit loss/crash).
-                core::mem::forget(node);
-                return;
+            if publish {
+                if notifier.publish_unmapping(iova, &self.phys_pages).is_err() {
+                    pr_err!(
+                        "MMU: failed to publish G15 shared bank-1 unmapping {:#x}:{:#x}; preserving PTE and VA reservation\n",
+                        iova,
+                        size
+                    );
+                    // Apple publishes the q22 unmap record before AGXSecureGart::unmap().
+                    // If that publication cannot be completed, removing the PTE would
+                    // leave firmware with stale mapping state. Leak the reservation and
+                    // its GEM reference instead of making the VA reusable underneath
+                    // firmware. This is a terminal fail-closed path (RTKit loss/crash).
+                    core::mem::forget(node);
+                    return;
+                }
+                if notifier.drain_before_unmap().is_err() {
+                    pr_err!(
+                        "MMU: failed to drain G15 q22 before shared bank-1 unmap {:#x}:{:#x}; preserving PTE and VA reservation\n",
+                        iova,
+                        size
+                    );
+                    // Exact Apple ordering is notifyNewUnmapping ->
+                    // blockForRingEmpty(150 ms) -> SecureGart unmap. Once the
+                    // notification is visible but the drain cannot be proven,
+                    // preserve the old PTE and VA so delayed firmware cannot
+                    // dereference a recycled range-7/range-8 address.
+                    core::mem::forget(node);
+                    return;
+                }
             }
         }
         {
