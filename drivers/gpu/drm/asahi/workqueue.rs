@@ -910,8 +910,8 @@ impl WorkQueue::ver {
     }
 
     /// Bounded G15 scheduler-registration probe. Publish exactly one firmware
-    /// Barrier/type-4 record which waits on the allocation-zero Event slot 0
-    /// stamp, then synchronously retire the scheduler/context resource with
+    /// Barrier/type-4 record which waits on a fresh allocation-zero Apple stamp
+    /// counter, then synchronously retire the scheduler/context resource with
     /// native G15 ReleaseResource. No GPU engine command is present.
     pub(crate) fn g15_register_barrier(
         self: &Arc<Self>,
@@ -950,16 +950,18 @@ impl WorkQueue::ver {
                 let cur = event.current();
                 let event_slot: u8 = event.slot().try_into()?;
 
-                // This remains the exact E059 discriminator rather than a
-                // generalized command path: the first EventManager slot is 0,
-                // its private FW stamp backing is allocation-zero, and wait 0
-                // is therefore already satisfied before publication.
-                if event_slot != 0 || cur.raw() != 0 {
-                    return Err(EBUSY);
-                }
-
+                // Exact 23J220 IOGPUEventMachine carries the stamp index
+                // separately, starts every freshly assigned index at counter
+                // zero, and increments by 0x100. Linux's inherited EventValue
+                // instead seeds `slot << 24`, while the private FW stamp is
+                // allocation-zero. Translate only an untouched fresh slot;
+                // this remains a bounded registration probe, not a generalized
+                // event/stamp policy change.
+                let wait_value = cur
+                    .g15_fresh_counter(event_slot as u32)
+                    .ok_or(EBUSY)?;
                 let wait_stamp = event.fw_stamp_pointer();
-                let stamp_self = cur.next();
+                let stamp_self = wait_value.next();
                 inner.last_token = Some(event.token());
                 inner.last_submitted = Some(cur);
                 inner.last_completed = Some(cur);
@@ -975,7 +977,7 @@ impl WorkQueue::ver {
                     self.info_pointer,
                     event_slot,
                     wait_stamp,
-                    cur,
+                    wait_value,
                     stamp_self,
                 )
             };
@@ -1027,10 +1029,11 @@ impl WorkQueue::ver {
 
             dev_info!(
                 context.dev.as_ref(),
-                "T8122 G15 E169 barrier registration slot={} barrier={:#x} wptr=1 wait=0 stamp_self={:?}\n",
+                "T8122 G15 E171 barrier registration slot={} barrier={:#x} wptr=1 wait={:#x} stamp_self={:#x}\n",
                 event_slot,
                 barrier_va,
-                stamp_self
+                wait_value.raw(),
+                stamp_self.raw()
             );
 
             // Mark before the first transport side effect. Queue::drop() will
@@ -1056,7 +1059,7 @@ impl WorkQueue::ver {
                 .with(|raw, _inner| raw.g15_release_resource_fields());
             dev_info!(
                 context.dev.as_ref(),
-                "T8122 G15 E169 QueueInfo registration result={:?}, context fields={:02x?}\n",
+                "T8122 G15 E171 QueueInfo registration result={:?}, context fields={:02x?}\n",
                 publish_result,
                 fields
             );
@@ -1067,7 +1070,7 @@ impl WorkQueue::ver {
             }
             dev_info!(
                 context.dev.as_ref(),
-                "T8122 G15 E169 ReleaseResource result={:?}\n",
+                "T8122 G15 E171 ReleaseResource result={:?}\n",
                 release_result
             );
 

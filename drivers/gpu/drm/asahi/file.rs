@@ -1067,7 +1067,7 @@ impl File {
         const G15_CL_CHANNEL_PROBE_FLAGS: u32 = 0x4731_3543; // "G15C"
         const G15_CL_CHANNEL_PROBE_PAD: u32 = 0x4531_3636; // "E166"
         const G15_BARRIER_REG_PROBE_FLAGS: u32 = 0x4731_3552; // "G15R"
-        const G15_BARRIER_REG_PROBE_PAD: u32 = 0x4531_3730; // "E170"
+        const G15_BARRIER_REG_PROBE_PAD: u32 = 0x4531_3731; // "E171"
 
         if is_g15 {
             let vm_bind_probe = data.flags == G15_VM_BIND_PROBE_FLAGS
@@ -1113,7 +1113,7 @@ impl File {
                 let (slot, pool_id) = queue.lock().preflight_g15_barrier_registration()?;
                 dev_info!(
                     device.as_ref(),
-                    "T8122 G15 E170 integrated Barrier registration PASS (slot {}, pool {}); GPU engine commands blocked\n",
+                    "T8122 G15 E171 fresh-slot Barrier registration PASS (slot {}, pool {}); GPU engine commands blocked\n",
                     slot,
                     pool_id
                 );

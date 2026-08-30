@@ -64,6 +64,18 @@ impl EventValue {
         self.0
     }
 
+    /// Translate an untouched inherited Linux event slot to the exact fresh
+    /// IOGPUEventMachine counter domain used by G15 Barrier registration.
+    /// Apple carries the stamp index separately and starts every fresh stamp
+    /// counter at zero; Linux instead seeds the slot in bits 31:24.
+    pub(crate) fn g15_fresh_counter(&self, slot: u32) -> Option<EventValue> {
+        if self.0 == slot << 24 {
+            Some(EventValue(0))
+        } else {
+            None
+        }
+    }
+
     /// Increments this `EventValue` in place.
     pub(crate) fn increment(&mut self) {
         self.0 = self.0.wrapping_add(0x100);
