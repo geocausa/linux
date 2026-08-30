@@ -261,9 +261,9 @@ impl drm::file::DriverFile for File {
 unsafe impl AnyBitPattern for uapi::drm_asahi_gem_bind_op {}
 
 impl File {
-    /// E159 discovery-only G15 userspace gate. File open plus GET_PARAMS/GET_TIME
-    /// are host-only, but every ioctl that creates, destroys, maps, publishes, or
-    /// submits client state remains fail-closed before its first mutation.
+    /// E160 G15 userspace gate beyond the private VM-lifecycle boundary. File
+    /// discovery plus VM create/destroy are allowed, while GEM, mapping, Queue,
+    /// publication, and submission operations remain fail-closed pre-mutation.
     fn reject_g15_client_mutation(device: &AsahiDevice) -> Result<()> {
         if device.gpu.get_cfg().gpu_gen == hw::GpuGen::G15 {
             Err(ENODEV)
@@ -386,7 +386,6 @@ impl File {
         data: &mut uapi::drm_asahi_vm_create,
         file: &DrmFile,
     ) -> Result<u32> {
-        Self::reject_g15_client_mutation(device)?;
         let kernel_range = data.kernel_start..data.kernel_end;
 
         // Validate requested kernel range
@@ -527,11 +526,10 @@ impl File {
 
     /// IOCTL: vm_destroy: Destroy a `Vm`.
     pub(crate) fn vm_destroy(
-        device: &AsahiDevice,
+        _device: &AsahiDevice,
         data: &mut uapi::drm_asahi_vm_destroy,
         file: &DrmFile,
     ) -> Result<u32> {
-        Self::reject_g15_client_mutation(device)?;
         let vm = file.inner().vms().remove(data.vm_id as usize);
         if vm.is_none() {
             Err(ENOENT)

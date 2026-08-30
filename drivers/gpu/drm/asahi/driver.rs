@@ -366,14 +366,13 @@ impl platform::Driver for AsahiDriver {
 
             (*drm).gpu.init()?;
 
-            // E159 keeps E158 DRM registration after q21-ready/q22-active,
-            // but now permits discovery-only G15 File opens. Every ioctl that
-            // creates, destroys, maps, publishes, or submits client state is
-            // independently fail-closed before its first mutation.
+            // E160 keeps discovery live and opens only private VM create/destroy.
+            // GEM, VM mapping, Queue/QueueInfo, q22 runtime publication, channel
+            // construction, and submission remain independently fail-closed.
             drm::driver::Registration::new_foreign_owned(&drm, pdev.as_ref(), 0)?;
             dev_info!(
                 pdev.as_ref(),
-                "T8122 G15 E159 persistent manager + DRM discovery PASS; client mutations blocked\n"
+                "T8122 G15 E160 persistent manager + private VM lifecycle PASS; Queue/submission blocked\n"
             );
             return Ok(Self { drm });
         }
