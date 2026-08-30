@@ -1784,7 +1784,9 @@ impl G15MappingNotifier {
         // this does not introduce another ownership edge into InitData.
         let dev = self.dev.clone();
         self.backing.with_mut(|raw, _inner| -> Result {
+            let start_read = raw.state.read_idx.load(Ordering::Relaxed);
             let mut write = raw.state.write_idx.load(Ordering::Relaxed);
+            let start_write = write;
             if write >= Self::RING_LEN {
                 dev_err!(
                     dev.as_ref(),
@@ -1853,6 +1855,19 @@ impl G15MappingNotifier {
                 raw.state.write_idx.store(next, Ordering::Relaxed);
                 write = next;
             }
+
+            let end_read = raw.state.read_idx.load(Ordering::Relaxed);
+            dev_info!(
+                dev.as_ref(),
+                "T8122 G15 E164 q22 {} base={:#x} pages={} cursors r/w {}:{} -> {}:{}\n",
+                if mapping { "map" } else { "unmap" },
+                base,
+                phys_pages.len(),
+                start_read,
+                start_write,
+                end_read,
+                write
+            );
             Ok(())
         })
     }
