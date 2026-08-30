@@ -299,6 +299,59 @@ impl G15HardwareBufferIdManager {
     }
 }
 
+/// Accelerator/device-global UMA ownership state recovered from exact 23J220.
+///
+/// E135 proves G15 initializes exactly one 0x100-entry `UMAPool`
+/// AGXHardwareBufferIDManager at accelerator +0x2a08. The independent pool-ID
+/// source is also global: AGXUMAPool::init() increments one zero-initialized
+/// qword and stores the incremented value into pool +0x80. Keep those two
+/// namespaces together here so a future live owner cannot accidentally create
+/// one manager/counter per Queue.
+///
+/// This type remains definition-only. In particular, it is not instantiated in
+/// GpuManager yet, and no caller may treat the pool-ID sequence as Compute-only:
+/// eventual TA/3D/CL pool creation must all consume this same sequence.
+#[allow(dead_code)]
+pub(crate) struct G15DeviceUmaOwnerState {
+    hardware_buffer_ids: G15HardwareBufferIdManager,
+    next_pool_id: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
+pub(crate) struct G15UmaPoolIdentity(u64);
+
+#[allow(dead_code)]
+impl G15UmaPoolIdentity {
+    fn value(self) -> u64 {
+        self.0
+    }
+}
+
+#[allow(dead_code)]
+impl G15DeviceUmaOwnerState {
+    pub(crate) fn new_unpublished() -> Result<Self> {
+        Ok(Self {
+            hardware_buffer_ids: G15HardwareBufferIdManager::new()?,
+            // Exact kernel-image initial value of the global pool-ID counter.
+            next_pool_id: 0,
+        })
+    }
+
+    /// Exact AGXUMAPool::init() creation-order transition: increment globally,
+    /// then publish the new value as pool +0x80. A failed later pool/FList
+    /// construction may therefore consume an ID, matching the Apple ordering.
+    fn allocate_pool_identity(&mut self) -> Result<G15UmaPoolIdentity> {
+        let id = self.next_pool_id.checked_add(1).ok_or(EOVERFLOW)?;
+        self.next_pool_id = id;
+        Ok(G15UmaPoolIdentity(id))
+    }
+
+    fn hardware_buffer_ids(&self) -> G15HardwareBufferIdManager {
+        self.hardware_buffer_ids.clone()
+    }
+}
+
 /// FList-side sticky HardwareBuffer ownership. This is the host object boundary
 /// corresponding to AGXHardwareBufferBase +0x10: it retains the binding across
 /// zero-reference periods so the manager can reuse the same dormant ID until it
@@ -785,6 +838,83 @@ impl G15FListResourceOwner {
 
     pub(crate) fn complete_reference(&self, hardware_buffer_id: u32) -> Result<bool> {
         self.plan.complete_reference(hardware_buffer_id)
+    }
+}
+
+/// One reusable J615 shared Compute UMAPool/FList owner.
+///
+/// E135 proves normal CL channels do not own a unique FList. They select one of
+/// two Compute slots in AGXUMASharedPoolContainer by priority class, retain that
+/// pool, and share the accelerator-global UMAPool HardwareBuffer-ID namespace.
+/// This type represents the pool-side lifetime only; event-control, HWMetrics,
+/// channel-state, SKU and command resources deliberately remain elsewhere.
+///
+/// Construction is definition-only and can only allocate its firmware-visible
+/// pool identity through `G15DeviceUmaOwnerState`, preserving the global
+/// creation-order boundary rather than accepting an arbitrary raw pool ID.
+#[allow(dead_code)]
+pub(crate) struct G15SharedComputeUmaPoolOwner {
+    priority_class: u32,
+    pool_identity: G15UmaPoolIdentity,
+    flist: G15FListResourceOwner,
+}
+
+#[allow(dead_code)]
+impl G15SharedComputeUmaPoolOwner {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_j615_unprepared(
+        dev: &crate::driver::AsahiDevice,
+        device_uma: &mut G15DeviceUmaOwnerState,
+        owner_cookie: u64,
+        priority_class: u32,
+        range5_list_alloc: &mut alloc::DefaultAllocator,
+        bank1: mmu::G15SharedBank1,
+        notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
+    ) -> Result<Self> {
+        if priority_class > 1 {
+            return Err(EINVAL);
+        }
+
+        // Apple assigns pool +0x80 before constructing/initializing the FList.
+        // Do not roll this counter back if a later allocation fails.
+        let pool_identity = device_uma.allocate_pool_identity()?;
+        let flist = G15FListResourceOwner::new_j615_unprepared(
+            dev,
+            device_uma.hardware_buffer_ids(),
+            owner_cookie,
+            pool_identity.value(),
+            range5_list_alloc,
+            bank1,
+            notifier,
+        )?;
+
+        Ok(Self {
+            priority_class,
+            pool_identity,
+            flist,
+        })
+    }
+
+    pub(crate) fn prepare_stock_empty_reference(
+        &mut self,
+        priority_class: u32,
+    ) -> Result<G15HardwareBufferLease> {
+        if priority_class != self.priority_class {
+            return Err(EINVAL);
+        }
+        self.flist.prepare_stock_empty_reference(priority_class)
+    }
+
+    pub(crate) fn initialized_page_pool_state_fwva(&self) -> Result<u64> {
+        self.flist.initialized_page_pool_state_fwva()
+    }
+
+    pub(crate) fn complete_reference(&self, hardware_buffer_id: u32) -> Result<bool> {
+        self.flist.complete_reference(hardware_buffer_id)
+    }
+
+    pub(crate) fn pool_id(&self) -> u64 {
+        self.pool_identity.value()
     }
 }
 

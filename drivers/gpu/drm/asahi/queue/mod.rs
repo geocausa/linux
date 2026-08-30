@@ -856,18 +856,17 @@ impl G15UnpublishedRunComputeFieldStage {
     }
 }
 
-/// Unreachable ownership graph for the exact stock-empty G15 Compute
-/// prerequisites that have independent Apple lifetimes but must coexist before
-/// a RunCompute command can be published.
+/// Unreachable channel/command-side ownership for exact stock-empty G15
+/// Compute prerequisites.
 ///
-/// Construction owns every exact shared channel prerequisite plus the existing
-/// event/FList/HWMetrics/SKU assets. The definition-only phase-1 method may
-/// select local resource-stack slots and build one coherent private QueueInfo
-/// image, but the object graph has no Queue call site and no RunCompute writer.
-/// E096/E106 retirement guards remain the only entry wrapper for rotating
-/// event/SKU assets; all live producers stay fail-closed.
+/// E135 removes the FList/UMAPool from this lifetime: normal CL channels retain
+/// a reusable shared Compute pool selected by priority class, while the 0x100
+/// HardwareBuffer-ID namespace and pool-ID sequence are accelerator-global.
+/// This owner therefore keeps only channel/command resources. Every phase that
+/// needs Page-Pool State must receive a separate `G15SharedComputeUmaPoolOwner`.
+/// There is still no Queue call site and no RunCompute writer.
 #[allow(dead_code)]
-struct G15StockEmptyComputeOwnerGraph {
+struct G15StockEmptyComputeChannelOwners {
     // E130: exact Apple AGXFirmware +0x268 source is the 0xe10-byte Compute
     // statistics slice. Linux already owns the equivalent object under the
     // manager-global RuntimePointers lifetime; keep a typed weak FW pointer.
@@ -880,20 +879,15 @@ struct G15StockEmptyComputeOwnerGraph {
     _uncached_channel_memory: G15UncachedChannelMemoryBackingBlock,
     _cached_channel_memory: G15CachedChannelMemoryBackingBlock,
     _cl_command_resource: G15ClCommandResourceBacking,
-    _flist: buffer::G15FListResourceOwner,
     _sku: fw::compute::G15SkuBacking,
 }
 
 #[allow(dead_code)]
-impl G15StockEmptyComputeOwnerGraph {
+impl G15StockEmptyComputeChannelOwners {
     #[allow(clippy::too_many_arguments)]
     fn new_unpublished(
         dev: &AsahiDevice,
         compute_stats: GpuWeakPointer<fw::initdata::G15StatsComp>,
-        hardware_buffer_ids: buffer::G15HardwareBufferIdManager,
-        flist_owner_cookie: u64,
-        pool_id: u64,
-        range5_list_alloc: &mut alloc::DefaultAllocator,
         range5_uncached_alloc: &mut alloc::DefaultAllocator,
         bank1: mmu::G15SharedBank1,
         mapping_notifier: Arc<Mutex<mmu::G15MappingNotifier>>,
@@ -938,15 +932,6 @@ impl G15StockEmptyComputeOwnerGraph {
             mapping_notifier.clone(),
         )?;
         let cl_command_resource = G15ClCommandResourceBacking::new(range5_uncached_alloc)?;
-        let flist = buffer::G15FListResourceOwner::new_j615_unprepared(
-            dev,
-            hardware_buffer_ids,
-            flist_owner_cookie,
-            pool_id,
-            range5_list_alloc,
-            bank1.clone(),
-            Some(mapping_notifier.clone()),
-        )?;
         let sku = fw::compute::G15SkuBacking::new(dev, bank1, mapping_notifier)?;
 
         Ok(Self {
@@ -959,7 +944,6 @@ impl G15StockEmptyComputeOwnerGraph {
             _uncached_channel_memory: uncached_channel_memory,
             _cached_channel_memory: cached_channel_memory,
             _cl_command_resource: cl_command_resource,
-            _flist: flist,
             _sku: sku,
         })
     }
@@ -970,6 +954,7 @@ impl G15StockEmptyComputeOwnerGraph {
     /// record. No RunCompute address is required or published here.
     fn prepare_unpublished_phase1(
         &mut self,
+        uma_pool: &mut buffer::G15SharedComputeUmaPoolOwner,
         event_index: usize,
         state_sequence: u32,
         sku_index: usize,
@@ -1010,23 +995,23 @@ impl G15StockEmptyComputeOwnerGraph {
             return Err(EIO);
         }
 
-        let lease = self._flist.prepare_stock_empty_reference(priority)?;
-        let page_pool_state_fwva = match self._flist.initialized_page_pool_state_fwva() {
+        let lease = uma_pool.prepare_stock_empty_reference(priority)?;
+        let page_pool_state_fwva = match uma_pool.initialized_page_pool_state_fwva() {
             Ok(fwva) => fwva,
             Err(err) => {
-                let _ = self._flist.complete_reference(lease.hardware_buffer_id);
+                let _ = uma_pool.complete_reference(lease.hardware_buffer_id);
                 return Err(err);
             }
         };
         let hwmetrics_fwva = match self._hwmetrics.take_record_fwva() {
             Ok(fwva) => fwva,
             Err(err) => {
-                let _ = self._flist.complete_reference(lease.hardware_buffer_id);
+                let _ = uma_pool.complete_reference(lease.hardware_buffer_id);
                 return Err(err);
             }
         };
         if page_pool_state_fwva == 0 || hwmetrics_fwva == 0 {
-            let _ = self._flist.complete_reference(lease.hardware_buffer_id);
+            let _ = uma_pool.complete_reference(lease.hardware_buffer_id);
             return Err(EIO);
         }
 
@@ -1048,19 +1033,20 @@ impl G15StockEmptyComputeOwnerGraph {
     /// write only the already-retired SKU slot. The result remains host-only.
     fn finalize_unpublished(
         &mut self,
+        uma_pool: &buffer::G15SharedComputeUmaPoolOwner,
         prepared: G15UnpublishedStockEmptyPrepare,
         command_fwva: u64,
         command: &fw::compute::raw::RunComputeG15V14_7<'_>,
     ) -> Result<G15UnpublishedRunComputeFieldStage> {
         if command_fwva == 0 {
-            let _ = self._flist.complete_reference(prepared.hardware_buffer_id);
+            let _ = uma_pool.complete_reference(prepared.hardware_buffer_id);
             return Err(EINVAL);
         }
 
         let channel_command_region_base_fwva = match self._cl_command_resource.base_fwva() {
             Ok(fwva) => fwva,
             Err(err) => {
-                let _ = self._flist.complete_reference(prepared.hardware_buffer_id);
+                let _ = uma_pool.complete_reference(prepared.hardware_buffer_id);
                 return Err(err);
             }
         };
@@ -1104,7 +1090,7 @@ impl G15StockEmptyComputeOwnerGraph {
         let stream = match fw::compute::G15StockEmptySkuStream::new(sku_input) {
             Ok(stream) => stream,
             Err(err) => {
-                let _ = self._flist.complete_reference(prepared.hardware_buffer_id);
+                let _ = uma_pool.complete_reference(prepared.hardware_buffer_id);
                 return Err(err);
             }
         };
@@ -1114,14 +1100,14 @@ impl G15StockEmptyComputeOwnerGraph {
         {
             Ok(sku) => sku,
             Err(err) => {
-                let _ = self._flist.complete_reference(prepared.hardware_buffer_id);
+                let _ = uma_pool.complete_reference(prepared.hardware_buffer_id);
                 return Err(err);
             }
         };
         if sku.fwva() == 0
             || sku.size() as usize != fw::compute::G15_STOCK_EMPTY_SKU_STREAM_SIZE
         {
-            let _ = self._flist.complete_reference(prepared.hardware_buffer_id);
+            let _ = uma_pool.complete_reference(prepared.hardware_buffer_id);
             return Err(EIO);
         }
 
@@ -1137,19 +1123,28 @@ impl G15StockEmptyComputeOwnerGraph {
         ))
     }
 
-    fn abort_unpublished(&self, prepared: G15UnpublishedStockEmptyPrepare) -> Result<bool> {
-        self._flist.complete_reference(prepared.hardware_buffer_id)
+    fn abort_unpublished(
+        &self,
+        uma_pool: &buffer::G15SharedComputeUmaPoolOwner,
+        prepared: G15UnpublishedStockEmptyPrepare,
+    ) -> Result<bool> {
+        uma_pool.complete_reference(prepared.hardware_buffer_id)
     }
 
     fn complete_unpublished(
         &self,
+        uma_pool: &buffer::G15SharedComputeUmaPoolOwner,
         assets: G15UnpublishedStockEmptyCommandAssets,
     ) -> Result<bool> {
-        self._flist.complete_reference(assets.hardware_buffer_id)
+        uma_pool.complete_reference(assets.hardware_buffer_id)
     }
 
-    fn complete_staged(&self, stage: G15UnpublishedRunComputeFieldStage) -> Result<bool> {
-        self.complete_unpublished(stage.assets)
+    fn complete_staged(
+        &self,
+        uma_pool: &buffer::G15SharedComputeUmaPoolOwner,
+        stage: G15UnpublishedRunComputeFieldStage,
+    ) -> Result<bool> {
+        self.complete_unpublished(uma_pool, stage.assets)
     }
 }
 
@@ -1574,10 +1569,11 @@ impl G15StockEmptyAssetGuards::ver {
     /// Phase 1: acquire the command fence reference first, then bind both exact
     /// rotating lifetimes and reserve command-independent assets without
     /// serializing or writing SKU bytes. The returned token owns the fence arm;
-    /// every error path drops it after fresh slot/FList rollback.
+    /// every error path drops it after fresh slot/shared-pool rollback.
     fn prepare_unpublished_phase1(
         &mut self,
-        owners: &mut G15StockEmptyComputeOwnerGraph,
+        owners: &mut G15StockEmptyComputeChannelOwners,
+        uma_pool: &mut buffer::G15SharedComputeUmaPoolOwner,
         fence: &UserFence<JobFence::ver>,
         state_sequence: u32,
         priority: u32,
@@ -1605,6 +1601,7 @@ impl G15StockEmptyAssetGuards::ver {
         };
 
         match owners.prepare_unpublished_phase1(
+            uma_pool,
             event_index,
             state_sequence,
             sku_index,
@@ -1625,7 +1622,8 @@ impl G15StockEmptyAssetGuards::ver {
     /// the command reference armed. This still has no firmware-command writer.
     fn finalize_unpublished(
         &mut self,
-        owners: &mut G15StockEmptyComputeOwnerGraph,
+        owners: &mut G15StockEmptyComputeChannelOwners,
+        uma_pool: &buffer::G15SharedComputeUmaPoolOwner,
         armed: G15ArmedUnpublishedStockEmptyPrepare::ver,
         command_fwva: u64,
         command: &fw::compute::raw::RunComputeG15V14_7<'_>,
@@ -1633,7 +1631,7 @@ impl G15StockEmptyAssetGuards::ver {
         let G15ArmedUnpublishedStockEmptyPrepare::ver { arm, prepared } = armed;
         let event_index = prepared.event_index;
         let sku_index = prepared.sku.index();
-        match owners.finalize_unpublished(prepared, command_fwva, command) {
+        match owners.finalize_unpublished(uma_pool, prepared, command_fwva, command) {
             Ok(stage) => Ok(G15ArmedUnpublishedRunComputeFieldStage::ver { arm, stage }),
             Err(err) => {
                 self.event.rollback_bound(event_index);
@@ -1645,7 +1643,8 @@ impl G15StockEmptyAssetGuards::ver {
 
     fn abort_unpublished(
         &mut self,
-        owners: &G15StockEmptyComputeOwnerGraph,
+        owners: &G15StockEmptyComputeChannelOwners,
+        uma_pool: &buffer::G15SharedComputeUmaPoolOwner,
         armed: G15ArmedUnpublishedStockEmptyPrepare::ver,
     ) -> Result<bool> {
         let G15ArmedUnpublishedStockEmptyPrepare::ver { arm, prepared } = armed;
@@ -1653,21 +1652,22 @@ impl G15StockEmptyAssetGuards::ver {
         let sku_index = prepared.sku.index();
         self.event.rollback_bound(event_index);
         self.sku.rollback_bound(sku_index);
-        let result = owners.abort_unpublished(prepared);
+        let result = owners.abort_unpublished(uma_pool, prepared);
         core::mem::drop(arm);
         result
     }
 
     /// Future completion boundary: release the FList HardwareBuffer epoch and
     /// then let the armed token's Drop decrement the submission-fence command
-    /// reference. There is still no live caller in E134.
+    /// reference. There is still no live caller in E136.
     fn complete_staged(
         &mut self,
-        owners: &G15StockEmptyComputeOwnerGraph,
+        owners: &G15StockEmptyComputeChannelOwners,
+        uma_pool: &buffer::G15SharedComputeUmaPoolOwner,
         armed: G15ArmedUnpublishedRunComputeFieldStage::ver,
     ) -> Result<bool> {
         let G15ArmedUnpublishedRunComputeFieldStage::ver { arm, stage } = armed;
-        let result = owners.complete_staged(stage);
+        let result = owners.complete_staged(uma_pool, stage);
         core::mem::drop(arm);
         result
     }
