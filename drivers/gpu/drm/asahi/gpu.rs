@@ -2289,6 +2289,58 @@ impl GpuManager::ver {
         self.dyncfg.id.core_masks_packed.as_slice()
     }
 
+    /// Definition-only E145 bridge from one client-VM weak-pool container to
+    /// the accelerator/device-global UMA namespace. The client-container mutex
+    /// is held by `select_or_create_compute_channel()` across the create closure,
+    /// matching exact AGXChannel::init() replacement serialization. Pool/FList
+    /// construction then consumes the global pool identity and cached range-5
+    /// allocator only on the absent/dead-slot path. There is no live caller.
+    #[allow(dead_code, clippy::too_many_arguments)]
+    pub(crate) fn g15_select_or_create_compute_pool(
+        &self,
+        container: &Arc<Mutex<buffer::G15ClientUmaPoolContainerState>>,
+        priority_class: u32,
+        range5_cached: &Arc<Mutex<alloc::DefaultAllocator>>,
+        bank1: mmu::G15SharedBank1,
+        mapping_notifier: Arc<Mutex<mmu::G15MappingNotifier>>,
+    ) -> Result<buffer::G15ClientUmaComputeChannelRef> {
+        #[ver(G != G15)]
+        {
+            let _ = (
+                container,
+                priority_class,
+                range5_cached,
+                bank1,
+                mapping_notifier,
+            );
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            buffer::G15ClientUmaPoolContainerState::select_or_create_compute_channel(
+                container,
+                priority_class,
+                || {
+                    // Exact host ordering holds the shared-container lock while
+                    // replacement construction runs. The wider UMA namespace
+                    // and this VM's cached range-5 allocator are nested only on
+                    // that replacement path.
+                    let mut device_uma = self.g15_uma.lock();
+                    let mut range5 = range5_cached.lock();
+                    buffer::G15SharedComputeUmaPoolOwner::new_j615_unprepared(
+                        &self.dev,
+                        &mut device_uma,
+                        priority_class,
+                        &mut range5,
+                        bank1,
+                        Some(mapping_notifier),
+                    )
+                },
+            )
+        }
+    }
+
     /// Mirror Apple's runtime command-submission gate. The exact Apple G15
     /// lifecycle boots q4 +0x070 as zero, then AGXAccelerator::
     /// setCommandSubmissionEnabled(true) updates this firmware-visible word

@@ -1691,6 +1691,98 @@ impl G15StockEmptyAssetGuards::ver {
     }
 }
 
+/// One fully assembled but unpublished J615 Compute-channel host lifetime.
+///
+/// E145 couples the E142 shared-pool channel reference to the E127 channel/
+/// command owners and E110 retirement guards. The pool itself remains owned by
+/// the client-VM selection container and is reached only through the identity-
+/// checked channel reference. Dropping this object therefore tears down channel
+/// resources and then releases the modeled direct/active pool references without
+/// any RunCompute publication.
+#[versions(AGX)]
+#[allow(dead_code)]
+struct G15UnpublishedComputeChannel {
+    // Keep channel-local resources/guards physically ahead of the pool
+    // reference so normal Rust field-drop order releases the direct pool
+    // lifetime only after the channel-side ownership has been torn down.
+    owners: G15StockEmptyComputeChannelOwners,
+    guards: G15StockEmptyAssetGuards::ver,
+    pool: buffer::G15ClientUmaComputeChannelRef,
+}
+
+#[versions(AGX)]
+#[allow(dead_code)]
+impl G15UnpublishedComputeChannel::ver {
+    fn pool_id(&self) -> u64 {
+        self.pool.pool_id()
+    }
+}
+
+#[versions(AGX)]
+#[allow(dead_code)]
+impl QueueInner::ver {
+    /// Assemble the exact owner tiers required by a future lazy CL/Compute
+    /// channel, but return only a private host object with no WorkQueue/submit
+    /// attachment and no firmware-command writer.
+    fn g15_assemble_unpublished_compute_channel(
+        &self,
+        gpu: &gpu::GpuManager::ver,
+        priority_class: u32,
+    ) -> Result<G15UnpublishedComputeChannel::ver> {
+        #[ver(G != G15)]
+        {
+            let _ = (gpu, priority_class);
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            let container = self._g15_uma_shared_pools.as_ref().ok_or(EINVAL)?;
+            let range5_cached = self._g15_range5_cached.as_ref().ok_or(EINVAL)?;
+            let range5_uncached = self._g15_range5_uncached.as_ref().ok_or(EINVAL)?;
+            let bank1 = self._g15_shared_bank1.as_ref().ok_or(EINVAL)?.clone();
+            let mapping_notifier = self
+                ._g15_mapping_notifier
+                .as_ref()
+                .ok_or(EINVAL)?
+                .clone();
+
+            // Pool selection/replacement is one client-container transaction.
+            // A reused pool consumes no new identity; a replacement consumes the
+            // next device-global identity before FList construction, as Apple.
+            let pool = gpu.g15_select_or_create_compute_pool(
+                container,
+                priority_class,
+                range5_cached,
+                bank1.clone(),
+                mapping_notifier.clone(),
+            )?;
+
+            // Exact AGXChannel::init() releases the shared-container selection
+            // lock before continuing with channel-local resources. `pool` now
+            // owns the modeled direct/active reference while this allocation
+            // proceeds independently. Any failure drops that reference.
+            let owners = {
+                let mut range5_uncached = range5_uncached.lock();
+                G15StockEmptyComputeChannelOwners::new_unpublished(
+                    &self.dev,
+                    gpu.initdata.runtime_pointers.g15_stats_comp.weak_pointer(),
+                    &mut range5_uncached,
+                    bank1,
+                    mapping_notifier,
+                )?
+            };
+            let guards = G15StockEmptyAssetGuards::ver::new()?;
+
+            Ok(G15UnpublishedComputeChannel::ver {
+                pool,
+                owners,
+                guards,
+            })
+        }
+    }
+}
+
 #[versions(AGX)]
 pub(crate) struct QueueJob {
     dev: AsahiDevRef,

@@ -1068,7 +1068,6 @@ impl G15SharedComputeUmaPoolOwner {
     pub(crate) fn new_j615_unprepared(
         dev: &crate::driver::AsahiDevice,
         device_uma: &mut G15DeviceUmaOwnerState,
-        owner_cookie: u64,
         priority_class: u32,
         range5_list_alloc: &mut alloc::DefaultAllocator,
         bank1: mmu::G15SharedBank1,
@@ -1081,10 +1080,13 @@ impl G15SharedComputeUmaPoolOwner {
         // Apple assigns pool +0x80 before constructing/initializing the FList.
         // Do not roll this counter back if a later allocation fails.
         let pool_identity = device_uma.allocate_pool_identity()?;
+        // `owner_cookie` is Linux-only sticky-ID bookkeeping, not Apple ABI.
+        // The globally ordered pool identity is already unique/nonzero and is
+        // therefore the exact lifetime identity to reuse for this host cookie.
         let flist = G15FListResourceOwner::new_j615_unprepared(
             dev,
             device_uma.hardware_buffer_ids(),
-            owner_cookie,
+            pool_identity.value(),
             pool_identity.value(),
             range5_list_alloc,
             bank1,
