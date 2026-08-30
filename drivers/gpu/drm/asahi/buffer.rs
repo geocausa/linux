@@ -329,6 +329,30 @@ impl G15UmaPoolIdentity {
     }
 }
 
+/// Client-address-space-scoped weak UMAPool slot state recovered from exact
+/// J615/23J220 `AGXUMASharedPoolContainer` ownership.
+///
+/// E139 proves the real container lives under one `AGXShared`, beside the
+/// client `task *` / `IOGPUTask *` whose bank-0 address space backs both FList
+/// range-5 lists. E137 separately proves the four pool slots are weak and must
+/// not own the pool objects. Store only globally unique pool identities here;
+/// this is deliberately not an `Arc`/strong pool owner and cannot promote a
+/// pool to a live reference. Future promotion must close the E137 try-retain
+/// contract before any Queue can consume these slots.
+#[allow(dead_code)]
+pub(crate) struct G15ClientUmaPoolContainerState {
+    weak_pool_ids: [Option<G15UmaPoolIdentity>; 4],
+}
+
+#[allow(dead_code)]
+impl G15ClientUmaPoolContainerState {
+    pub(crate) fn new_client_address_space() -> Self {
+        Self {
+            weak_pool_ids: [None; 4],
+        }
+    }
+}
+
 #[allow(dead_code)]
 impl G15DeviceUmaOwnerState {
     pub(crate) fn new_device_global() -> Result<Self> {

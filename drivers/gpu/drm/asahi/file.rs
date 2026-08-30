@@ -66,6 +66,10 @@ struct Vm {
     // hardware IAS; current G13/G14 VMs therefore keep no extra allocator.
     g15_ualloc_range5_uncached: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
     g15_ualloc_range5_cached: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
+    // Exact J615 `AGXShared +0x1b8` analogue. Keep only the four weak pool
+    // identities at client-VM lifetime; E140 intentionally exposes no Queue
+    // accessor and performs no UMAPool construction/retention.
+    _g15_uma_shared_pools: Option<Arc<Mutex<buffer::G15ClientUmaPoolContainerState>>>,
     vm: mmu::Vm,
     kernel_range: Range<u64>,
     _dummy_mapping: mmu::KernelMapping,
@@ -436,7 +440,7 @@ impl File {
             GFP_KERNEL,
         )?;
 
-        let (g15_ualloc_range5_uncached, g15_ualloc_range5_cached) =
+        let (g15_ualloc_range5_uncached, g15_ualloc_range5_cached, g15_uma_shared_pools) =
             if gpu.get_cfg().uat_ias >= 42 {
                 (
                     Some(Arc::pin_init(
@@ -467,9 +471,16 @@ impl File {
                         )?),
                         GFP_KERNEL,
                     )?),
+                    Some(Arc::pin_init(
+                        new_mutex!(
+                            buffer::G15ClientUmaPoolContainerState::new_client_address_space(),
+                            "g15_uma_shared_pools"
+                        ),
+                        GFP_KERNEL,
+                    )?),
                 )
             } else {
-                (None, None)
+                (None, None, None)
             };
 
         mod_dev_dbg!(
@@ -490,6 +501,7 @@ impl File {
                 ualloc_priv,
                 g15_ualloc_range5_uncached,
                 g15_ualloc_range5_cached,
+                _g15_uma_shared_pools: g15_uma_shared_pools,
                 vm,
                 kernel_range,
                 _dummy_mapping: dummy_mapping,
