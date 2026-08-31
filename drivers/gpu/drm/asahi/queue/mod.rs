@@ -1140,8 +1140,12 @@ impl G15UnpublishedComputeChannel::ver {
     fn prepare_stock_empty_phase1(
         &mut self,
         fence: &UserFence<JobFence::ver>,
-        state_sequence: u32,
     ) -> Result<G15ArmedUnpublishedStockEmptyPrepare::ver> {
+        // E173 closes the last external scalar at this dormant boundary. Apple
+        // sources event-control +0x08 from AGXShared +0x160 before incrementing
+        // it. The channel's retained client-container reference now supplies
+        // the corresponding unmasked shared sequence directly.
+        let state_sequence = self.pool.next_stock_empty_state_sequence()?;
         let owners = &mut self.owners;
         let guards = &mut self.guards;
         self.pool.with_pool(|uma_pool| {

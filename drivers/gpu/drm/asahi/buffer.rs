@@ -1287,6 +1287,16 @@ impl G15DeviceFirmwareResourceState {
 /// the normal CL/Compute path always selects class 1.
 pub(crate) const G15_J615_NORMAL_COMPUTE_POOL_PRIORITY_CLASS: u32 = 1;
 
+/// Exact J615 `AGXShared` command-buffer-state sequence geometry.
+///
+/// `AGXAccelerator::configureDevice()` copies the exact qword
+/// `0x0000003f00000040` to accelerator `+0x680`. `AGXShared::init()` copies
+/// those two u32 values to `+0x164/+0x168`, so the shared host event ring has
+/// 0x40 entries and index 0x3f is the reserved entry skipped by
+/// `AGXCommandBuffer::nextCommandBufferState()`.
+pub(crate) const G15_J615_SHARED_STATE_EVENT_COUNT: u32 = 0x40;
+pub(crate) const G15_J615_SHARED_STATE_RESERVED_INDEX: u32 = 0x3f;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(dead_code)]
 pub(crate) struct G15UmaPoolIdentity(u64);
@@ -1348,6 +1358,12 @@ impl G15ClientUmaPoolSlotState {
 /// methods can allocate a pool in the live driver yet.
 #[allow(dead_code)]
 pub(crate) struct G15ClientUmaPoolContainerState {
+    // Linux's client-address-space analogue already carries the weak
+    // AGXShared-owned UMAPool slots. E173 co-locates the separate AGXShared
+    // +0x160 command-buffer-state sequence here so all Queues sharing this
+    // client address space observe one unmasked sequence. This is host-only;
+    // no firmware-visible object is added.
+    command_buffer_state_sequence: u32,
     slots: [G15ClientUmaPoolSlotState; 4],
 }
 
@@ -1379,6 +1395,27 @@ impl G15ClientUmaComputeChannelRef {
         }
         f(slot.pool.as_mut().ok_or(EINVAL)?)
     }
+
+    /// Return the next dependency-free stock-empty command-buffer-state
+    /// sequence after validating that this channel still names the live pool.
+    ///
+    /// Exact Apple can skip additional sequence values when its separate
+    /// AGXShared 0x40-event ring still carries dependencies. Linux deliberately
+    /// represents command retirement with the E096 JobFence guards instead of
+    /// reproducing that raw IOGPU event ring. For the dormant stock-empty path
+    /// there are no such shared-ring dependencies, so the exact remaining rule
+    /// is to advance monotonically while skipping reserved low-six-bit index
+    /// 0x3f. The unmasked value is what event-control `+0x08` receives.
+    pub(crate) fn next_stock_empty_state_sequence(&self) -> Result<u32> {
+        let mut guard = self.container.lock();
+        {
+            let slot = guard.slots.get(self.slot_index).ok_or(EINVAL)?;
+            if slot.identity() != Some(self.identity) || !slot.is_live() {
+                return Err(EINVAL);
+            }
+        }
+        Ok(guard.next_stock_empty_state_sequence())
+    }
 }
 
 #[allow(dead_code)]
@@ -1399,12 +1436,25 @@ impl Drop for G15ClientUmaComputeChannelRef {
 impl G15ClientUmaPoolContainerState {
     pub(crate) fn new_client_address_space() -> Self {
         Self {
+            command_buffer_state_sequence: 0,
             slots: [
                 G15ClientUmaPoolSlotState::empty(),
                 G15ClientUmaPoolSlotState::empty(),
                 G15ClientUmaPoolSlotState::empty(),
                 G15ClientUmaPoolSlotState::empty(),
             ],
+        }
+    }
+
+    fn next_stock_empty_state_sequence(&mut self) -> u32 {
+        loop {
+            let sequence = self.command_buffer_state_sequence;
+            self.command_buffer_state_sequence = sequence.wrapping_add(1);
+            if sequence & (G15_J615_SHARED_STATE_EVENT_COUNT - 1)
+                != G15_J615_SHARED_STATE_RESERVED_INDEX
+            {
+                return sequence;
+            }
         }
     }
 
