@@ -2039,6 +2039,10 @@ impl Drop for G15SharedBank1Mapping {
             };
             if publish {
                 let before = notifier.cursors();
+                let _ = notifier
+                    .dev
+                    .gpu
+                    .g15_log_runtime_state_with_cursors("drop-begin", before.0, before.1);
                 dev_info!(
                     notifier.dev.as_ref(),
                     "T8122 G15 E211 drop begin base={:#x} size={:#x} mode={:?} q22={}:{}\n",
@@ -2091,6 +2095,11 @@ impl Drop for G15SharedBank1Mapping {
                     iova,
                     after_drain.0,
                     after_drain.1
+                );
+                let _ = notifier.dev.gpu.g15_log_runtime_state_with_cursors(
+                    "drop-drained",
+                    after_drain.0,
+                    after_drain.1,
                 );
             }
         }
