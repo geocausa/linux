@@ -34,28 +34,21 @@ const DEBUG_CLASS: DebugFlags = DebugFlags::Compute;
 
 #[versions(AGX)]
 impl super::QueueInner::ver {
-    /// Submit work to a compute queue.
-    pub(super) fn submit_compute(
+    /// Build one typed Compute command without adding it to a WorkQueue.
+    /// E181 extracts this byte-for-byte construction body so the dormant G15
+    /// stock-empty transaction and the existing submit path cannot drift into
+    /// separate command/inner-allocation implementations.
+    fn build_compute_command(
         &self,
-        job: &mut Job<super::QueueJob::ver>,
+        gpu: &gpu::GpuManager::ver,
         cmdbuf: &uapi::drm_asahi_cmd_compute,
         attachments: &microseq::Attachments,
         objects: Pin<&xarray::XArray<KBox<file::Object>>>,
         id: u64,
         flush_stamps: bool,
-    ) -> Result {
-        let gpu = match (*self.dev)
-            .gpu
-            .as_any()
-            .downcast_ref::<gpu::GpuManager::ver>()
-        {
-            Some(gpu) => gpu,
-            None => {
-                dev_crit!(self.dev.as_ref(), "GpuManager mismatched with Queue!\n");
-                return Err(EIO);
-            }
-        };
-
+        vm_bind: crate::mmu::VmBind,
+        ev_comp: crate::workqueue::QueueEventInfo::ver,
+    ) -> Result<GpuObject<fw::compute::RunCompute::ver>> {
         let mut alloc = gpu.alloc();
         let kalloc = &mut *alloc;
 
@@ -75,8 +68,6 @@ impl super::QueueInner::ver {
         #[ver(G == G15)]
         let _ = slot_client_seq; // G15 +0x85f is a context-ID generation, not this queue sequence
 
-        let vm_bind = job.vm_bind.clone();
-
         mod_dev_dbg!(
             self.dev,
             "[Submission {}] VM slot = {}\n",
@@ -85,10 +76,6 @@ impl super::QueueInner::ver {
         );
 
         let notifier = self.notifier.clone();
-
-        let fence = job.fence.clone();
-        let comp_job = job.get_comp()?;
-        let ev_comp = comp_job.event_info();
 
         let preempt2_off = gpu.get_cfg().compute_preempt1_size;
         let preempt3_off = preempt2_off + 8;
@@ -536,6 +523,46 @@ impl super::QueueInner::ver {
 
         core::mem::drop(alloc);
 
+        Ok(comp)
+    }
+
+    /// Submit work to a compute queue.
+    pub(super) fn submit_compute(
+        &self,
+        job: &mut Job<super::QueueJob::ver>,
+        cmdbuf: &uapi::drm_asahi_cmd_compute,
+        attachments: &microseq::Attachments,
+        objects: Pin<&xarray::XArray<KBox<file::Object>>>,
+        id: u64,
+        flush_stamps: bool,
+    ) -> Result {
+        let gpu = match (*self.dev)
+            .gpu
+            .as_any()
+            .downcast_ref::<gpu::GpuManager::ver>()
+        {
+            Some(gpu) => gpu,
+            None => {
+                dev_crit!(self.dev.as_ref(), "GpuManager mismatched with Queue!\n");
+                return Err(EIO);
+            }
+        };
+
+        let vm_bind = job.vm_bind.clone();
+        let fence = job.fence.clone();
+        let ev_comp = job.get_comp()?.event_info();
+        let comp = self.build_compute_command(
+            gpu,
+            cmdbuf,
+            attachments,
+            objects,
+            id,
+            flush_stamps,
+            vm_bind.clone(),
+            ev_comp,
+        )?;
+        let comp_job = job.get_comp()?;
+
         fence.add_command();
         comp_job.add_cb(comp, vm_bind.slot(), move |error| {
             if let Some(err) = error {
@@ -549,4 +576,67 @@ impl super::QueueInner::ver {
 
         Ok(())
     }
+
+    /// Dormant E181 stock-empty command construction route. The no-launch UAPI
+    /// fields are validated before E180 is entered; E180 then arms phase 1 before
+    /// invoking the exact shared builder above. The fully finalized command stays
+    /// trapped in the QueueJob RAII owner and is never added to a WorkQueue here.
+    fn construct_g15_stock_empty_phase0_unpublished(
+        &self,
+        job: &mut Job<super::QueueJob::ver>,
+        cmdbuf: &uapi::drm_asahi_cmd_compute,
+        attachments: &microseq::Attachments,
+        objects: Pin<&xarray::XArray<KBox<file::Object>>>,
+        id: u64,
+        flush_stamps: bool,
+    ) -> Result {
+        #[ver(G != G15)]
+        {
+            let _ = (job, cmdbuf, attachments, objects, id, flush_stamps);
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            if cmdbuf.flags != 0
+                || cmdbuf.sampler_count != 0
+                || cmdbuf.cdm_ctrl_stream_base != 0
+                || cmdbuf.cdm_ctrl_stream_end != 0
+                || cmdbuf.sampler_heap != 0
+                || cmdbuf.helper.binary != 0
+                || cmdbuf.helper.cfg != 0
+                || cmdbuf.helper.data != 0
+            {
+                return Err(EINVAL);
+            }
+
+            let gpu = match (*self.dev)
+                .gpu
+                .as_any()
+                .downcast_ref::<gpu::GpuManager::ver>()
+            {
+                Some(gpu) => gpu,
+                None => {
+                    dev_crit!(self.dev.as_ref(), "GpuManager mismatched with Queue!\n");
+                    return Err(EIO);
+                }
+            };
+            let vm_bind = job.vm_bind.clone();
+            let ev_comp = job.get_comp()?.event_info();
+
+            job.construct_g15_stock_empty_unpublished(|| {
+                self.build_compute_command(
+                    gpu,
+                    cmdbuf,
+                    attachments,
+                    objects,
+                    id,
+                    flush_stamps,
+                    vm_bind,
+                    ev_comp,
+                )
+            })
+        }
+    }
+
 }
