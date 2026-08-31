@@ -1531,6 +1531,42 @@ impl QueueJob::ver {
         }
     }
 
+    /// Dormant E180 transaction wrapper. Phase 1 installs the armed RAII owner
+    /// before `build_command` can run, so command allocation can never precede
+    /// the E134 fence reference / rotating-slot bindings through this API. Any
+    /// builder or phase-2 error drops the owner immediately and therefore runs
+    /// the existing explicit abort/completion rollback before returning.
+    fn construct_g15_stock_empty_unpublished(
+        &mut self,
+        build_command: impl FnOnce() -> Result<GpuObject<fw::compute::RunCompute::ver>>,
+    ) -> Result {
+        #[ver(G != G15)]
+        {
+            let _ = build_command;
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            self.prepare_g15_stock_empty_phase1()?;
+
+            let command = match build_command() {
+                Ok(command) => command,
+                Err(err) => {
+                    core::mem::drop(self._g15_stock_empty_assets.take());
+                    return Err(err);
+                }
+            };
+
+            if let Err(err) = self.finalize_g15_stock_empty_phase2(command) {
+                core::mem::drop(self._g15_stock_empty_assets.take());
+                return Err(err);
+            }
+
+            Ok(())
+        }
+    }
+
     fn get_vtx(&mut self) -> Result<&mut workqueue::Job::ver> {
         self.sj_vtx
             .as_mut()
