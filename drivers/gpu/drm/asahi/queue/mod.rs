@@ -47,6 +47,7 @@ use crate::{
     workqueue, //
 };
 
+use core::num::NonZeroU64;
 use core::sync::atomic::{
     AtomicU64,
     Ordering, //
@@ -1447,6 +1448,47 @@ impl G15UnpublishedComputeChannel::ver {
     fn scrub_completed_stock_empty_slots(&mut self) {
         self.guards.scrub_completed();
     }
+
+    fn transport_queue_info_fwva(&self) -> Result<u64> {
+        self._fw_channel_resources.transport_queue_info_fwva()
+    }
+
+    fn transport_state(&self) -> Result<buffer::G15ChannelTransportState> {
+        self._fw_channel_resources.transport_state()
+    }
+
+    fn transport_write_command(&self, command_fwva: u64) -> Result<u32> {
+        self._fw_channel_resources
+            .transport_write_command(command_fwva)
+    }
+}
+
+#[versions(AGX)]
+impl workqueue::G15WorkQueueTransport
+    for Mutex<Option<G15UnpublishedComputeChannel::ver>>
+{
+    fn queue_info_fwva(&self) -> Result<NonZeroU64> {
+        let slot = self.lock();
+        let channel = (&*slot).as_ref().ok_or(EINVAL)?;
+        NonZeroU64::new(channel.transport_queue_info_fwva()?).ok_or(EIO)
+    }
+
+    fn state(&self) -> Result<workqueue::G15WorkQueueTransportState> {
+        let slot = self.lock();
+        let channel = (&*slot).as_ref().ok_or(EINVAL)?;
+        let state = channel.transport_state()?;
+        Ok(workqueue::G15WorkQueueTransportState {
+            doneptr: state.doneptr,
+            wptr: state.wptr,
+            ring_size: state.ring_size,
+        })
+    }
+
+    fn write_command(&self, command_fwva: NonZeroU64) -> Result<u32> {
+        let slot = self.lock();
+        let channel = (&*slot).as_ref().ok_or(EINVAL)?;
+        channel.transport_write_command(command_fwva.get())
+    }
 }
 
 #[versions(AGX)]
@@ -2151,7 +2193,7 @@ impl Queue::ver {
         )?;
         #[ver(G == G15)]
         let g15_compute_wq_lifetime = Some(
-            g15_compute_channel.clone() as Arc<dyn core::any::Any + Send + Sync>
+            g15_compute_channel.clone() as Arc<dyn workqueue::G15WorkQueueTransport>
         );
         #[ver(G != G15)]
         let g15_compute_wq_lifetime = None;

@@ -42,6 +42,7 @@ use crate::{
     fw,
     gpu,
     hw,
+    mem,
     mmu,
     slotalloc, //
 };
@@ -853,6 +854,16 @@ impl G15FirmwareResourceLease {
         Ok(())
     }
 
+    fn get_u32(slot: &[u8], offset: usize) -> Result<u32> {
+        let end = offset.checked_add(4).ok_or(EOVERFLOW)?;
+        let bytes: [u8; 4] = slot
+            .get(offset..end)
+            .ok_or(EINVAL)?
+            .try_into()
+            .map_err(|_| EINVAL)?;
+        Ok(u32::from_le_bytes(bytes))
+    }
+
     fn put_u64(slot: &mut [u8], offset: usize, value: u64) -> Result {
         let end = offset.checked_add(8).ok_or(EOVERFLOW)?;
         slot.get_mut(offset..end)
@@ -1020,6 +1031,14 @@ impl G15FirmwareCommandQueueResourceLeases {
 /// graph without reopening a raw-address input boundary.
 #[derive(Clone, Copy, Debug)]
 #[allow(dead_code)]
+pub(crate) struct G15ChannelTransportState {
+    pub(crate) doneptr: u32,
+    pub(crate) wptr: u32,
+    pub(crate) ring_size: u32,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
 pub(crate) struct G15InitializedFirmwareChannelResources {
     channel_state_fwva: u64,
 }
@@ -1068,6 +1087,84 @@ impl G15FirmwareChannelResourceLeases {
         Ok(G15InitializedFirmwareChannelResources {
             channel_state_fwva,
         })
+    }
+
+    /// Exact E184 firmware-facing QueueInfo pointer: AGXChannel +0x90 is the
+    /// selected `_AGFIChannelState` base, whose first 0xb0 bytes are QueueInfo.
+    pub(crate) fn transport_queue_info_fwva(&self) -> Result<u64> {
+        let fwva = self.channel_state.mapped_fwva()?;
+        if fwva == 0 {
+            return Err(EIO);
+        }
+        Ok(fwva)
+    }
+
+    /// Read the three exact E184 ring-state words from selected uncached
+    /// channel memory. These are independent of the generic WorkQueue RingState.
+    pub(crate) fn transport_state(&self) -> Result<G15ChannelTransportState> {
+        let mut state = self.uncached_channel_memory.manager.0.lock();
+        let (_fwva, slot) = state.selected_mapped_element(
+            self.uncached_channel_memory.index,
+            G15FirmwareResourceKind::UncachedChannelMemory,
+        )?;
+        let doneptr = G15FirmwareResourceLease::get_u32(slot, 0x00)?;
+        let wptr = G15FirmwareResourceLease::get_u32(slot, 0x40)?;
+        let ring_size = G15FirmwareResourceLease::get_u32(slot, 0x50)?;
+        if ring_size != fw::workqueue::G15_J615_CL_UNCACHED_CHANNEL_VALUE_50
+            || doneptr >= ring_size
+            || wptr >= ring_size
+        {
+            return Err(EIO);
+        }
+        Ok(G15ChannelTransportState {
+            doneptr,
+            wptr,
+            ring_size,
+        })
+    }
+
+    /// Nonblocking Linux form of exact E184 `writeChannelCommandPointer()`.
+    /// The future WorkQueue caller already serializes command insertion; return
+    /// EBUSY rather than spinning if firmware still owns the next slot.
+    pub(crate) fn transport_write_command(&self, command_fwva: u64) -> Result<u32> {
+        if command_fwva == 0 {
+            return Err(EINVAL);
+        }
+        let before = self.transport_state()?;
+        let next = (before.wptr + 1) % before.ring_size;
+        if next == before.doneptr {
+            return Err(EBUSY);
+        }
+
+        {
+            let mut state = self.cached_channel_memory.manager.0.lock();
+            let (_fwva, slot) = state.selected_mapped_element(
+                self.cached_channel_memory.index,
+                G15FirmwareResourceKind::CachedChannelMemory,
+            )?;
+            let offset = (before.wptr as usize)
+                .checked_mul(core::mem::size_of::<u64>())
+                .ok_or(EOVERFLOW)?;
+            G15FirmwareResourceLease::put_u64(slot, offset, command_fwva)?;
+        }
+
+        // Exact host ordering is command pointer -> dmb ish -> CPU wptr.
+        mem::sync();
+
+        {
+            let mut state = self.uncached_channel_memory.manager.0.lock();
+            let (_fwva, slot) = state.selected_mapped_element(
+                self.uncached_channel_memory.index,
+                G15FirmwareResourceKind::UncachedChannelMemory,
+            )?;
+            let current = G15FirmwareResourceLease::get_u32(slot, 0x40)?;
+            let ring_size = G15FirmwareResourceLease::get_u32(slot, 0x50)?;
+            if current != before.wptr || ring_size != before.ring_size {
+                return Err(EBUSY);
+            }
+            G15FirmwareResourceLease::put_u32(slot, 0x40, next)?;
+        }
+        Ok(next)
     }
 }
 

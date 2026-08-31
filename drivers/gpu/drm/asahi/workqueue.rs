@@ -69,6 +69,22 @@ const MAX_JOB_SLOTS: u32 = 127;
 /// Apple Silicon that is the architectural counter clock domain; the physical
 /// counter used by the existing DRM_ASAHI_GET_TIME path has the same frequency
 /// and differs only by a constant offset from CNTVCT on bare metal.
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
+pub(crate) struct G15WorkQueueTransportState {
+    pub(crate) doneptr: u32,
+    pub(crate) wptr: u32,
+    pub(crate) ring_size: u32,
+}
+
+/// Typed E185 bridge from generic WorkQueue ownership to the selected G15 CL
+/// channel transport. Methods remain unused by commit/submit/run in E185.
+pub(crate) trait G15WorkQueueTransport: Send + Sync {
+    fn queue_info_fwva(&self) -> Result<NonZeroU64>;
+    fn state(&self) -> Result<G15WorkQueueTransportState>;
+    fn write_command(&self, command_fwva: NonZeroU64) -> Result<u32>;
+}
+
 #[inline(always)]
 pub(crate) fn g15_submission_timestamp() -> u64 {
     let raw: u64;
@@ -306,7 +322,7 @@ pub(crate) struct WorkQueue {
     // the final WorkQueue Arc therefore releases the channel lifetime before
     // any base WorkQueue state is torn down. Every Job/Event WorkQueue Arc clone
     // implicitly retains this same anchor.
-    _g15_owned_channel_lifetime: Option<Arc<dyn core::any::Any + Send + Sync>>,
+    _g15_owned_channel_lifetime: Option<Arc<dyn G15WorkQueueTransport>>,
     info_pointer: GpuWeakPointer<QueueInfo::ver>,
     #[pin]
     inner: Mutex<WorkQueueInner::ver>,
@@ -712,7 +728,7 @@ impl WorkQueue::ver {
         event_manager: Arc<event::EventManager>,
         gpu_context: Arc<GpuContext>,
         notifier_list: Arc<GpuObject<fw::event::NotifierList>>,
-        g15_owned_channel_lifetime: Option<Arc<dyn core::any::Any + Send + Sync>>,
+        g15_owned_channel_lifetime: Option<Arc<dyn G15WorkQueueTransport>>,
         pipe_type: PipeType,
         id: u64,
         priority: u32,
@@ -907,6 +923,30 @@ impl WorkQueue::ver {
 
     pub(crate) fn info_pointer(&self) -> GpuWeakPointer<QueueInfo::ver> {
         self.info_pointer
+    }
+
+    /// E185 compile-only selected-channel transport view. The normal generic
+    /// QueueInfo remains allocated, but this is the only typed route to the
+    /// exact G15 firmware-facing QueueInfo/ring state.
+    #[allow(dead_code)]
+    pub(crate) fn g15_selected_transport_state(
+        &self,
+    ) -> Result<(NonZeroU64, G15WorkQueueTransportState)> {
+        let transport = self._g15_owned_channel_lifetime.as_ref().ok_or(EINVAL)?;
+        Ok((transport.queue_info_fwva()?, transport.state()?))
+    }
+
+    /// E185 compile-only command-placement route. No submit/run caller uses it
+    /// yet; E184 requires this bridge before any G15 command can be published.
+    #[allow(dead_code)]
+    pub(crate) fn g15_selected_transport_write_command(
+        &self,
+        command_fwva: NonZeroU64,
+    ) -> Result<u32> {
+        self._g15_owned_channel_lifetime
+            .as_ref()
+            .ok_or(EINVAL)?
+            .write_command(command_fwva)
     }
 
     /// Bounded G15 scheduler-registration probe. Publish exactly one firmware
