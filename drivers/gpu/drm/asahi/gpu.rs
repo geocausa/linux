@@ -2736,7 +2736,7 @@ impl GpuManager::ver {
             let state_after_put = pipe.g15_state();
             dev_info!(
                 self.dev.as_ref(),
-                "T8122 G15 E197 selected pipe {:?}/{} before={:?} after-put={:?} token={}\n",
+                "T8122 G15 E199 selected pipe {:?}/{} before={:?} after-put={:?} token={}\n",
                 pipe_type,
                 index,
                 state_before,
@@ -2772,12 +2772,12 @@ impl GpuManager::ver {
             // Prove the scheduler consumed and returned from this selected
             // RunWorkQueue record before declaring first publication complete.
             // Engine completion remains asynchronous and is observed separately
-            // through the E197 WorkQueue callback marker.
+            // through the E199 WorkQueue callback marker.
             let wait_result = pipe.wait_for(pipe_token);
             let state_after_wait = pipe.g15_state();
             dev_info!(
                 self.dev.as_ref(),
-                "T8122 G15 E197 selected pipe {:?}/{} wait={:?} final={:?}\n",
+                "T8122 G15 E199 selected pipe {:?}/{} wait={:?} final={:?}\n",
                 pipe_type,
                 index,
                 wait_result,
@@ -2799,7 +2799,7 @@ impl GpuManager::ver {
             }
             dev_info!(
                 self.dev.as_ref(),
-                "T8122 G15 E197 selected first RunWorkQueue accepted by scheduler; awaiting engine completion\n"
+                "T8122 G15 E199 selected first RunWorkQueue accepted by scheduler; awaiting engine completion\n"
             );
             Ok(())
         }

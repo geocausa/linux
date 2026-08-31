@@ -974,7 +974,7 @@ struct G15StockEmptyWorkQueuePayload {
 #[versions(AGX)]
 impl G15StockEmptyWorkQueuePayload::ver {
     /// Snapshot the real selected uncached channel cursors after firmware stamp
-    /// completion and before host resource cleanup. E197 uses this to observe
+    /// completion and before host resource cleanup. E199 uses this to observe
     /// whether the first command advances the selected done pointer.
     fn transport_state(&self) -> Result<buffer::G15ChannelTransportState> {
         let slot = self.channel.lock();
@@ -1887,7 +1887,7 @@ impl QueueJob::ver {
                 let selected_state = payload.transport_state();
                 dev_info!(
                     dev.as_ref(),
-                    "T8122 G15 E197 stock-empty WorkQueue completion job={} error={:?} selected_state={:?}\n",
+                    "T8122 G15 E199 stock-empty WorkQueue completion job={} error={:?} selected_state={:?}\n",
                     job_id,
                     error,
                     selected_state

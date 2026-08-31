@@ -58,7 +58,7 @@ const DEBUG_CLASS: DebugFlags = DebugFlags::File;
 
 pub(crate) const MAX_COMMANDS_PER_SUBMISSION: u32 = 64;
 
-// E197 lab-only, module-lifetime one-shot claim. The signed first Compute
+// E199 lab-only, module-lifetime one-shot claim. The signed first Compute
 // discriminator may cross the G15 file gate at most once per candidate boot.
 static G15_FIRST_COMPUTE_PROBE_USED: AtomicBool = AtomicBool::new(false);
 
@@ -1074,7 +1074,7 @@ impl File {
         const G15_BARRIER_REG_PROBE_FLAGS: u32 = 0x4731_3552; // "G15R"
         const G15_BARRIER_REG_PROBE_PAD: u32 = 0x4531_3731; // "E171"
         const G15_FIRST_COMPUTE_PROBE_FLAGS: u32 = 0x4731_3545; // "G15E"
-        const G15_FIRST_COMPUTE_PROBE_PAD: u32 = 0x4531_3937; // "E197"
+        const G15_FIRST_COMPUTE_PROBE_PAD: u32 = 0x4531_3939; // "E199"
 
         let g15_first_compute_probe = is_g15
             && data.flags == G15_FIRST_COMPUTE_PROBE_FLAGS
@@ -1100,7 +1100,7 @@ impl File {
                 }
                 dev_info!(
                     device.as_ref(),
-                    "T8122 G15 E197 signed first stock-empty Compute accepted at outer gate; one-shot consumed\n"
+                    "T8122 G15 E199 signed first stock-empty Compute accepted at outer gate; one-shot consumed\n"
                 );
             } else {
                 let vm_bind_probe = data.flags == G15_VM_BIND_PROBE_FLAGS
