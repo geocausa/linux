@@ -870,6 +870,10 @@ struct G15QueueJobStockEmptyAssets {
     channel: Arc<Mutex<Option<G15UnpublishedComputeChannel::ver>>>,
     prepared: Option<G15ArmedUnpublishedStockEmptyPrepare::ver>,
     finalized: Option<G15ArmedUnpublishedRunComputeFieldStage::ver>,
+    // E179 makes the typed RunCompute allocation part of the same per-job
+    // owner as the armed assets. No accessor exists, so an unpublished command
+    // cannot outlive or diverge from the transaction that finalized its SKU.
+    command: Option<GpuObject<fw::compute::RunCompute::ver>>,
 }
 
 #[versions(AGX)]
@@ -883,48 +887,66 @@ impl G15QueueJobStockEmptyAssets::ver {
             channel,
             prepared: Some(prepared),
             finalized: None,
+            command: None,
         }
     }
 
-    /// Consume phase 1, serialize/write the exact reserved SKU slot through
-    /// the channel owner, then apply E177's narrow command-field writer. On a
-    /// finalization failure the channel helper already rolls phase 1 back. If
-    /// field application fails after successful SKU finalization, complete the
-    /// unpublished assets immediately so no armed token escapes this method.
-    fn finalize(
+    /// Consume phase 1 together with the exact typed RunCompute allocation.
+    /// The FWVA is derived from that object, the SKU finalizer reads the same
+    /// raw image, and E177 mutates that image in place. The command is retained
+    /// only after the finalized armed token is safely stored beside it.
+    fn finalize_owned_command(
         &mut self,
-        command_fwva: u64,
-        command: &mut fw::compute::raw::RunComputeG15V14_7<'_>,
+        command: GpuObject<fw::compute::RunCompute::ver>,
     ) -> Result {
-        if self.finalized.is_some() {
-            return Err(EBUSY);
+        #[ver(G != G15)]
+        {
+            let _ = command;
+            return Err(EINVAL);
         }
-        let prepared = self.prepared.take().ok_or(EINVAL)?;
-        let mut slot = self.channel.lock();
-        let Some(channel) = (&mut *slot).as_mut() else {
-            pr_err!(
-                "G15 stock-empty phase-2 owner lost its Compute channel; retaining prepared token fail-closed\n"
-            );
-            core::mem::forget(prepared);
-            return Err(ENODEV);
-        };
 
-        let finalized = channel.finalize_stock_empty(prepared, command_fwva, command)?;
-        if let Err(apply_err) = finalized.stage.apply_stock_empty_runcompute_fields(command) {
-            let cleanup = channel.complete_stock_empty(finalized);
-            if cleanup.is_ok() {
-                channel.scrub_completed_stock_empty_slots();
-                return Err(apply_err);
+        #[ver(G == G15)]
+        {
+            let mut command = command;
+            if self.finalized.is_some() || self.command.is_some() {
+                return Err(EBUSY);
             }
-            pr_err!(
-                "G15 stock-empty phase-2 field apply failed and cleanup did not complete: {:?}\n",
-                cleanup
-            );
-            return cleanup.map(|_| ());
-        }
+            let prepared = self.prepared.take().ok_or(EINVAL)?;
+            let command_fwva = command.gpu_va().get();
+            let mut slot = self.channel.lock();
+            let Some(channel) = (&mut *slot).as_mut() else {
+                pr_err!(
+                    "G15 phase-2 lost channel; retaining token and command fail-closed\n"
+                );
+                core::mem::forget(prepared);
+                core::mem::forget(command);
+                return Err(ENODEV);
+            };
 
-        self.finalized = Some(finalized);
-        Ok(())
+            let finalized = command.with_mut(|raw, _inner| {
+                let finalized = channel.finalize_stock_empty(prepared, command_fwva, raw)?;
+                if let Err(apply_err) = finalized.stage.apply_stock_empty_runcompute_fields(raw) {
+                    match channel.complete_stock_empty(finalized) {
+                        Ok(_) => {
+                            channel.scrub_completed_stock_empty_slots();
+                            return Err(apply_err);
+                        }
+                        Err(err) => {
+                            pr_err!(
+                                "G15 phase-2 field apply cleanup failed: {:?}\n",
+                                err
+                            );
+                            return Err(err);
+                        }
+                    }
+                }
+                Ok(finalized)
+            })?;
+
+            self.finalized = Some(finalized);
+            self.command = Some(command);
+            Ok(())
+        }
     }
 }
 
@@ -939,8 +961,11 @@ impl Drop for G15QueueJobStockEmptyAssets::ver {
             if let Some(finalized) = self.finalized.take() {
                 core::mem::forget(finalized);
             }
+            if let Some(command) = self.command.take() {
+                core::mem::forget(command);
+            }
             pr_err!(
-                "G15 stock-empty QueueJob owner lost its Compute channel; retaining armed state fail-closed\n"
+                "G15 QueueJob lost Compute channel; retaining assets and command fail-closed\n"
             );
             return;
         };
@@ -1483,17 +1508,17 @@ impl QueueJob::ver {
         }
     }
 
-    /// Dormant E178 phase-2 transition. The caller must provide the exact
-    /// already-initialized G15 RunCompute image and its FWVA; E178 deliberately
-    /// has no caller and does not allocate or publish that command.
+    /// Dormant E179 phase-2 transition. Ownership of the already-initialized
+    /// typed RunCompute object moves into the same QueueJob RAII state as the
+    /// phase-1 token. Its FWVA is derived internally and no command reference is
+    /// returned or exposed for WorkQueue publication.
     fn finalize_g15_stock_empty_phase2(
         &mut self,
-        command_fwva: u64,
-        command: &mut fw::compute::raw::RunComputeG15V14_7<'_>,
+        command: GpuObject<fw::compute::RunCompute::ver>,
     ) -> Result {
         #[ver(G != G15)]
         {
-            let _ = (command_fwva, command);
+            let _ = command;
             return Err(EINVAL);
         }
 
@@ -1502,7 +1527,7 @@ impl QueueJob::ver {
             self._g15_stock_empty_assets
                 .as_mut()
                 .ok_or(EINVAL)?
-                .finalize(command_fwva, command)
+                .finalize_owned_command(command)
         }
     }
 
