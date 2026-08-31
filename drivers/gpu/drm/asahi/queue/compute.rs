@@ -639,4 +639,37 @@ impl super::QueueInner::ver {
         }
     }
 
+
+    /// Dormant E183 composition boundary. This produces one fully-owned pending
+    /// Compute WorkQueue command but deliberately stops before Job::commit(),
+    /// Job::submit(), QueueInfo publication, pipe transport, or GPU execution.
+    fn prepare_g15_stock_empty_workqueue_unpublished(
+        &self,
+        job: &mut Job<super::QueueJob::ver>,
+        cmdbuf: &uapi::drm_asahi_cmd_compute,
+        attachments: &microseq::Attachments,
+        objects: Pin<&xarray::XArray<KBox<file::Object>>>,
+        id: u64,
+        flush_stamps: bool,
+    ) -> Result {
+        #[ver(G != G15)]
+        {
+            let _ = (job, cmdbuf, attachments, objects, id, flush_stamps);
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            self.construct_g15_stock_empty_phase0_unpublished(
+                job,
+                cmdbuf,
+                attachments,
+                objects,
+                id,
+                flush_stamps,
+            )?;
+            job.transfer_g15_stock_empty_to_workqueue()
+        }
+    }
+
 }
