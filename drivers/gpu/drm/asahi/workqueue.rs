@@ -371,6 +371,18 @@ pub(crate) struct JobSubmission<'a> {
     command_count: usize,
 }
 
+/// E187 rollback-safe selected-channel submission token for the exact stock-empty
+/// G15 path. Merely creating this object does not touch firmware-visible channel
+/// memory; selected command placement occurs only in `run()`.
+#[versions(AGX)]
+#[allow(dead_code)]
+pub(crate) struct G15SelectedJobSubmission<'a> {
+    inner: Option<Guard<'a, WorkQueueInner::ver, MutexBackend>>,
+    transport: Arc<dyn G15WorkQueueTransport>,
+    event_count: usize,
+    command_count: usize,
+}
+
 #[versions(AGX)]
 impl Job::ver {
     pub(crate) fn event_info(&self) -> QueueEventInfo::ver {
@@ -484,6 +496,98 @@ impl Job::ver {
                 inner.event.as_ref().map(|a| a.0.slot()),
             );
             None
+        }
+    }
+
+    /// E187 stock-empty selected-channel readiness check. This remains separate
+    /// from the generic WorkQueue path and has no caller in this checkpoint.
+    #[allow(dead_code)]
+    pub(crate) fn can_submit_g15_selected_stock_empty(
+        &self,
+    ) -> Result<Option<dma_fence::Fence>> {
+        #[ver(G != G15)]
+        {
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            if self.pending.len() != 1 {
+                return Err(EINVAL);
+            }
+            let transport = self
+                .wq
+                ._g15_owned_channel_lifetime
+                .as_ref()
+                .ok_or(EINVAL)?;
+            let state = transport.state()?;
+            let next = (state.wptr + 1) % state.ring_size;
+            let inner = self.wq.inner.lock();
+            if inner.free_slots() > self.event_count && next != state.doneptr {
+                return Ok(None);
+            }
+            if let Some(work) = inner.pending.first() {
+                return Ok(Some(work.inner.get_fence()));
+            }
+            Err(EBUSY)
+        }
+    }
+
+    /// Move exactly one finalized stock-empty command into host pending ownership
+    /// while leaving the selected cached/uncached channel memory untouched. If
+    /// this token is dropped before `run()`, the ordinary event/pending rollback
+    /// remains complete because no firmware-visible ring mutation occurred.
+    #[allow(dead_code)]
+    pub(crate) fn submit_g15_selected_stock_empty(
+        &mut self,
+    ) -> Result<G15SelectedJobSubmission::ver<'_>> {
+        #[ver(G != G15)]
+        {
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            if !self.committed || self.submitted || self.pending.len() != 1 {
+                return Err(EINVAL);
+            }
+            let transport = self
+                .wq
+                ._g15_owned_channel_lifetime
+                .as_ref()
+                .ok_or(EINVAL)?
+                .clone();
+            let mut inner = self.wq.inner.lock();
+
+            if inner.submit_seq != self.event_info.cmd_seq
+                || inner.commit_seq < self.event_info.cmd_seq + 1
+            {
+                return Err(EINVAL);
+            }
+            let state = transport.state()?;
+            let next = (state.wptr + 1) % state.ring_size;
+            if next == state.doneptr {
+                return Err(EBUSY);
+            }
+
+            inner.pending.reserve(1, GFP_KERNEL)?;
+            inner.last_submitted = Some(self.event_info.value);
+
+            for mut command in self.pending.drain(..) {
+                command.as_mut().inner_mut().set_wptr(state.wptr);
+                inner
+                    .pending
+                    .push(command, GFP_KERNEL)
+                    .expect("push() failed after reserve()");
+            }
+
+            self.submitted = true;
+            Ok(G15SelectedJobSubmission::ver {
+                inner: Some(inner),
+                transport,
+                event_count: self.event_count,
+                command_count: 1,
+            })
         }
     }
 
@@ -628,6 +732,80 @@ impl<'a> JobSubmission::ver<'a> {
 
     pub(crate) fn priority(&self) -> u32 {
         self.inner.as_ref().expect("No inner?").priority
+    }
+}
+
+#[versions(AGX)]
+#[allow(dead_code)]
+impl<'a> G15SelectedJobSubmission::ver<'a> {
+    /// Perform the first firmware-visible mutation only after every message input
+    /// has been validated. After `write_command()` succeeds, the remaining path
+    /// is intentionally infallible: enqueue the already-formed RunWorkQueue and
+    /// advance host submission bookkeeping. The EP21 doorbell is still a later
+    /// caller boundary and E187 has no caller for this method.
+    pub(crate) fn run(
+        mut self,
+        channel: &mut channel::PipeChannel::ver,
+    ) -> Result {
+        #[ver(G != G15)]
+        {
+            let _ = channel;
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            if self.command_count != 1 {
+                return Err(EINVAL);
+            }
+            let queue_info_fwva = self.transport.queue_info_fwva()?;
+            let inner = self.inner.as_mut().ok_or(EIO)?;
+            let event = inner.event.as_ref().ok_or(EIO)?;
+            let event_slot: u8 = event.0.slot().try_into()?;
+            let command_index = inner.pending.len().checked_sub(1).ok_or(EIO)?;
+            let command_fwva = inner.pending[command_index].inner.gpu_va();
+            let pipe_type = inner.pipe_type;
+            let is_new = inner.new;
+
+            // Last fallible step: exact E184 selected cached pointer write,
+            // barrier, then selected uncached CPU-wptr update.
+            let wptr = self.transport.write_command(command_fwva)?;
+
+            let msg = fw::channels::RunWorkQueueMsg::ver {
+                g15_timestamp: U64(g15_submission_timestamp()),
+                g15_work_queue_fwva: U64(queue_info_fwva.get()),
+                g15_pipe_type: pipe_type,
+                g15_wptr: wptr as u16,
+                g15_event_slot: event_slot,
+                g15_is_new: is_new,
+            };
+            channel.send(&msg);
+            inner.new = false;
+            inner.submit_seq += self.command_count as u64;
+
+            let inner = self.inner.take().expect("selected submission lost inner");
+            core::mem::forget(self);
+            core::mem::drop(inner);
+            Ok(())
+        }
+    }
+}
+
+#[versions(AGX)]
+impl<'a> Drop for G15SelectedJobSubmission::ver<'a> {
+    fn drop(&mut self) {
+        let Some(inner) = self.inner.as_mut() else {
+            return;
+        };
+        let new_len = inner.pending.len() - self.command_count;
+        inner.pending.truncate(new_len);
+
+        let event = inner.event.as_mut().expect("selected submission lost event");
+        event.1.sub(self.event_count as u32);
+        let val = event.1;
+        inner.commit_seq -= self.command_count as u64;
+        inner.event_seq -= self.event_count as u64;
+        inner.last_submitted = Some(val);
     }
 }
 
