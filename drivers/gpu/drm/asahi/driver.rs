@@ -372,7 +372,7 @@ impl platform::Driver for AsahiDriver {
             drm::driver::Registration::new_foreign_owned(&drm, pdev.as_ref(), 0)?;
             dev_info!(
                 pdev.as_ref(),
-                "T8122 G15 E171 fresh-slot Barrier-registration probe ready; GPU engine commands blocked\n"
+                "T8122 G15 E189 persistent-q4 + fresh-slot Barrier probe ready; GPU engine commands blocked\n"
             );
             return Ok(Self { drm });
         }

@@ -2357,21 +2357,18 @@ impl Queue for Queue::ver {
             let bind = (*self.dev).gpu.bind_vm(&self.vm)?;
             let slot = bind.slot();
 
-            gpu.g15_set_command_submission_enabled(true)?;
-            let registration_result = self
-                .q_comp
+            // E188 normal-runtime parity: q4 +0x070 is already enabled by
+            // GpuManager::init() and remains enabled across submissions. The
+            // E171 registration surrogate may consume that settled state but
+            // must never create a per-command gate lifetime.
+            if !gpu.g15_firmware_command_gate_enabled() {
+                return Err(EIO);
+            }
+            self.q_comp
                 .as_ref()
                 .ok_or(EIO)?
                 .wq
-                .g15_register_barrier(&gpu);
-
-            // An ambiguous registration/release failure leaves the q4 gate on
-            // and QueueInfo backing retained fail-closed until reboot. Restore
-            // the gate only after the complete known-good E060 lifecycle.
-            if registration_result.is_ok() {
-                gpu.g15_set_command_submission_enabled(false)?;
-            }
-            registration_result?;
+                .g15_register_barrier(&gpu)?;
 
             core::mem::drop(bind);
             Ok((slot, pool_id))

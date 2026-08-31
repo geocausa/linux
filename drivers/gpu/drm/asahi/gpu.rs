@@ -2410,13 +2410,12 @@ impl GpuManager::ver {
         }
     }
 
-    /// Mirror Apple's runtime command-submission gate. The exact Apple G15
-    /// lifecycle boots q4 +0x070 as zero, then AGXAccelerator::
-    /// setCommandSubmissionEnabled(true) updates this firmware-visible word
-    /// before submitCL/TA/3D are allowed to ring EP21. E033 keeps this mutable
-    /// state lab-only and restores it after a fully acknowledged empty-queue
-    /// publication/release.
-    pub(crate) fn g15_set_command_submission_enabled(&self, enabled: bool) -> Result {
+    /// Exact firmware-visible q4 +0x070 command gate. E188 separates this
+    /// from AGXArmFirmware::isCommandSubmissionEnabled(), which reads the
+    /// independent accelerator +0x622 host/runtime byte. Normal J615 start
+    /// enables q4 once after firmware bootstrap and keeps it enabled across
+    /// ordinary CL submissions; bounded registration must not toggle it.
+    pub(crate) fn g15_set_firmware_command_gate(&self, enabled: bool) -> Result {
         #[ver(G != G15)]
         {
             let _ = enabled;
@@ -2458,7 +2457,7 @@ impl GpuManager::ver {
         }
     }
 
-    pub(crate) fn g15_command_submission_enabled(&self) -> bool {
+    pub(crate) fn g15_firmware_command_gate_enabled(&self) -> bool {
         #[ver(G != G15)]
         {
             false
@@ -2514,7 +2513,7 @@ impl GpuManager::ver {
                 }
             }
 
-            if !self.g15_command_submission_enabled() {
+            if !self.g15_firmware_command_gate_enabled() {
                 dev_err!(
                     self.dev.as_ref(),
                     "T8122 G15 E033 refusing EP21 pipe doorbell while q4 command submission is disabled\n"
@@ -2843,6 +2842,11 @@ impl GpuManager for GpuManager::ver {
             // enabled, so activation does not replay them. From this point on,
             // dynamic backing growth and teardown must publish q22 normally.
             self.initdata.g15_mapping_notifier.lock().activate()?;
+
+            // E188 exact normal-start lifetime: q4 +0x070 is enabled once for
+            // the settled device runtime, not toggled around individual CL
+            // submissions. Userspace submission remains independently gated.
+            self.g15_set_firmware_command_gate(true)?;
         }
 
         Ok(())
