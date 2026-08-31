@@ -1963,6 +1963,13 @@ impl G15MappingNotifier {
 
         self.dev.gpu.g15_mapping_pressure_kick()?;
         let start = Instant::<Monotonic>::now();
+        let (kick_read, kick_write) = self.cursors();
+        let _ = self.dev.gpu.g15_log_runtime_state_with_cursors(
+            "drain-kick-sent",
+            kick_read,
+            kick_write,
+        );
+        let mut pending_sampled = false;
 
         loop {
             if self.dev.gpu.is_crashed() {
@@ -1987,7 +1994,20 @@ impl G15MappingNotifier {
             if read == write {
                 return Ok(());
             }
+            if !pending_sampled {
+                pending_sampled = true;
+                let _ = self.dev.gpu.g15_log_runtime_state_with_cursors(
+                    "drain-pending",
+                    read,
+                    write,
+                );
+            }
             if start.elapsed() >= Self::DRAIN_TIMEOUT {
+                let _ = self.dev.gpu.g15_log_runtime_state_with_cursors(
+                    "drain-timeout",
+                    read,
+                    write,
+                );
                 dev_err!(
                     self.dev.as_ref(),
                     "MMU: G15 q22 drain timed out after 150 ms (read={} write={})\n",
