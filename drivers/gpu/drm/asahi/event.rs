@@ -64,18 +64,6 @@ impl EventValue {
         self.0
     }
 
-    /// Translate an untouched inherited Linux event slot to the exact fresh
-    /// IOGPUEventMachine counter domain used by G15 Barrier registration.
-    /// Apple carries the stamp index separately and starts every fresh stamp
-    /// counter at zero; Linux instead seeds the slot in bits 31:24.
-    pub(crate) fn g15_fresh_counter(&self, slot: u32) -> Option<EventValue> {
-        if self.0 == slot << 24 {
-            Some(EventValue(0))
-        } else {
-            None
-        }
-    }
-
     /// Increments this `EventValue` in place.
     pub(crate) fn increment(&mut self) {
         self.0 = self.0.wrapping_add(0x100);
@@ -163,7 +151,10 @@ pub(crate) struct EventManager {
 impl EventManager {
     /// Create a new EventManager.
     #[inline(never)]
-    pub(crate) fn new(alloc: &mut gpu::KernelAllocators) -> Result<EventManager> {
+    pub(crate) fn new(
+        alloc: &mut gpu::KernelAllocators,
+        g15_zero_based_counters: bool,
+    ) -> Result<EventManager> {
         let mut owners = KVec::new();
         for _i in 0..(NUM_EVENTS as usize) {
             owners.push(None, GFP_KERNEL)?;
@@ -175,9 +166,16 @@ impl EventManager {
         };
 
         for slot in 0..NUM_EVENTS {
+            // Exact 23J220 IOGPUEventMachine carries the stamp index
+            // separately on G15, so each GPU-visible counter starts at zero.
+            // Older firmware uses the inherited slot-biased stamp encoding.
+            let initial = if g15_zero_based_counters { 0 } else { slot << 24 };
             inner.stamps[slot as usize]
                 .0
-                .store(slot << 24, Ordering::Relaxed);
+                .store(initial, Ordering::Relaxed);
+            inner.fw_stamps[slot as usize]
+                .0
+                .store(0, Ordering::Relaxed);
         }
 
         Ok(EventManager {

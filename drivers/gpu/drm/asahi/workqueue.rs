@@ -1219,16 +1219,13 @@ impl WorkQueue::ver {
                 let cur = event.current();
                 let event_slot: u8 = event.slot().try_into()?;
 
-                // Exact 23J220 IOGPUEventMachine carries the stamp index
-                // separately, starts every freshly assigned index at counter
-                // zero, and increments by 0x100. Linux's inherited EventValue
-                // instead seeds `slot << 24`, while the private FW stamp is
-                // allocation-zero. Translate only an untouched fresh slot;
-                // this remains a bounded registration probe, not a generalized
-                // event/stamp policy change.
-                let wait_value = cur
-                    .g15_fresh_counter(event_slot as u32)
-                    .ok_or(EBUSY)?;
+                // E194 moves the G15 EventManager itself into Apple's exact
+                // zero-based counter domain. This bounded registration probe
+                // still accepts only a never-submitted fresh stamp.
+                if cur.raw() != 0 {
+                    return Err(EBUSY);
+                }
+                let wait_value = cur;
                 let wait_stamp = event.fw_stamp_pointer();
                 let stamp_self = wait_value.next();
                 inner.last_token = Some(event.token());

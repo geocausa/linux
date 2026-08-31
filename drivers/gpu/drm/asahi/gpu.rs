@@ -2153,7 +2153,14 @@ impl GpuManager::ver {
 
     /// Create the global GPU event manager, and return an `Arc<>` to it.
     fn make_event_manager(alloc: &mut KernelAllocators) -> Result<Arc<event::EventManager>> {
-        Ok(Arc::new(event::EventManager::new(alloc)?, GFP_KERNEL)?)
+        #[ver(G == G15)]
+        let g15_zero_based_counters = true;
+        #[ver(G != G15)]
+        let g15_zero_based_counters = false;
+        Ok(Arc::new(
+            event::EventManager::new(alloc, g15_zero_based_counters)?,
+            GFP_KERNEL,
+        )?)
     }
 
     /// Create a new MMIO mapping and add it to the mappings list in initdata at the specified
