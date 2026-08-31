@@ -1781,6 +1781,16 @@ impl G15MappingNotifier {
         })
     }
 
+    /// Read-only diagnostic snapshot of the active q22 mapping ring cursors.
+    pub(crate) fn cursors(&self) -> (u32, u32) {
+        self.backing.with(|raw, _inner| {
+            (
+                raw.state.read_idx.load(Ordering::Acquire),
+                raw.state.write_idx.load(Ordering::Acquire),
+            )
+        })
+    }
+
     fn publish_pages(&mut self, base: u64, phys_pages: &[u64], mapping: bool) -> Result {
         // The DRM device reference pins the same device/manager lifetime as every
         // queue-owned range-7 mapping. No manager backlink is stored in q22, so

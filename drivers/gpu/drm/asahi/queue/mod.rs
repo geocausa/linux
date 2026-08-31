@@ -73,6 +73,8 @@ pub(crate) trait Queue: Send + Sync {
 
     fn preflight_g15_barrier_registration(&mut self) -> Result<(u32, u64)>;
 
+    fn preflight_g15_q22_runtime_snapshot(&mut self, label: &str) -> Result;
+
     fn submit(
         &mut self,
         id: u64,
@@ -2633,6 +2635,24 @@ impl Queue for Queue::ver {
 
             core::mem::drop(bind);
             Ok((slot, pool_id))
+        }
+    }
+
+    fn preflight_g15_q22_runtime_snapshot(&mut self, label: &str) -> Result {
+        #[ver(G != G15)]
+        {
+            let _ = label;
+            return Err(EINVAL);
+        }
+        #[ver(G == G15)]
+        {
+            let gpu = (*self.dev)
+                .gpu
+                .clone()
+                .arc_as_any()
+                .downcast::<gpu::GpuManager::ver>()
+                .map_err(|_| EIO)?;
+            gpu.g15_log_q22_runtime_state(label)
         }
     }
 

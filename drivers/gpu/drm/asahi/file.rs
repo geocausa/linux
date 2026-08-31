@@ -1075,6 +1075,8 @@ impl File {
         const G15_BARRIER_REG_PROBE_PAD: u32 = 0x4531_3731; // "E171"
         const G15_FIRST_COMPUTE_PROBE_FLAGS: u32 = 0x4731_3545; // "G15E"
         const G15_FIRST_COMPUTE_PROBE_PAD: u32 = 0x4531_3939; // "E199"
+        const G15_Q22_SNAPSHOT_FLAGS: u32 = 0x4731_3553; // "G15S"
+        const G15_Q22_SNAPSHOT_PAD: u32 = 0x4532_3130; // "E210"
 
         let g15_first_compute_probe = is_g15
             && data.flags == G15_FIRST_COMPUTE_PROBE_FLAGS
@@ -1109,9 +1111,14 @@ impl File {
                     && data.pad == G15_CL_CHANNEL_PROBE_PAD;
                 let barrier_reg_probe = data.flags == G15_BARRIER_REG_PROBE_FLAGS
                     && data.pad == G15_BARRIER_REG_PROBE_PAD;
+                let q22_snapshot_probe = data.flags == G15_Q22_SNAPSHOT_FLAGS
+                    && data.pad == G15_Q22_SNAPSHOT_PAD;
                 // Existing bounded probes remain deliberately zero-payload.
                 // Every ordinary G15 submission still stops here with ENODEV.
-                if (!vm_bind_probe && !cl_channel_probe && !barrier_reg_probe)
+                if (!vm_bind_probe
+                    && !cl_channel_probe
+                    && !barrier_reg_probe
+                    && !q22_snapshot_probe)
                     || data.syncs != 0
                     || data.cmdbuf != 0
                     || data.in_sync_count != 0
@@ -1142,7 +1149,7 @@ impl File {
                         "T8122 G15 E166 lazy CL channel PASS (pool {}); QueueInfo/commands blocked\n",
                         pool_id
                     );
-                } else {
+                } else if barrier_reg_probe {
                     let (slot, pool_id) = queue.lock().preflight_g15_barrier_registration()?;
                     dev_info!(
                         device.as_ref(),
@@ -1150,6 +1157,8 @@ impl File {
                         slot,
                         pool_id
                     );
+                } else {
+                    queue.lock().preflight_g15_q22_runtime_snapshot("userspace")?;
                 }
                 return Err(ENODEV);
             }

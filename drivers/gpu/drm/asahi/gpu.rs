@@ -327,6 +327,8 @@ pub(crate) trait GpuManager: Send + Sync {
     /// This should be useful to reduce latency on work submission, so we can ask the firmware to
     /// wake up while we do some preparatory work for the work submission.
     fn kick_firmware(&self) -> Result;
+    /// Read-only G15 q21/q22 runtime telemetry for bounded bring-up probes.
+    fn g15_log_q22_runtime_state(&self, label: &str) -> Result;
     /// Send the native G15 q22 mapping-ring pressure async note on EP21.
     fn g15_mapping_pressure_kick(&self) -> Result;
     /// Flush the entire firmware cache.
@@ -3197,6 +3199,59 @@ impl GpuManager for GpuManager::ver {
         rtk.send_message(EP_DOORBELL, MSG_TX_DOORBELL | DOORBELL_KICKFW)?;
 
         Ok(())
+    }
+
+    /// E210 read-only host-visible runtime snapshot. This does not send any
+    /// firmware message or mutate q21/q22 state.
+    fn g15_log_q22_runtime_state(&self, label: &str) -> Result {
+        #[ver(G != G15)]
+        {
+            let _ = label;
+            return Err(EINVAL);
+        }
+        #[ver(G == G15)]
+        {
+            let (busy, ready, power) = self.initdata.g15_q21.with(|raw, _inner| {
+                (
+                    raw.busy.load(Ordering::Acquire),
+                    raw.firmware_ready.load(Ordering::Acquire),
+                    raw.power_state.load(Ordering::Acquire),
+                )
+            });
+            let (epoch, state_4590, state_45a0, state_45b0, counter_45c0, host_flag_45c4) =
+                self.initdata.g15_q22.with(|raw, _inner| {
+                    (
+                        raw.epoch_4580.0,
+                        raw.state_4590.0,
+                        raw.state_45a0.0,
+                        raw.state_45b0.0,
+                        raw.counter_45c0.0,
+                        raw.host_flag_45c4.0,
+                    )
+                });
+            let (read, write) = self.initdata.g15_mapping_notifier.lock().cursors();
+            let q4_gate = self.initdata.g15_globals.with(|raw, _inner| {
+                raw.command_submission_enabled_070.load(Ordering::Acquire)
+            });
+            dev_info!(
+                self.dev.as_ref(),
+                "T8122 G15 E210 snapshot {}: q21 busy={} ready={} power={} q4={} q22 r/w={}:{} epoch={} s4590={} s45a0={} s45b0={} c45c0={} flag45c4={}\n",
+                label,
+                busy,
+                ready,
+                power,
+                q4_gate,
+                read,
+                write,
+                epoch,
+                state_4590,
+                state_45a0,
+                state_45b0,
+                counter_45c0,
+                host_flag_45c4
+            );
+            Ok(())
+        }
     }
 
     fn g15_mapping_pressure_kick(&self) -> Result {
