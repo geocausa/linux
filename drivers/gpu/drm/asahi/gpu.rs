@@ -244,6 +244,10 @@ pub(crate) struct GpuManager {
     crashed: AtomicBool,
     #[ver(G == G15)]
     g15_init_preflight: AtomicBool,
+    /// Exact accelerator +0x622 logical command-submission enable state.
+    /// E193 keeps this separate from firmware-visible q4 +0x070.
+    #[ver(G == G15)]
+    g15_host_command_submission_enabled: AtomicBool,
     #[ver(G == G15)]
     g15_preflight_rx_doorbells: AtomicU64,
     #[ver(G == G15)]
@@ -1968,6 +1972,8 @@ impl GpuManager::ver {
                 #[ver(G == G15)]
                 g15_init_preflight: AtomicBool::new(false),
                 #[ver(G == G15)]
+                g15_host_command_submission_enabled: AtomicBool::new(false),
+                #[ver(G == G15)]
                 g15_preflight_rx_doorbells: AtomicU64::new(0),
                 #[ver(G == G15)]
                 g15_preflight_unknown_messages: AtomicU64::new(0),
@@ -2410,6 +2416,44 @@ impl GpuManager::ver {
         }
     }
 
+    /// Exact accelerator +0x622 host/runtime command-submission state. Apple
+    /// keeps this byte separate from q4 +0x070: ArmFirmware checks +0x622
+    /// immediately before deciding whether to ring a work-pipe EP21 doorbell.
+    pub(crate) fn g15_host_command_submission_enabled(&self) -> bool {
+        #[ver(G != G15)]
+        {
+            false
+        }
+        #[ver(G == G15)]
+        {
+            self.g15_host_command_submission_enabled.load(Ordering::Acquire)
+        }
+    }
+
+    /// Model the two exact state writes performed by the settled J615
+    /// `AGXAccelerator::setCommandSubmissionEnabled()` transition. Auxiliary
+    /// Apple host timer/event bookkeeping is deliberately not synthesized here;
+    /// only the independently proven +0x622 and q4 +0x070 gate states are owned.
+    fn g15_set_command_submission_state(&self, enabled: bool) -> Result {
+        #[ver(G != G15)]
+        {
+            let _ = enabled;
+            return Err(EINVAL);
+        }
+        #[ver(G == G15)]
+        {
+            let prior = self
+                .g15_host_command_submission_enabled
+                .swap(enabled, Ordering::AcqRel);
+            if let Err(err) = self.g15_set_firmware_command_gate(enabled) {
+                self.g15_host_command_submission_enabled
+                    .store(prior, Ordering::Release);
+                return Err(err);
+            }
+            Ok(())
+        }
+    }
+
     /// Exact firmware-visible q4 +0x070 command gate. E188 separates this
     /// from AGXArmFirmware::isCommandSubmissionEnabled(), which reads the
     /// independent accelerator +0x622 host/runtime byte. Normal J615 start
@@ -2635,6 +2679,87 @@ impl GpuManager::ver {
                 rtk.send_message(EP_DOORBELL, MSG_TX_DOORBELL | DOORBELL_DEVCTRL)?;
             }
             txch.device_control.wait_for(token)
+        }
+    }
+
+    /// E193 zero-caller selected G15 submit/doorbell transaction. All RTKit
+    /// endpoint and logical/firmware gate checks happen before E192 mutates the
+    /// selected command ring. Once the selected RunWorkQueue is enqueued, any
+    /// EP21 delivery failure fail-stops the manager and leaves the E192 ticket
+    /// uncompleted so scheduler resources are retained as Uncertain.
+    #[allow(dead_code)]
+    pub(crate) fn run_g15_selected_job(
+        &self,
+        job: workqueue::G15SelectedJobSubmission::ver<'_>,
+    ) -> Result {
+        #[ver(G != G15)]
+        {
+            let _ = job;
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            if self.is_crashed()
+                || !self.g15_host_command_submission_enabled()
+                || !self.g15_firmware_command_gate_enabled()
+            {
+                return Err(ENODEV);
+            }
+
+            // EP21 must exist before the first selected command/ring mutation.
+            {
+                let mut guard = self.rtkit.lock();
+                let mut rtk = guard.as_mut().as_pin_mut().ok_or(ENODEV)?;
+                if !rtk.as_mut().has_endpoint(EP_DOORBELL) {
+                    return Err(ENODEV);
+                }
+            }
+
+            let pipe_type = job.pipe_type()?;
+            let index: usize = job.priority()?.try_into()?;
+            let pipes = match pipe_type {
+                PipeType::Vertex => &self.pipes.vtx,
+                PipeType::Fragment => &self.pipes.frag,
+                PipeType::Compute => &self.pipes.comp,
+            };
+            let mut pipe = pipes.get(index).ok_or(EIO)?.lock();
+            let completion = job.run(&mut pipe)?;
+            core::mem::drop(pipe);
+
+            // ArmFirmware checks accelerator +0x622 after encoding the pipe
+            // record. If the modeled state changed underneath this transaction,
+            // do not leave a queued entry available to any later submission.
+            if !self.g15_host_command_submission_enabled()
+                || !self.g15_firmware_command_gate_enabled()
+            {
+                self.crashed.store(true, Ordering::Release);
+                core::mem::drop(completion);
+                return Err(ENODEV);
+            }
+
+            let doorbell = MSG_TX_DOORBELL | pipe_type as u64 | ((index as u64) << 2);
+            let send_result = {
+                let mut guard = self.rtkit.lock();
+                match guard.as_mut().as_pin_mut() {
+                    Some(rtk) => rtk.send_message(EP_DOORBELL, doorbell),
+                    None => Err(ENODEV),
+                }
+            };
+            if let Err(err) = send_result {
+                self.crashed.store(true, Ordering::Release);
+                core::mem::drop(completion);
+                return Err(err);
+            }
+
+            if let Err(err) = completion.complete() {
+                // EP21 succeeded but host publication bookkeeping did not. The
+                // completion ticket marks the scheduler state Uncertain on Drop;
+                // fail-stop to prevent a second submission into ambiguous state.
+                self.crashed.store(true, Ordering::Release);
+                return Err(err);
+            }
+            Ok(())
         }
     }
 
@@ -2896,7 +3021,7 @@ impl GpuManager for GpuManager::ver {
             // E188 exact normal-start lifetime: q4 +0x070 is enabled once for
             // the settled device runtime, not toggled around individual CL
             // submissions. Userspace submission remains independently gated.
-            self.g15_set_firmware_command_gate(true)?;
+            self.g15_set_command_submission_state(true)?;
         }
 
         Ok(())

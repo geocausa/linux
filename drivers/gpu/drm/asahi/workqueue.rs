@@ -766,6 +766,14 @@ impl<'a> JobSubmission::ver<'a> {
 #[versions(AGX)]
 #[allow(dead_code)]
 impl<'a> G15SelectedJobSubmission::ver<'a> {
+    pub(crate) fn pipe_type(&self) -> Result<PipeType> {
+        self.inner.as_ref().map(|inner| inner.pipe_type).ok_or(EIO)
+    }
+
+    pub(crate) fn priority(&self) -> Result<u32> {
+        self.inner.as_ref().map(|inner| inner.priority).ok_or(EIO)
+    }
+
     /// Perform the first firmware-visible mutation only after every message input
     /// has been validated. After `write_command()` succeeds, the remaining path
     /// is intentionally infallible: enqueue the already-formed RunWorkQueue and
