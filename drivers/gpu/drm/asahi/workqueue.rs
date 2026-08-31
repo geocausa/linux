@@ -807,6 +807,12 @@ impl<'a> G15SelectedJobSubmission::ver<'a> {
             // starts the E191 scheduler publication transaction before any
             // selected command-ring mutation can become visible.
             let first_submission = self.transport.begin_submission()?;
+            // E195 closes only the first selected command. Until selected
+            // doneptr advancement is independently proven, a second command
+            // must fail before any selected ring mutation.
+            if !first_submission {
+                return Err(EBUSY);
+            }
 
             let wptr = match self.transport.write_command(command_fwva) {
                 Ok(wptr) => wptr,

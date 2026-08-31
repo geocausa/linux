@@ -1733,6 +1733,12 @@ pub(crate) struct QueueJob {
     // acquisition method remains zero-caller; None is the only live value.
     #[ver(G == G15)]
     _g15_stock_empty_assets: Option<G15QueueJobStockEmptyAssets::ver>,
+    // E196 marks the one-command stock-empty selected scheduler route. The
+    // public G15 file::submit gate still prevents userspace from reaching it.
+    #[ver(G == G15)]
+    g15_stock_empty_selected: bool,
+    #[ver(G == G15)]
+    g15_selected_prepare_failed: bool,
     sj_vtx: Option<SubQueueJob::ver>,
     sj_frag: Option<SubQueueJob::ver>,
     sj_comp: Option<SubQueueJob::ver>,
@@ -1919,6 +1925,33 @@ impl sched::JobImpl for QueueJob::ver {
     fn prepare(job: &mut sched::Job<Self>) -> Option<Fence> {
         mod_dev_dbg!(job.dev, "QueueJob {}: Checking runnability\n", job.id);
 
+        #[ver(G == G15)]
+        if job.g15_stock_empty_selected {
+            if job.g15_selected_prepare_failed
+                || job.sj_vtx.as_ref().and_then(|sj| sj.job.as_ref()).is_some()
+                || job.sj_frag.as_ref().and_then(|sj| sj.job.as_ref()).is_some()
+            {
+                job.g15_selected_prepare_failed = true;
+                return None;
+            }
+            let Some(comp_job) = job.sj_comp.as_ref().and_then(|sj| sj.job.as_ref()) else {
+                job.g15_selected_prepare_failed = true;
+                return None;
+            };
+            return match comp_job.can_submit_g15_selected_stock_empty() {
+                Ok(wait) => wait,
+                Err(err) => {
+                    pr_err!(
+                        "G15 selected stock-empty readiness failed for QueueJob {}: {:?}\n",
+                        job.id,
+                        err
+                    );
+                    job.g15_selected_prepare_failed = true;
+                    None
+                }
+            };
+        }
+
         if let Some(sj) = job.sj_vtx.as_ref() {
             if let Some(fence) = sj.can_submit() {
                 mod_dev_dbg!(
@@ -1955,6 +1988,15 @@ impl sched::JobImpl for QueueJob::ver {
     #[allow(unused_assignments)]
     fn run(job: &mut sched::Job<Self>) -> Result<Option<dma_fence::Fence>> {
         mod_dev_dbg!(job.dev, "QueueJob {}: Running Job\n", job.id);
+
+        #[ver(G == G15)]
+        if job.g15_stock_empty_selected
+            && (job.g15_selected_prepare_failed || job.notification_count != 1)
+        {
+            // Do not mutate the notifier threshold when selected readiness
+            // already failed. The one-command route owns exactly one event.
+            return Err(EIO);
+        }
 
         // We can only increase the notifier threshold here, now that we are
         // actually running the job. We cannot increase it while queueing the
@@ -2016,6 +2058,28 @@ impl sched::JobImpl for QueueJob::ver {
                 return Err(EIO);
             }
         };
+
+        #[ver(G == G15)]
+        if job.g15_stock_empty_selected {
+            if job.op_guard.is_some()
+                || job.notification_count != 1
+                || job.sj_vtx.as_ref().and_then(|sj| sj.job.as_ref()).is_some()
+                || job.sj_frag.as_ref().and_then(|sj| sj.job.as_ref()).is_some()
+            {
+                return Err(EIO);
+            }
+
+            let mut comp_job = job
+                .sj_comp
+                .as_mut()
+                .and_then(|sj| sj.job.take())
+                .ok_or(EIO)?;
+            let selected = comp_job.submit_g15_selected_stock_empty()?;
+            gpu.run_g15_selected_job(selected)?;
+            core::mem::drop(comp_job);
+            job.did_run = true;
+            return Ok(Some(Fence::from_fence(&job.fence)));
+        }
 
         if job.op_guard.is_none() {
             job.op_guard = Some(gpu.start_op()?);
@@ -2582,6 +2646,50 @@ impl Queue for Queue::ver {
             return Err(ENODEV);
         }
 
+        #[ver(G == G15)]
+        {
+            // E196 is intentionally stricter than the future production UAPI:
+            // exactly one full-size no-launch Compute command, no barriers,
+            // timestamps, attachments/synthetic commands, or sync objects.
+            if in_sync_count != 0 || !syncs.is_empty() {
+                return Err(ENODEV);
+            }
+            let mut shape = Reader::new(cmdbuf_raw);
+            let header: uapi::drm_asahi_cmd_header = shape.read()?;
+            if header.cmd_type as u32 != uapi::drm_asahi_cmd_type_DRM_ASAHI_CMD_COMPUTE
+                || header.vdm_barrier != uapi::DRM_ASAHI_BARRIER_NONE as u16
+                || header.cdm_barrier != uapi::DRM_ASAHI_BARRIER_NONE as u16
+                || header.size as usize != core::mem::size_of::<uapi::drm_asahi_cmd_compute>()
+            {
+                return Err(ENODEV);
+            }
+            let compute: uapi::drm_asahi_cmd_compute =
+                shape.read_up_to(header.size as usize)?;
+            if !shape.is_empty()
+                || compute.flags != 0
+                || compute.sampler_count != 0
+                || compute.cdm_ctrl_stream_base != 0
+                || compute.cdm_ctrl_stream_end != 0
+                || compute.sampler_heap != 0
+                || compute.helper.binary != 0
+                || compute.helper.cfg != 0
+                || compute.helper.data != 0
+                || compute.ts.start.handle != 0
+                || compute.ts.start.offset != 0
+                || compute.ts.end.handle != 0
+                || compute.ts.end.offset != 0
+            {
+                return Err(ENODEV);
+            }
+
+            // Match the proven E169/E181 ownership order: construct the lazy
+            // CL channel before publishing this VM context.
+            self.g15_ensure_unpublished_nonforeground_compute_channel(&gpu)?;
+        }
+
+        #[ver(G == G15)]
+        let op_guard = None;
+        #[ver(G != G15)]
         let op_guard = if in_sync_count > 0 {
             Some(gpu.start_op()?)
         } else {
@@ -2655,6 +2763,11 @@ impl Queue for Queue::ver {
             }
         }
 
+        #[ver(G == G15)]
+        if nr_commands != 1 || nr_compute != 1 || nr_render != 0 {
+            return Err(ENODEV);
+        }
+
         let mut job = self.entity.new_job(
             1,
             QueueJob::ver {
@@ -2668,6 +2781,10 @@ impl Queue for Queue::ver {
                     .and_then(|subqueue| subqueue._g15_compute_channel.clone()),
                 #[ver(G == G15)]
                 _g15_stock_empty_assets: None,
+                #[ver(G == G15)]
+                g15_stock_empty_selected: true,
+                #[ver(G == G15)]
+                g15_selected_prepare_failed: false,
                 sj_vtx: self
                     .q_vtx
                     .as_mut()
@@ -2803,6 +2920,21 @@ impl Queue for Queue::ver {
                 uapi::drm_asahi_cmd_type_DRM_ASAHI_CMD_COMPUTE => {
                     let compute: uapi::drm_asahi_cmd_compute = cmdbuf.read_up_to(header_size)?;
 
+                    #[ver(G == G15)]
+                    {
+                        if compute_attachments.count != 0 {
+                            return Err(EINVAL);
+                        }
+                        self.inner.prepare_g15_stock_empty_workqueue_unpublished(
+                            &mut job,
+                            &compute,
+                            &compute_attachments,
+                            objects,
+                            id,
+                            false,
+                        )?;
+                    }
+                    #[ver(G != G15)]
                     self.inner.submit_compute(
                         &mut job,
                         &compute,
