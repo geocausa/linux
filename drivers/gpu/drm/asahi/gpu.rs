@@ -2524,7 +2524,9 @@ impl GpuManager::ver {
 
             let msg = fw::channels::RunWorkQueueMsg::ver {
                 g15_timestamp: U64(workqueue::g15_submission_timestamp()),
-                work_queue: Some(work_queue),
+                // E186 keeps the E170/E171 bounded registration surrogate
+                // byte-identical while correcting the G15 ABI type at +0x08.
+                g15_work_queue_fwva: U64(work_queue.into()),
                 g15_pipe_type: pipe_type,
                 g15_wptr: wptr,
                 // E059 proved that the scheduler needs the EventManager-owned

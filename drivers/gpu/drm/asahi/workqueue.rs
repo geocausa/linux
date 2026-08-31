@@ -595,7 +595,10 @@ impl<'a> JobSubmission::ver<'a> {
             g15_timestamp: U64(g15_submission_timestamp()),
             #[ver(G != G15)]
             pipe_type: inner.pipe_type,
+            #[ver(G != G15)]
             work_queue: Some(inner.info.weak_pointer()),
+            #[ver(G == G15)]
+            g15_work_queue_fwva: U64(inner.info.weak_pointer().into()),
             #[ver(G != G15)]
             wptr: inner.wptr,
             #[ver(G != G15)]

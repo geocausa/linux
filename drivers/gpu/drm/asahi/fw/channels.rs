@@ -142,7 +142,10 @@ pub(crate) struct RunWorkQueueMsg {
     pub(crate) g15_timestamp: U64,
     #[ver(G != G15)]
     pub(crate) pipe_type: PipeType,
+    #[ver(G != G15)]
     pub(crate) work_queue: Option<GpuWeakPointer<super::workqueue::QueueInfo::ver>>,
+    #[ver(G == G15)]
+    pub(crate) g15_work_queue_fwva: U64,
     #[ver(G != G15)]
     pub(crate) wptr: u32,
     #[ver(G != G15)]
@@ -280,7 +283,10 @@ default_zeroed!(DeviceControlMsg::ver);
 // Exact RTKit-2419.140.12 G15 ring-walker element sizes/layouts.
 const _: [(); 0x18] = [(); core::mem::size_of::<RunWorkQueueMsgG15V14_7>()];
 const _: [(); 0x00] = [(); core::mem::offset_of!(RunWorkQueueMsgG15V14_7, g15_timestamp)];
-const _: [(); 0x08] = [(); core::mem::offset_of!(RunWorkQueueMsgG15V14_7, work_queue)];
+const _: [(); 0x08] = [(); core::mem::offset_of!(
+    RunWorkQueueMsgG15V14_7,
+    g15_work_queue_fwva
+)];
 const _: [(); 0x10] = [(); core::mem::offset_of!(RunWorkQueueMsgG15V14_7, g15_pipe_type)];
 const _: [(); 0x14] = [(); core::mem::offset_of!(RunWorkQueueMsgG15V14_7, g15_wptr)];
 const _: [(); 0x16] = [(); core::mem::offset_of!(RunWorkQueueMsgG15V14_7, g15_event_slot)];
