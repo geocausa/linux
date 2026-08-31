@@ -161,8 +161,16 @@ pub(crate) mod raw {
         pub(crate) g15_raw_compute_d8_hi_750: U32,
         #[ver(G == G15)]
         pub(crate) g15_pre_micro_754: Array<0x0c, u8>,
+        #[ver(G != G15)]
         pub(crate) microsequence: GpuPointer<'a, &'a [u8]>,
+        #[ver(G == G15)]
+        // Exact E069/E070 G15 execution-stream field. This is the FWVA of the
+        // selected SKU encoder slot, not the inherited StartCompute microseq.
+        pub(crate) g15_sku_stream_fwva_760: U64,
+        #[ver(G != G15)]
         pub(crate) microsequence_size: u32,
+        #[ver(G == G15)]
+        pub(crate) g15_sku_stream_size_768: u32,
         pub(crate) job_params2: JobParameters2::ver<'a>,
         #[ver(G != G15)]
         pub(crate) encoder_params: job::raw::EncoderParams,
@@ -262,8 +270,14 @@ pub(crate) mod raw {
     const _: [(); 0x750] =
         [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_raw_compute_d8_hi_750)];
     const _: [(); 0x754] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_pre_micro_754)];
-    const _: [(); 0x760] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, microsequence)];
-    const _: [(); 0x768] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, microsequence_size)];
+    const _: [(); 0x760] = [(); core::mem::offset_of!(
+        RunComputeG15V14_7<'static>,
+        g15_sku_stream_fwva_760
+    )];
+    const _: [(); 0x768] = [(); core::mem::offset_of!(
+        RunComputeG15V14_7<'static>,
+        g15_sku_stream_size_768
+    )];
     const _: [(); 0x76c] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, job_params2)];
     const _: [(); 0x7cc] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_raw_compute_50_lo_7cc)];
     const _: [(); 0x7d0] = [(); core::mem::offset_of!(RunComputeG15V14_7<'static>, g15_encoder_pad_7d0)];

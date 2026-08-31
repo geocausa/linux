@@ -375,8 +375,17 @@ impl super::QueueInner::ver {
                     g15_raw_compute_d8_hi_750: U32(0),
                     #[ver(G == G15)]
                     g15_pre_micro_754: Default::default(),
+                    #[ver(G != G15)]
                     microsequence: inner.micro_seq.gpu_pointer(),
+                    #[ver(G == G15)]
+                    // E176 fail-closed phase-0 image. E069/E070 prove +0x760
+                    // is a selected G15 SKU-slot FWVA; E175 has not yet called
+                    // phase 1/finalize, so there is no legitimate slot to publish.
+                    g15_sku_stream_fwva_760: U64(0),
+                    #[ver(G != G15)]
                     microsequence_size: inner.micro_seq.len() as u32,
+                    #[ver(G == G15)]
+                    g15_sku_stream_size_768: 0,
                     job_params2 <- try_init!(fw::compute::raw::JobParameters2::ver {
                         #[ver(V >= V13_0B4)]
                         unk_0_0: 0,
