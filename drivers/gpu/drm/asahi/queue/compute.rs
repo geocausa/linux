@@ -83,10 +83,33 @@ impl super::QueueInner::ver {
         let preempt5_off = preempt4_off + 8;
         let preempt_size = preempt5_off + 8;
 
+        #[ver(G == G15)]
+        if preempt2_off != 0x1480 || preempt_size != 0x14a0 {
+            return Err(EIO);
+        }
+
         let preempt_buf = self
             .ualloc
             .lock()
             .array_empty_tagged(preempt_size, b"CPMT")?;
+
+        #[ver(G == G15)]
+        let g15_cdm_root = {
+            let mut root = self
+                .ualloc
+                .lock()
+                .array_empty_tagged::<u32>(1, b"CDM0")?;
+            root[0] = 0x4000_0000;
+            root
+        };
+        #[ver(G == G15)]
+        let cdm_ctrl_stream_end = g15_cdm_root
+            .gpu_va()
+            .get()
+            .checked_add(core::mem::size_of::<u32>() as u64)
+            .ok_or(EOVERFLOW)?;
+        #[ver(G != G15)]
+        let cdm_ctrl_stream_end = cmdbuf.cdm_ctrl_stream_end;
 
         mod_dev_dbg!(
             self.dev,
@@ -121,6 +144,8 @@ impl super::QueueInner::ver {
                 let vm_bind = vm_bind.clone();
                 try_init!(fw::compute::RunCompute::ver {
                     preempt_buf: preempt_buf,
+                    #[ver(G == G15)]
+                    g15_cdm_root: g15_cdm_root,
                     micro_seq: {
                         let mut builder = microseq::Builder::new();
 
@@ -316,23 +341,37 @@ impl super::QueueInner::ver {
                             // this exact empty-Compute RegisterArray.
                             let _ = self.usc_exec_base;
 
-                            // E067/E068 close the exact J615/G15G Apple empty-Compute
-                            // RegisterArray. Ordinary G15 SUBMIT remains rejected with
-                            // ENODEV, so this is a compile-only representation and does
-                            // not enable general Compute execution.
+                            // E067 fixes the exact 23J220 register/source map.
+                            // E132 then proved the older E068 cross-build empty oracle
+                            // was stale for hardware-facing data-buffer state: stock
+                            // 23J220 owns a 0x1480 primary Compute backing, four real
+                            // 8-byte tail slots, and raw +0xa4 == 0x1c. The same-build
+                            // begin/end pair also owns a terminate-only CDM root below.
                             //
                             // Form-1 Apple register IDs are encoded with bit 0 set in
                             // the 12-byte RegisterArray entry (e.g. 0x12090 -> 0x12091).
-                            r.add(0x1a510, 0);
-                            r.add(0x1a420, 0);
-                            r.add(0x1a4d0, 0);
-                            r.add(0x1a4d8, 0);
-                            r.add(0x1a4e0, 0);
-                            r.add(0x1a4e8, 0);
+                            r.add(0x1a510, inner.preempt_buf.gpu_pointer().into());
+                            r.add(0x1a420, inner.g15_cdm_root.gpu_pointer().into());
+                            r.add(
+                                0x1a4d0,
+                                inner.preempt_buf.gpu_offset_pointer(preempt2_off).into(),
+                            );
+                            r.add(
+                                0x1a4d8,
+                                inner.preempt_buf.gpu_offset_pointer(preempt3_off).into(),
+                            );
+                            r.add(
+                                0x1a4e0,
+                                inner.preempt_buf.gpu_offset_pointer(preempt4_off).into(),
+                            );
+                            r.add(
+                                0x1a4e8,
+                                inner.preempt_buf.gpu_offset_pointer(preempt5_off).into(),
+                            );
                             r.add(0x1a440, 0x154024201);
                             r.add(0x1a458, 0x10c08860);
-                            r.add(0x12091, 0);
-                            r.add(0x101d9, 0);
+                            r.add(0x12091, 0x1c);
+                            r.add(0x101d9, 0x1c);
                             r.add(0x1a089, 0);
                             r.add(0x1a091, 0);
                             r.add(0x1a059, 0);
@@ -389,7 +428,7 @@ impl super::QueueInner::ver {
                         #[ver(G == G15)]
                         g15_state_78c: U64(0),
                         preempt_buf1: inner.preempt_buf.gpu_pointer(),
-                        cdm_ctrl_stream_end: U64(cmdbuf.cdm_ctrl_stream_end),
+                        cdm_ctrl_stream_end: U64(cdm_ctrl_stream_end),
                         #[ver(G != G15)]
                         unk_34: Default::default(),
                         #[ver(G == G15)]

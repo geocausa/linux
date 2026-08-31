@@ -93,7 +93,12 @@ pub(crate) const HWCONFIG_PREFLIGHT: super::HwConfig = HwConfig {
     preempt1_size: 0,
     preempt2_size: 0,
     preempt3_size: 0,
-    compute_preempt1_size: 0,
+    // Exact 23J220 G15 Compute data-buffer primary size.
+    // AGX::G15::Device::setupDataBufferParams() computes
+    // 0xd80 + 0x700 * AGXGPUCoreConfig.MGPUs; J615 has one MGPU.
+    // Four additional 8-byte command-local slots follow in Linux's
+    // co-owned backing, matching the raw +0x70..+0x88 pointer set.
+    compute_preempt1_size: 0x1480,
     clustering: None,
     render: HwRenderConfig { tiling_control: 0 },
 
