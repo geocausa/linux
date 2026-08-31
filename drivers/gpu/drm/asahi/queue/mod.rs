@@ -301,6 +301,46 @@ struct G15UnpublishedRunComputeFieldStage {
 
 #[allow(dead_code)]
 impl G15UnpublishedRunComputeFieldStage {
+    /// Apply only the E111/E176 command-facing fields after phase-2 SKU
+    /// finalization. The destination must still be the exact fail-closed
+    /// phase-0 stock-empty image; rejecting any pre-existing pointer prevents
+    /// accidental double-application or mutation of a non-stock command.
+    fn apply_stock_empty_runcompute_fields(
+        &self,
+        command: &mut fw::compute::raw::RunComputeG15V14_7<'_>,
+    ) -> Result {
+        if self.event_control_fwva_14 == 0
+            || self.sku_fwva_760 == 0
+            || self.sku_size_768 as usize != fw::compute::G15_STOCK_EMPTY_SKU_STREAM_SIZE
+            || self.page_pool_state_fwva_83e == 0
+            || self.uma_prepared_846 != 1
+            || self.uma_min_pool_size_847 != 0
+            || self.uma_ideal_pool_size_84f != 0
+            || self.hwmetrics_fwva_857 == 0
+        {
+            return Err(EINVAL);
+        }
+
+        if command.g15_event_control_fwva_14.0 != 0
+            || command.g15_sku_stream_fwva_760.0 != 0
+            || command.g15_sku_stream_size_768 != 0
+            || command.g15_uma_page_pool_state_fwva_83e.0 != 0
+            || command.g15_uma_metrics_fwva_857.0 != 0
+            || command.g15_uma_prepared_846 != 1
+            || command.g15_uma_min_pool_size_847.0 != 0
+            || command.g15_uma_ideal_pool_size_84f.0 != 0
+        {
+            return Err(EBUSY);
+        }
+
+        command.g15_event_control_fwva_14 = U64(self.event_control_fwva_14);
+        command.g15_sku_stream_fwva_760 = U64(self.sku_fwva_760);
+        command.g15_sku_stream_size_768 = self.sku_size_768;
+        command.g15_uma_page_pool_state_fwva_83e = U64(self.page_pool_state_fwva_83e);
+        command.g15_uma_metrics_fwva_857 = U64(self.hwmetrics_fwva_857);
+        Ok(())
+    }
+
     fn from_assets(assets: G15UnpublishedStockEmptyCommandAssets) -> Self {
         Self {
             event_control_fwva_14: assets.event_control_fwva,
