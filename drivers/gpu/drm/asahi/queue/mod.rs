@@ -820,6 +820,59 @@ struct G15ArmedUnpublishedRunComputeFieldStage {
     stage: G15UnpublishedRunComputeFieldStage,
 }
 
+/// QueueJob-owned phase-1 transaction holder. E134 intentionally makes a raw
+/// armed token release only its fence arm on Drop; event/SKU/FList rollback
+/// remains an explicit operation. This wrapper makes that explicit abort
+/// structural for the first real per-job ownership home while retaining the
+/// exact same E174 Compute-channel slot independently of the parent Queue.
+#[versions(AGX)]
+#[allow(dead_code)]
+struct G15QueueJobStockEmptyPrepare {
+    channel: Arc<Mutex<Option<G15UnpublishedComputeChannel::ver>>>,
+    armed: Option<G15ArmedUnpublishedStockEmptyPrepare::ver>,
+}
+
+#[versions(AGX)]
+#[allow(dead_code)]
+impl G15QueueJobStockEmptyPrepare::ver {
+    fn new(
+        channel: Arc<Mutex<Option<G15UnpublishedComputeChannel::ver>>>,
+        armed: G15ArmedUnpublishedStockEmptyPrepare::ver,
+    ) -> Self {
+        Self {
+            channel,
+            armed: Some(armed),
+        }
+    }
+}
+
+#[versions(AGX)]
+impl Drop for G15QueueJobStockEmptyPrepare::ver {
+    fn drop(&mut self) {
+        let Some(armed) = self.armed.take() else {
+            return;
+        };
+        let mut slot = self.channel.lock();
+        let Some(channel) = (&mut *slot).as_mut() else {
+            // This cannot occur while the E174 Arc/slot invariant is intact.
+            // Do not falsely signal the command fence complete if ownership
+            // has nevertheless been corrupted and explicit rollback is no
+            // longer reachable.
+            pr_err!(
+                "G15 stock-empty phase-1 owner lost its Compute channel; retaining armed token fail-closed\n"
+            );
+            core::mem::forget(armed);
+            return;
+        };
+        if let Err(err) = channel.abort_stock_empty(armed) {
+            pr_err!(
+                "G15 stock-empty phase-1 abort failed during QueueJob teardown: {:?}\n",
+                err
+            );
+        }
+    }
+}
+
 #[versions(AGX)]
 #[vtable]
 impl dma_fence::FenceOps for JobFence::ver {
@@ -1292,6 +1345,10 @@ pub(crate) struct QueueJob {
     // single per-submission lifetime home without inventing a second owner.
     #[ver(G == G15)]
     _g15_compute_channel: Option<Arc<Mutex<Option<G15UnpublishedComputeChannel::ver>>>>,
+    // E175 stores a future phase-1 token only in this per-job RAII owner. The
+    // acquisition method remains zero-caller; None is the only live value.
+    #[ver(G == G15)]
+    _g15_stock_empty_prepare: Option<G15QueueJobStockEmptyPrepare::ver>,
     sj_vtx: Option<SubQueueJob::ver>,
     sj_frag: Option<SubQueueJob::ver>,
     sj_comp: Option<SubQueueJob::ver>,
@@ -1304,6 +1361,35 @@ pub(crate) struct QueueJob {
 
 #[versions(AGX)]
 impl QueueJob::ver {
+    /// Dormant E175 entry point for the exact E134 phase-1 transaction. It
+    /// requires the E168 lazy channel to already exist, acquires assets through
+    /// that exact slot, and immediately moves the armed token into the RAII
+    /// owner above. There are deliberately no callers in E175.
+    fn prepare_g15_stock_empty_phase1(&mut self) -> Result {
+        #[ver(G != G15)]
+        {
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            if self._g15_stock_empty_prepare.is_some() {
+                return Err(EBUSY);
+            }
+            let channel_slot = self._g15_compute_channel.as_ref().ok_or(EINVAL)?.clone();
+            let armed = {
+                let mut slot = channel_slot.lock();
+                (&mut *slot)
+                    .as_mut()
+                    .ok_or(EINVAL)?
+                    .prepare_stock_empty_phase1(&self.fence)?
+            };
+            self._g15_stock_empty_prepare =
+                Some(G15QueueJobStockEmptyPrepare::ver::new(channel_slot, armed));
+            Ok(())
+        }
+    }
+
     fn get_vtx(&mut self) -> Result<&mut workqueue::Job::ver> {
         self.sj_vtx
             .as_mut()
@@ -2067,6 +2153,8 @@ impl Queue for Queue::ver {
                     .q_comp
                     .as_ref()
                     .and_then(|subqueue| subqueue._g15_compute_channel.clone()),
+                #[ver(G == G15)]
+                _g15_stock_empty_prepare: None,
                 sj_vtx: self
                     .q_vtx
                     .as_mut()
