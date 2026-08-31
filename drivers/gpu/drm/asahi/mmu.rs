@@ -2038,6 +2038,16 @@ impl Drop for G15SharedBank1Mapping {
                 G15MappingNotifyMode::AfterActivation => notifier.is_active(),
             };
             if publish {
+                let before = notifier.cursors();
+                dev_info!(
+                    notifier.dev.as_ref(),
+                    "T8122 G15 E211 drop begin base={:#x} size={:#x} mode={:?} q22={}:{}\n",
+                    iova,
+                    size,
+                    self.notify_mode,
+                    before.0,
+                    before.1
+                );
                 if notifier.publish_unmapping(iova, &self.phys_pages).is_err() {
                     pr_err!(
                         "MMU: failed to publish G15 shared bank-1 unmapping {:#x}:{:#x}; preserving PTE and VA reservation\n",
@@ -2052,6 +2062,14 @@ impl Drop for G15SharedBank1Mapping {
                     core::mem::forget(node);
                     return;
                 }
+                let after_publish = notifier.cursors();
+                dev_info!(
+                    notifier.dev.as_ref(),
+                    "T8122 G15 E211 drop published base={:#x} q22={}:{}\n",
+                    iova,
+                    after_publish.0,
+                    after_publish.1
+                );
                 if notifier.drain_before_unmap().is_err() {
                     pr_err!(
                         "MMU: failed to drain G15 q22 before shared bank-1 unmap {:#x}:{:#x}; preserving PTE and VA reservation\n",
@@ -2066,6 +2084,14 @@ impl Drop for G15SharedBank1Mapping {
                     core::mem::forget(node);
                     return;
                 }
+                let after_drain = notifier.cursors();
+                dev_info!(
+                    notifier.dev.as_ref(),
+                    "T8122 G15 E211 drop drained base={:#x} q22={}:{}\n",
+                    iova,
+                    after_drain.0,
+                    after_drain.1
+                );
             }
         }
         {
