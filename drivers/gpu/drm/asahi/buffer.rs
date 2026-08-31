@@ -1947,10 +1947,15 @@ pub(crate) struct G15FListPopulationInputs {
 #[allow(dead_code)]
 pub(crate) struct G15FListResourceOwner {
     plan: G15FListResourcePlan,
+    // Rust drops struct fields in declaration order. Match exact 23J220
+    // AGXUMAFList::free(): Page-Pool State (+0x1c0), FW-Uncached State
+    // (+0x1b0), Page Pool List (+0x50), then Backup Page List (+0xb0).
+    // Construction still uses the already-created locals below, so this changes
+    // teardown ordering only and does not alter allocation/publication order.
+    page_pool_state: alloc::G15SharedGpuArray<buffer::raw::G15UMAPagePoolState>,
+    fw_uncached_state: alloc::G15SharedGpuArray<buffer::raw::G15UMAFWUncachedState>,
     page_pool_list: GpuArray<U64>,
     backup_page_list: GpuArray<U64>,
-    fw_uncached_state: alloc::G15SharedGpuArray<buffer::raw::G15UMAFWUncachedState>,
-    page_pool_state: alloc::G15SharedGpuArray<buffer::raw::G15UMAPagePoolState>,
     firmware_state_initialized: bool,
 }
 
@@ -2028,10 +2033,10 @@ impl G15FListResourceOwner {
 
         Ok(Self {
             plan,
+            page_pool_state,
+            fw_uncached_state,
             page_pool_list,
             backup_page_list,
-            fw_uncached_state,
-            page_pool_state,
             firmware_state_initialized: false,
         })
     }
