@@ -1854,7 +1854,12 @@ impl G15MappingNotifier {
                 raw.ring[write as usize] = fw::initdata::raw::G15CacheFlushEntry {
                     addr: fw::types::U64(addr),
                     phys_page_4k: fw::types::U32((phys >> 12).try_into()?),
-                    secure_context_id: fw::types::U32(if mapping { 0 } else { u32::MAX }),
+                    // Exact 23J220 accelerator-shared bank-1 mappings use the
+                    // kernel SecureGart. AGXAccelerator::start() registers that
+                    // GART as context ID 0 (selector 3), and SecureGart::unmap()
+                    // passes the registered ID to notifyNewUnmapping(). Thus
+                    // both map and unmap records for this shared-bank1 owner use 0.
+                    secure_context_id: fw::types::U32(0),
                     fw_page_count: 1,
                     mapping_flags: Self::mapping_flags(addr, mapping)?,
                     reserved_14: fw::types::U32(0),
@@ -1918,7 +1923,7 @@ impl G15MappingNotifier {
                     && raw.state.write_idx.load(Ordering::Relaxed) == 2
                     && e.addr.0 == base
                     && e.phys_page_4k.0 == (phys >> 12) as u32
-                    && e.secure_context_id.0 == u32::MAX
+                    && e.secure_context_id.0 == 0
                     && e.fw_page_count == 1
                     && e.mapping_flags == 0
                     && e.reserved_14.0 == 0
