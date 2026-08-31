@@ -83,6 +83,9 @@ pub(crate) trait G15WorkQueueTransport: Send + Sync {
     fn queue_info_fwva(&self) -> Result<NonZeroU64>;
     fn state(&self) -> Result<G15WorkQueueTransportState>;
     fn write_command(&self, command_fwva: NonZeroU64) -> Result<u32>;
+    fn begin_submission(&self) -> Result<bool>;
+    fn finish_submission(&self, first_submission: bool) -> Result;
+    fn fail_submission(&self, first_submission: bool);
 }
 
 #[inline(always)]
@@ -381,6 +384,31 @@ pub(crate) struct G15SelectedJobSubmission<'a> {
     transport: Arc<dyn G15WorkQueueTransport>,
     event_count: usize,
     command_count: usize,
+}
+
+/// E192 handoff between selected RunWorkQueue encoding and the future EP21
+/// doorbell. Dropping an uncompleted first-submit ticket makes scheduler
+/// publication Uncertain, so Queue teardown cannot recycle its selected state.
+pub(crate) struct G15SelectedRunCommit {
+    transport: Arc<dyn G15WorkQueueTransport>,
+    first_submission: bool,
+    completed: bool,
+}
+
+impl G15SelectedRunCommit {
+    pub(crate) fn complete(mut self) -> Result {
+        self.transport.finish_submission(self.first_submission)?;
+        self.completed = true;
+        Ok(())
+    }
+}
+
+impl Drop for G15SelectedRunCommit {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.transport.fail_submission(self.first_submission);
+        }
+    }
 }
 
 #[versions(AGX)]
@@ -746,7 +774,7 @@ impl<'a> G15SelectedJobSubmission::ver<'a> {
     pub(crate) fn run(
         mut self,
         channel: &mut channel::PipeChannel::ver,
-    ) -> Result {
+    ) -> Result<G15SelectedRunCommit> {
         #[ver(G != G15)]
         {
             let _ = channel;
@@ -765,11 +793,20 @@ impl<'a> G15SelectedJobSubmission::ver<'a> {
             let command_index = inner.pending.len().checked_sub(1).ok_or(EIO)?;
             let command_fwva = inner.pending[command_index].inner.gpu_va();
             let pipe_type = inner.pipe_type;
-            let is_new = inner.new;
 
-            // Last fallible step: exact E184 selected cached pointer write,
-            // barrier, then selected uncached CPU-wptr update.
-            let wptr = self.transport.write_command(command_fwva)?;
+            // E188 exact authority: first/new state belongs to the selected
+            // channel, not generic WorkQueueInner.new. The first submission also
+            // starts the E191 scheduler publication transaction before any
+            // selected command-ring mutation can become visible.
+            let first_submission = self.transport.begin_submission()?;
+
+            let wptr = match self.transport.write_command(command_fwva) {
+                Ok(wptr) => wptr,
+                Err(err) => {
+                    self.transport.fail_submission(first_submission);
+                    return Err(err);
+                }
+            };
 
             let msg = fw::channels::RunWorkQueueMsg::ver {
                 g15_timestamp: U64(g15_submission_timestamp()),
@@ -777,16 +814,19 @@ impl<'a> G15SelectedJobSubmission::ver<'a> {
                 g15_pipe_type: pipe_type,
                 g15_wptr: wptr as u16,
                 g15_event_slot: event_slot,
-                g15_is_new: is_new,
+                g15_is_new: first_submission,
             };
             channel.send(&msg);
-            inner.new = false;
             inner.submit_seq += self.command_count as u64;
 
+            let completion = G15SelectedRunCommit {
+                transport: self.transport.clone(),
+                first_submission,
+                completed: false,
+            };
             let inner = self.inner.take().expect("selected submission lost inner");
-            core::mem::forget(self);
             core::mem::drop(inner);
-            Ok(())
+            Ok(completion)
         }
     }
 }

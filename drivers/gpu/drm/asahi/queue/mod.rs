@@ -1459,6 +1459,7 @@ struct G15UnpublishedComputeChannel {
     guards: G15StockEmptyAssetGuards::ver,
     _fw_channel_resources: buffer::G15FirmwareChannelResourceLeases,
     _scheduler_publication: Arc<G15SchedulerPublication>,
+    commands_submitted: bool,
     pool: buffer::G15ClientUmaComputeChannelRef,
 }
 
@@ -1544,6 +1545,43 @@ impl G15UnpublishedComputeChannel::ver {
         self._fw_channel_resources
             .transport_write_command(command_fwva)
     }
+
+    /// Exact channel +0x3c first-submit ownership from E188. Publication starts
+    /// before the first selected command-ring mutation, while the channel stays
+    /// logically unsubmitted until the future EP21 transaction succeeds.
+    fn begin_transport_submission(&mut self) -> Result<bool> {
+        if self.commands_submitted {
+            if self._scheduler_publication.state() != G15SchedulerPublicationState::Published {
+                return Err(EIO);
+            }
+            return Ok(false);
+        }
+        self._scheduler_publication.begin_publication()?;
+        Ok(true)
+    }
+
+    fn finish_transport_submission(&mut self, first_submission: bool) -> Result {
+        if first_submission {
+            if self.commands_submitted {
+                return Err(EIO);
+            }
+            self._scheduler_publication.mark_published()?;
+            self.commands_submitted = true;
+            return Ok(());
+        }
+        if !self.commands_submitted
+            || self._scheduler_publication.state() != G15SchedulerPublicationState::Published
+        {
+            return Err(EIO);
+        }
+        Ok(())
+    }
+
+    fn fail_transport_submission(&mut self, first_submission: bool) {
+        if first_submission {
+            self._scheduler_publication.mark_uncertain();
+        }
+    }
 }
 
 #[versions(AGX)]
@@ -1571,6 +1609,25 @@ impl workqueue::G15WorkQueueTransport
         let slot = self.lock();
         let channel = (&*slot).as_ref().ok_or(EINVAL)?;
         channel.transport_write_command(command_fwva.get())
+    }
+
+    fn begin_submission(&self) -> Result<bool> {
+        let mut slot = self.lock();
+        let channel = (&mut *slot).as_mut().ok_or(EINVAL)?;
+        channel.begin_transport_submission()
+    }
+
+    fn finish_submission(&self, first_submission: bool) -> Result {
+        let mut slot = self.lock();
+        let channel = (&mut *slot).as_mut().ok_or(EINVAL)?;
+        channel.finish_transport_submission(first_submission)
+    }
+
+    fn fail_submission(&self, first_submission: bool) {
+        let mut slot = self.lock();
+        if let Some(channel) = (&mut *slot).as_mut() {
+            channel.fail_transport_submission(first_submission);
+        }
     }
 }
 
@@ -1654,6 +1711,7 @@ impl QueueInner::ver {
                 guards,
                 _fw_channel_resources: fw_channel_resources,
                 _scheduler_publication: self._g15_scheduler_publication.clone(),
+                commands_submitted: false,
             })
         }
     }
