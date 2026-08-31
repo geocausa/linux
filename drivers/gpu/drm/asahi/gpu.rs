@@ -2588,6 +2588,56 @@ impl GpuManager::ver {
         self.invalidate_context(context)
     }
 
+    /// Exact G15 native ReleaseResource transport for the real selected
+    /// scheduler resource. E190 keeps this separate from the legacy typed
+    /// GpuContext surrogate and leaves it zero-caller until Queue teardown owns
+    /// a proven firmware-publication state.
+    pub(crate) fn g15_release_resource_fwva_now(
+        &self,
+        resource_fwva: u64,
+        ctx_27: u8,
+        ctx_0: u8,
+        ctx_1: u8,
+        ctx_4: u8,
+    ) -> Result {
+        #[ver(G != G15)]
+        {
+            let _ = (resource_fwva, ctx_27, ctx_0, ctx_1, ctx_4);
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            if resource_fwva == 0 || self.is_crashed() {
+                return Err(ENODEV);
+            }
+            let dc = fw::channels::DeviceControlMsg::ver::ReleaseResource {
+                unk_4: 0,
+                ctx_27,
+                ctx_0,
+                ctx_1,
+                ctx_4,
+                resource_fwva: U64(resource_fwva),
+                __pad: Default::default(),
+            };
+            let tag = unsafe {
+                core::ptr::read_unaligned(core::ptr::addr_of!(dc).cast::<u32>())
+            };
+            if tag != 0x11 {
+                return Err(EIO);
+            }
+
+            let mut txch = self.tx_channels.lock();
+            let token = txch.device_control.send(&dc);
+            {
+                let mut guard = self.rtkit.lock();
+                let rtk = guard.as_mut().as_pin_mut().ok_or(ENODEV)?;
+                rtk.send_message(EP_DOORBELL, MSG_TX_DOORBELL | DOORBELL_DEVCTRL)?;
+            }
+            txch.device_control.wait_for(token)
+        }
+    }
+
     /// Kick a submission pipe for a submitted job to tell the firmware to start processing it.
     pub(crate) fn run_job(&self, job: workqueue::JobSubmission::ver<'_>) -> Result {
         mod_dev_dbg!(self.dev, "GPU: run_job\n");
@@ -2672,7 +2722,7 @@ impl GpuManager::ver {
                     ctx_0,
                     ctx_1,
                     ctx_4,
-                    gpu_context: Some(context.weak_pointer()),
+                    resource_fwva: U64(context.weak_pointer().into()),
                     __pad: Default::default(),
                 }
             }

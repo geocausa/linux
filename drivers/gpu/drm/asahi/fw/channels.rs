@@ -232,9 +232,9 @@ pub(crate) enum DeviceControlMsg {
     Unk10(Array<DEVICECONTROL_SZ::ver, u8>),
     #[ver(G != G15)]
     Unk11(Array<DEVICECONTROL_SZ::ver, u8>),
-    // G15 native context/scheduler-resource retirement. Apple constructs this
-    // in AGXArmFirmware::submitReleaseResource() and firmware consumes opcode
-    // 0x11 with the unaligned context pointer at +0x0c.
+    // G15 native scheduler-resource retirement. Exact 23J220 passes a raw
+    // selected resource FWVA at +0x0c; the old GpuContext pointer type was only
+    // a byte-compatible registration-surrogate carrier.
     #[ver(G == G15)]
     ReleaseResource {
         unk_4: u32,
@@ -242,7 +242,7 @@ pub(crate) enum DeviceControlMsg {
         ctx_0: u8,
         ctx_1: u8,
         ctx_4: u8,
-        gpu_context: Option<GpuWeakPointer<super::workqueue::GpuContextData>>,
+        resource_fwva: U64,
         __pad: Pad<{ DEVICECONTROL_SZ::ver - 0x10 }>,
     },
     Unk12(Array<DEVICECONTROL_SZ::ver, u8>),

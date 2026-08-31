@@ -2219,6 +2219,33 @@ impl Queue::ver {
         Ok(ret)
     }
 
+    /// E190 exact command-queue teardown primitive. This remains zero-caller:
+    /// a later lifecycle state must prove the selected scheduler resource was
+    /// firmware-published before Queue Drop is allowed to invoke it.
+    #[allow(dead_code)]
+    fn g15_release_selected_scheduler_resource(
+        &self,
+        gpu: &gpu::GpuManager::ver,
+    ) -> Result {
+        #[ver(G != G15)]
+        {
+            let _ = gpu;
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            let info = self.inner._g15_fw_queue_resources.scheduler_release_info()?;
+            gpu.g15_release_resource_fwva_now(
+                info.fwva,
+                info.ctx_27,
+                info.ctx_0,
+                info.ctx_1,
+                info.ctx_4,
+            )
+        }
+    }
+
     /// E156 definition-only lazy first-CL transaction. Exact 23J220 constructs
     /// the WorkQueue/channel pair privately and publishes the new CL WorkQueue
     /// in the command-queue array only after channel init/priority succeeds.

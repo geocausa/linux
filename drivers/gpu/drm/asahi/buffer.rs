@@ -997,6 +997,18 @@ impl G15FirmwareResourceLease {
     }
 }
 
+/// Exact identity consumed by G15 DeviceControl opcode 0x11 when releasing
+/// one selected `_AGFISchedulerState` at command-queue teardown.
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
+pub(crate) struct G15SchedulerReleaseInfo {
+    pub(crate) fwva: u64,
+    pub(crate) ctx_27: u8,
+    pub(crate) ctx_0: u8,
+    pub(crate) ctx_1: u8,
+    pub(crate) ctx_4: u8,
+}
+
 /// Exact command-queue-lifetime resource selections. E147 proves the scheduler
 /// and timestamp namespaces are independent even though both are acquired by
 /// AGXCommandQueue construction.
@@ -1022,6 +1034,28 @@ impl G15FirmwareCommandQueueResourceLeases {
 
     fn scheduler_state_fwva(&self) -> Result<u64> {
         self.scheduler_state.mapped_fwva()
+    }
+
+    /// E188 exact `AGXCommandQueue::free()` source: selected scheduler FWVA
+    /// plus bytes +0x27/+0x00/+0x01/+0x04, captured before the selection is
+    /// returned to firmware resource stack +0xdb8.
+    pub(crate) fn scheduler_release_info(&self) -> Result<G15SchedulerReleaseInfo> {
+        let lease = &self.scheduler_state;
+        let mut state = lease.manager.0.lock();
+        let (fwva, slot) = state.selected_mapped_element(
+            lease.index,
+            G15FirmwareResourceKind::SchedulerState,
+        )?;
+        if fwva == 0 || Some(fwva) != lease.fwva {
+            return Err(EIO);
+        }
+        Ok(G15SchedulerReleaseInfo {
+            fwva,
+            ctx_27: *slot.get(0x27).ok_or(EIO)?,
+            ctx_0: *slot.first().ok_or(EIO)?,
+            ctx_1: *slot.get(0x01).ok_or(EIO)?,
+            ctx_4: *slot.get(0x04).ok_or(EIO)?,
+        })
     }
 }
 
