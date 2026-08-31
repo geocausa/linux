@@ -972,6 +972,18 @@ struct G15StockEmptyWorkQueuePayload {
 }
 
 #[versions(AGX)]
+impl G15StockEmptyWorkQueuePayload::ver {
+    /// Snapshot the real selected uncached channel cursors after firmware stamp
+    /// completion and before host resource cleanup. E197 uses this to observe
+    /// whether the first command advances the selected done pointer.
+    fn transport_state(&self) -> Result<buffer::G15ChannelTransportState> {
+        let slot = self.channel.lock();
+        let channel = (&*slot).as_ref().ok_or(EINVAL)?;
+        channel.transport_state()
+    }
+}
+
+#[versions(AGX)]
 impl Drop for G15StockEmptyWorkQueuePayload::ver {
     fn drop(&mut self) {
         let mut slot = self.channel.lock();
@@ -1858,6 +1870,8 @@ impl QueueJob::ver {
 
             let vm_slot = self.vm_bind.slot();
             let fence = self.fence.clone();
+            let dev = self.dev.clone();
+            let job_id = self.id;
             let (command_ref, payload) = self
                 ._g15_stock_empty_assets
                 .as_mut()
@@ -1870,6 +1884,14 @@ impl QueueJob::ver {
 
             let comp_job = self.get_comp()?;
             comp_job.add_cb(command_ref, vm_slot, move |error| {
+                let selected_state = payload.transport_state();
+                dev_info!(
+                    dev.as_ref(),
+                    "T8122 G15 E197 stock-empty WorkQueue completion job={} error={:?} selected_state={:?}\n",
+                    job_id,
+                    error,
+                    selected_state
+                );
                 if let Some(err) = error {
                     fence.set_error(err.into());
                 }

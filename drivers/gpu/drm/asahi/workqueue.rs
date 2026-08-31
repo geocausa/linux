@@ -782,7 +782,7 @@ impl<'a> G15SelectedJobSubmission::ver<'a> {
     pub(crate) fn run(
         mut self,
         channel: &mut channel::PipeChannel::ver,
-    ) -> Result<G15SelectedRunCommit> {
+    ) -> Result<(G15SelectedRunCommit, u32)> {
         #[ver(G != G15)]
         {
             let _ = channel;
@@ -830,7 +830,7 @@ impl<'a> G15SelectedJobSubmission::ver<'a> {
                 g15_event_slot: event_slot,
                 g15_is_new: first_submission,
             };
-            channel.send(&msg);
+            let pipe_token = channel.send(&msg);
             inner.submit_seq += self.command_count as u64;
 
             let completion = G15SelectedRunCommit {
@@ -840,7 +840,7 @@ impl<'a> G15SelectedJobSubmission::ver<'a> {
             };
             let inner = self.inner.take().expect("selected submission lost inner");
             core::mem::drop(inner);
-            Ok(completion)
+            Ok((completion, pipe_token))
         }
     }
 }

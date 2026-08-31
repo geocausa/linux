@@ -2731,8 +2731,18 @@ impl GpuManager::ver {
                 PipeType::Compute => &self.pipes.comp,
             };
             let mut pipe = pipes.get(index).ok_or(EIO)?.lock();
-            let completion = job.run(&mut pipe)?;
-            core::mem::drop(pipe);
+            let state_before = pipe.g15_state();
+            let (completion, pipe_token) = job.run(&mut pipe)?;
+            let state_after_put = pipe.g15_state();
+            dev_info!(
+                self.dev.as_ref(),
+                "T8122 G15 E197 selected pipe {:?}/{} before={:?} after-put={:?} token={}\n",
+                pipe_type,
+                index,
+                state_before,
+                state_after_put,
+                pipe_token
+            );
 
             // ArmFirmware checks accelerator +0x622 after encoding the pipe
             // record. If the modeled state changed underneath this transaction,
@@ -2759,6 +2769,27 @@ impl GpuManager::ver {
                 return Err(err);
             }
 
+            // Prove the scheduler consumed and returned from this selected
+            // RunWorkQueue record before declaring first publication complete.
+            // Engine completion remains asynchronous and is observed separately
+            // through the E197 WorkQueue callback marker.
+            let wait_result = pipe.wait_for(pipe_token);
+            let state_after_wait = pipe.g15_state();
+            dev_info!(
+                self.dev.as_ref(),
+                "T8122 G15 E197 selected pipe {:?}/{} wait={:?} final={:?}\n",
+                pipe_type,
+                index,
+                wait_result,
+                state_after_wait
+            );
+            if let Err(err) = wait_result {
+                self.crashed.store(true, Ordering::Release);
+                core::mem::drop(completion);
+                return Err(err);
+            }
+            core::mem::drop(pipe);
+
             if let Err(err) = completion.complete() {
                 // EP21 succeeded but host publication bookkeeping did not. The
                 // completion ticket marks the scheduler state Uncertain on Drop;
@@ -2766,6 +2797,10 @@ impl GpuManager::ver {
                 self.crashed.store(true, Ordering::Release);
                 return Err(err);
             }
+            dev_info!(
+                self.dev.as_ref(),
+                "T8122 G15 E197 selected first RunWorkQueue accepted by scheduler; awaiting engine completion\n"
+            );
             Ok(())
         }
     }
