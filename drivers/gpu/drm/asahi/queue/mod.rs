@@ -860,6 +860,64 @@ struct G15ArmedUnpublishedRunComputeFieldStage {
     stage: G15UnpublishedRunComputeFieldStage,
 }
 
+/// GPU-VA-only WorkQueue command handle used after E182 transfers the actual
+/// typed allocation into the completion payload stored beside this handle in
+/// one SubmittedWork container. The proxy owns no GPU memory by itself.
+#[derive(Copy, Clone)]
+struct G15StockEmptyCommandRef {
+    gpu_va: core::num::NonZeroU64,
+}
+
+impl crate::object::OpaqueGpuObject for G15StockEmptyCommandRef {
+    fn gpu_va(&self) -> core::num::NonZeroU64 {
+        self.gpu_va
+    }
+}
+
+impl workqueue::OpaqueCommandObject for G15StockEmptyCommandRef {}
+
+/// E182 WorkQueue callback payload. The callback owns both the finalized armed
+/// assets and the real typed RunCompute allocation. Drop completes assets first
+/// while `command` is still alive; normal field destruction releases the command
+/// only after this destructor returns. If the channel disappeared impossibly,
+/// both are retained fail-closed.
+#[versions(AGX)]
+struct G15StockEmptyWorkQueuePayload {
+    channel: Arc<Mutex<Option<G15UnpublishedComputeChannel::ver>>>,
+    finalized: Option<G15ArmedUnpublishedRunComputeFieldStage::ver>,
+    command: Option<GpuObject<fw::compute::RunCompute::ver>>,
+}
+
+#[versions(AGX)]
+impl Drop for G15StockEmptyWorkQueuePayload::ver {
+    fn drop(&mut self) {
+        let mut slot = self.channel.lock();
+        let Some(channel) = (&mut *slot).as_mut() else {
+            if let Some(finalized) = self.finalized.take() {
+                core::mem::forget(finalized);
+            }
+            if let Some(command) = self.command.take() {
+                core::mem::forget(command);
+            }
+            pr_err!(
+                "G15 WorkQueue payload lost Compute channel; retaining assets and command fail-closed\n"
+            );
+            return;
+        };
+
+        if let Some(finalized) = self.finalized.take() {
+            match channel.complete_stock_empty(finalized) {
+                Ok(_) => channel.scrub_completed_stock_empty_slots(),
+                Err(err) => pr_err!(
+                    "G15 WorkQueue stock-empty completion cleanup failed: {:?}\n",
+                    err
+                ),
+            }
+        }
+        // `command` intentionally remains owned until after this Drop returns.
+    }
+}
+
 /// QueueJob-owned two-phase stock-empty transaction state. The prepared and
 /// finalized tokens are mutually exclusive; both retain the E134 fence arm.
 /// Keeping the channel-slot Arc here makes rollback/completion independent of
@@ -947,6 +1005,29 @@ impl G15QueueJobStockEmptyAssets::ver {
             self.command = Some(command);
             Ok(())
         }
+    }
+
+    /// Consume the finalized command state into one WorkQueue transfer pair.
+    /// The proxy supplies only the GPU VA; the callback payload keeps the real
+    /// allocation and armed assets inseparable until completion/drop.
+    fn take_workqueue_transfer(
+        &mut self,
+    ) -> Result<(G15StockEmptyCommandRef, G15StockEmptyWorkQueuePayload::ver)> {
+        if self.prepared.is_some() || self.finalized.is_none() || self.command.is_none() {
+            return Err(EINVAL);
+        }
+
+        let gpu_va = self.command.as_ref().ok_or(EINVAL)?.gpu_va();
+        let finalized = self.finalized.take().ok_or(EINVAL)?;
+        let command = self.command.take().ok_or(EINVAL)?;
+        Ok((
+            G15StockEmptyCommandRef { gpu_va },
+            G15StockEmptyWorkQueuePayload::ver {
+                channel: self.channel.clone(),
+                finalized: Some(finalized),
+                command: Some(command),
+            },
+        ))
     }
 }
 
@@ -1563,6 +1644,47 @@ impl QueueJob::ver {
                 return Err(err);
             }
 
+            Ok(())
+        }
+    }
+
+    /// Dormant E182 one-way transfer into the existing Compute WorkQueue job.
+    /// Phase 1 already armed exactly one command reference, so this path must
+    /// not call `add_command()` again. The callback payload owns the finalized
+    /// token and actual command allocation; `add_cb()` receives only its GPU VA
+    /// proxy and stores both values in the same SubmittedWork container.
+    fn transfer_g15_stock_empty_to_workqueue(&mut self) -> Result {
+        #[ver(G != G15)]
+        {
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            if self.fence.pending.load(Ordering::Acquire) == 0 {
+                return Err(EINVAL);
+            }
+
+            let vm_slot = self.vm_bind.slot();
+            let fence = self.fence.clone();
+            let (command_ref, payload) = self
+                ._g15_stock_empty_assets
+                .as_mut()
+                .ok_or(EINVAL)?
+                .take_workqueue_transfer()?;
+
+            // The per-job owner is empty after extraction. Drop it now so there
+            // is exactly one owner for the command/finalized token: `payload`.
+            core::mem::drop(self._g15_stock_empty_assets.take());
+
+            let comp_job = self.get_comp()?;
+            comp_job.add_cb(command_ref, vm_slot, move |error| {
+                if let Some(err) = error {
+                    fence.set_error(err.into());
+                }
+                core::mem::drop(payload);
+            })?;
+            comp_job.next_seq();
             Ok(())
         }
     }
