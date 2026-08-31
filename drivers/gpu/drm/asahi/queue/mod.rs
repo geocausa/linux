@@ -49,6 +49,7 @@ use crate::{
 
 use core::num::NonZeroU64;
 use core::sync::atomic::{
+    AtomicU8,
     AtomicU64,
     Ordering, //
 };
@@ -701,6 +702,85 @@ impl G15EventControlBacking {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+enum G15SchedulerPublicationState {
+    Unpublished = 0,
+    Publishing = 1,
+    Published = 2,
+    Released = 3,
+    Uncertain = 4,
+}
+
+/// Command-queue-lifetime ownership state for the selected G15 scheduler
+/// resource. E191 makes teardown fail-closed before any selected submit caller
+/// is enabled; later transport work may only advance this state monotonically.
+struct G15SchedulerPublication {
+    state: AtomicU8,
+}
+
+impl G15SchedulerPublication {
+    fn new() -> Self {
+        Self {
+            state: AtomicU8::new(G15SchedulerPublicationState::Unpublished as u8),
+        }
+    }
+
+    fn state(&self) -> G15SchedulerPublicationState {
+        match self.state.load(Ordering::Acquire) {
+            0 => G15SchedulerPublicationState::Unpublished,
+            1 => G15SchedulerPublicationState::Publishing,
+            2 => G15SchedulerPublicationState::Published,
+            3 => G15SchedulerPublicationState::Released,
+            _ => G15SchedulerPublicationState::Uncertain,
+        }
+    }
+
+    #[allow(dead_code)]
+    fn begin_publication(&self) -> Result {
+        self.state
+            .compare_exchange(
+                G15SchedulerPublicationState::Unpublished as u8,
+                G15SchedulerPublicationState::Publishing as u8,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .map(|_| ())
+            .map_err(|_| EBUSY)
+    }
+
+    #[allow(dead_code)]
+    fn mark_published(&self) -> Result {
+        self.state
+            .compare_exchange(
+                G15SchedulerPublicationState::Publishing as u8,
+                G15SchedulerPublicationState::Published as u8,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .map(|_| ())
+            .map_err(|_| EIO)
+    }
+
+    #[allow(dead_code)]
+    fn mark_uncertain(&self) {
+        self.state
+            .store(G15SchedulerPublicationState::Uncertain as u8, Ordering::Release);
+    }
+
+    fn mark_released(&self) -> Result {
+        self.state
+            .compare_exchange(
+                G15SchedulerPublicationState::Published as u8,
+                G15SchedulerPublicationState::Released as u8,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .map(|_| ())
+            .map_err(|_| EIO)
+    }
+}
+
 #[versions(AGX)]
 pub(crate) struct Queue {
     dev: AsahiDevRef,
@@ -766,7 +846,9 @@ pub(crate) struct QueueInner {
     // E153 exact AGXCommandQueue-lifetime mapped selections from the global
     // timestamp/scheduler stacks, initialized once during Queue construction.
     #[ver(G == G15)]
-    _g15_fw_queue_resources: buffer::G15FirmwareCommandQueueResourceLeases,
+    _g15_fw_queue_resources: Option<buffer::G15FirmwareCommandQueueResourceLeases>,
+    #[ver(G == G15)]
+    _g15_scheduler_publication: Arc<G15SchedulerPublication>,
     // Exact 0x2800 GPU-facing PM record backing. Apple uses range 5 with
     // compact PTE class 0x300; the separate 0x40 tail is intentionally absent.
     #[ver(G == G15)]
@@ -1376,6 +1458,7 @@ struct G15UnpublishedComputeChannel {
     owners: G15StockEmptyComputeChannelOwners,
     guards: G15StockEmptyAssetGuards::ver,
     _fw_channel_resources: buffer::G15FirmwareChannelResourceLeases,
+    _scheduler_publication: Arc<G15SchedulerPublication>,
     pool: buffer::G15ClientUmaComputeChannelRef,
 }
 
@@ -1545,8 +1628,9 @@ impl QueueInner::ver {
             // IOGPU foreground entitlement model yet, so keep the dormant path
             // fail-closed to that exact non-foreground profile rather than
             // inventing a foreground mapping.
+            let queue_resources = self._g15_fw_queue_resources.as_ref().ok_or(EIO)?;
             let initialized_channel_resources = fw_channel_resources.initialize_j615_cl(
-                &self._g15_fw_queue_resources,
+                queue_resources,
                 self._g15_owner_pid,
                 fw::workqueue::G15_J615_NONFOREGROUND_EFFECTIVE_PRIORITY,
                 fw::workqueue::G15_J615_NONFOREGROUND_CL_QOS_ARGUMENT,
@@ -1569,6 +1653,7 @@ impl QueueInner::ver {
                 owners,
                 guards,
                 _fw_channel_resources: fw_channel_resources,
+                _scheduler_publication: self._g15_scheduler_publication.clone(),
             })
         }
     }
@@ -2034,6 +2119,8 @@ impl Queue::ver {
         let g15_fw_queue_resources = _g15_fw_queue_resources.ok_or(EINVAL)?;
         #[ver(G == G15)]
         g15_fw_queue_resources.initialize_j615_stock()?;
+        #[ver(G == G15)]
+        let g15_scheduler_publication = Arc::new(G15SchedulerPublication::new(), GFP_KERNEL)?;
 
         #[ver(G == G15)]
         let g15_pm_scene_alloc = _g15_ualloc_range5_uncached
@@ -2134,7 +2221,9 @@ impl Queue::ver {
                 #[ver(G == G15)]
                 _g15_owner_pid: _owner_pid,
                 #[ver(G == G15)]
-                _g15_fw_queue_resources: g15_fw_queue_resources,
+                _g15_fw_queue_resources: Some(g15_fw_queue_resources),
+                #[ver(G == G15)]
+                _g15_scheduler_publication: g15_scheduler_publication,
                 #[ver(G == G15)]
                 g15_pm_records,
                 #[ver(G == G15)]
@@ -2235,7 +2324,8 @@ impl Queue::ver {
 
         #[ver(G == G15)]
         {
-            let info = self.inner._g15_fw_queue_resources.scheduler_release_info()?;
+            let resources = self.inner._g15_fw_queue_resources.as_ref().ok_or(EIO)?;
+            let info = resources.scheduler_release_info()?;
             gpu.g15_release_resource_fwva_now(
                 info.fwva,
                 info.ctx_27,
@@ -2736,17 +2826,62 @@ impl Drop for Queue::ver {
         mod_dev_dbg!(self.dev, "[Queue {}] Dropping queue\n", self.inner.id);
 
         #[ver(G == G15)]
-        if self.inner.gpu_context.is_published_to_firmware() {
-            // Publication/release did not complete with a known-good outcome.
-            // The compute WorkQueue owns the exact QueueInfo/ring/state backing
-            // firmware may still reference. Retain it until reboot rather than
-            // risking a firmware use-after-free from later scheduler activity.
-            dev_err!(
-                self.dev.as_ref(),
-                "G15 queue {} has uncertain firmware publication; retaining QueueInfo backing\n",
-                self.inner.id
-            );
-            core::mem::forget(self.q_comp.take());
+        {
+            let mut retain_selected = false;
+            match self.inner._g15_scheduler_publication.state() {
+                G15SchedulerPublicationState::Unpublished
+                | G15SchedulerPublicationState::Released => {}
+                G15SchedulerPublicationState::Published => {
+                    let gpu = (*self.dev)
+                        .gpu
+                        .clone()
+                        .arc_as_any()
+                        .downcast::<gpu::GpuManager::ver>();
+                    let release = gpu
+                        .map_err(|_| EIO)
+                        .and_then(|gpu| self.g15_release_selected_scheduler_resource(&gpu));
+                    match release {
+                        Ok(()) => {
+                            if self.inner._g15_scheduler_publication.mark_released().is_err() {
+                                self.inner._g15_scheduler_publication.mark_uncertain();
+                                retain_selected = true;
+                            }
+                        }
+                        Err(err) => {
+                            self.inner._g15_scheduler_publication.mark_uncertain();
+                            retain_selected = true;
+                            dev_err!(
+                                self.dev.as_ref(),
+                                "G15 queue {} selected scheduler release failed: {:?}; retaining firmware-visible resources\n",
+                                self.inner.id,
+                                err
+                            );
+                        }
+                    }
+                }
+                G15SchedulerPublicationState::Publishing
+                | G15SchedulerPublicationState::Uncertain => {
+                    retain_selected = true;
+                }
+            }
+
+            if self.inner.gpu_context.is_published_to_firmware() {
+                // Legacy E170/E171 registration-surrogate uncertainty remains
+                // independent from the real selected scheduler-resource state.
+                retain_selected = true;
+            }
+
+            if retain_selected {
+                dev_err!(
+                    self.dev.as_ref(),
+                    "G15 queue {} has uncertain firmware publication; retaining selected queue resources\n",
+                    self.inner.id
+                );
+                core::mem::forget(self.q_comp.take());
+                if let Some(resources) = self.inner._g15_fw_queue_resources.take() {
+                    core::mem::forget(resources);
+                }
+            }
         }
     }
 }
