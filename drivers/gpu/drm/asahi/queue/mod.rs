@@ -860,55 +860,108 @@ struct G15ArmedUnpublishedRunComputeFieldStage {
     stage: G15UnpublishedRunComputeFieldStage,
 }
 
-/// QueueJob-owned phase-1 transaction holder. E134 intentionally makes a raw
-/// armed token release only its fence arm on Drop; event/SKU/FList rollback
-/// remains an explicit operation. This wrapper makes that explicit abort
-/// structural for the first real per-job ownership home while retaining the
-/// exact same E174 Compute-channel slot independently of the parent Queue.
+/// QueueJob-owned two-phase stock-empty transaction state. The prepared and
+/// finalized tokens are mutually exclusive; both retain the E134 fence arm.
+/// Keeping the channel-slot Arc here makes rollback/completion independent of
+/// the parent Queue lifetime once a job has acquired command assets.
 #[versions(AGX)]
 #[allow(dead_code)]
-struct G15QueueJobStockEmptyPrepare {
+struct G15QueueJobStockEmptyAssets {
     channel: Arc<Mutex<Option<G15UnpublishedComputeChannel::ver>>>,
-    armed: Option<G15ArmedUnpublishedStockEmptyPrepare::ver>,
+    prepared: Option<G15ArmedUnpublishedStockEmptyPrepare::ver>,
+    finalized: Option<G15ArmedUnpublishedRunComputeFieldStage::ver>,
 }
 
 #[versions(AGX)]
 #[allow(dead_code)]
-impl G15QueueJobStockEmptyPrepare::ver {
-    fn new(
+impl G15QueueJobStockEmptyAssets::ver {
+    fn new_prepared(
         channel: Arc<Mutex<Option<G15UnpublishedComputeChannel::ver>>>,
-        armed: G15ArmedUnpublishedStockEmptyPrepare::ver,
+        prepared: G15ArmedUnpublishedStockEmptyPrepare::ver,
     ) -> Self {
         Self {
             channel,
-            armed: Some(armed),
+            prepared: Some(prepared),
+            finalized: None,
         }
+    }
+
+    /// Consume phase 1, serialize/write the exact reserved SKU slot through
+    /// the channel owner, then apply E177's narrow command-field writer. On a
+    /// finalization failure the channel helper already rolls phase 1 back. If
+    /// field application fails after successful SKU finalization, complete the
+    /// unpublished assets immediately so no armed token escapes this method.
+    fn finalize(
+        &mut self,
+        command_fwva: u64,
+        command: &mut fw::compute::raw::RunComputeG15V14_7<'_>,
+    ) -> Result {
+        if self.finalized.is_some() {
+            return Err(EBUSY);
+        }
+        let prepared = self.prepared.take().ok_or(EINVAL)?;
+        let mut slot = self.channel.lock();
+        let Some(channel) = (&mut *slot).as_mut() else {
+            pr_err!(
+                "G15 stock-empty phase-2 owner lost its Compute channel; retaining prepared token fail-closed\n"
+            );
+            core::mem::forget(prepared);
+            return Err(ENODEV);
+        };
+
+        let finalized = channel.finalize_stock_empty(prepared, command_fwva, command)?;
+        if let Err(apply_err) = finalized.stage.apply_stock_empty_runcompute_fields(command) {
+            let cleanup = channel.complete_stock_empty(finalized);
+            if cleanup.is_ok() {
+                channel.scrub_completed_stock_empty_slots();
+                return Err(apply_err);
+            }
+            pr_err!(
+                "G15 stock-empty phase-2 field apply failed and cleanup did not complete: {:?}\n",
+                cleanup
+            );
+            return cleanup.map(|_| ());
+        }
+
+        self.finalized = Some(finalized);
+        Ok(())
     }
 }
 
 #[versions(AGX)]
-impl Drop for G15QueueJobStockEmptyPrepare::ver {
+impl Drop for G15QueueJobStockEmptyAssets::ver {
     fn drop(&mut self) {
-        let Some(armed) = self.armed.take() else {
-            return;
-        };
         let mut slot = self.channel.lock();
         let Some(channel) = (&mut *slot).as_mut() else {
-            // This cannot occur while the E174 Arc/slot invariant is intact.
-            // Do not falsely signal the command fence complete if ownership
-            // has nevertheless been corrupted and explicit rollback is no
-            // longer reachable.
+            if let Some(prepared) = self.prepared.take() {
+                core::mem::forget(prepared);
+            }
+            if let Some(finalized) = self.finalized.take() {
+                core::mem::forget(finalized);
+            }
             pr_err!(
-                "G15 stock-empty phase-1 owner lost its Compute channel; retaining armed token fail-closed\n"
+                "G15 stock-empty QueueJob owner lost its Compute channel; retaining armed state fail-closed\n"
             );
-            core::mem::forget(armed);
             return;
         };
-        if let Err(err) = channel.abort_stock_empty(armed) {
-            pr_err!(
-                "G15 stock-empty phase-1 abort failed during QueueJob teardown: {:?}\n",
-                err
-            );
+
+        if let Some(prepared) = self.prepared.take() {
+            if let Err(err) = channel.abort_stock_empty(prepared) {
+                pr_err!(
+                    "G15 stock-empty phase-1 abort failed during QueueJob teardown: {:?}\n",
+                    err
+                );
+            }
+        }
+
+        if let Some(finalized) = self.finalized.take() {
+            match channel.complete_stock_empty(finalized) {
+                Ok(_) => channel.scrub_completed_stock_empty_slots(),
+                Err(err) => pr_err!(
+                    "G15 stock-empty finalized cleanup failed during QueueJob teardown: {:?}\n",
+                    err
+                ),
+            }
         }
     }
 }
@@ -1388,7 +1441,7 @@ pub(crate) struct QueueJob {
     // E175 stores a future phase-1 token only in this per-job RAII owner. The
     // acquisition method remains zero-caller; None is the only live value.
     #[ver(G == G15)]
-    _g15_stock_empty_prepare: Option<G15QueueJobStockEmptyPrepare::ver>,
+    _g15_stock_empty_assets: Option<G15QueueJobStockEmptyAssets::ver>,
     sj_vtx: Option<SubQueueJob::ver>,
     sj_frag: Option<SubQueueJob::ver>,
     sj_comp: Option<SubQueueJob::ver>,
@@ -1413,7 +1466,7 @@ impl QueueJob::ver {
 
         #[ver(G == G15)]
         {
-            if self._g15_stock_empty_prepare.is_some() {
+            if self._g15_stock_empty_assets.is_some() {
                 return Err(EBUSY);
             }
             let channel_slot = self._g15_compute_channel.as_ref().ok_or(EINVAL)?.clone();
@@ -1424,9 +1477,32 @@ impl QueueJob::ver {
                     .ok_or(EINVAL)?
                     .prepare_stock_empty_phase1(&self.fence)?
             };
-            self._g15_stock_empty_prepare =
-                Some(G15QueueJobStockEmptyPrepare::ver::new(channel_slot, armed));
+            self._g15_stock_empty_assets =
+                Some(G15QueueJobStockEmptyAssets::ver::new_prepared(channel_slot, armed));
             Ok(())
+        }
+    }
+
+    /// Dormant E178 phase-2 transition. The caller must provide the exact
+    /// already-initialized G15 RunCompute image and its FWVA; E178 deliberately
+    /// has no caller and does not allocate or publish that command.
+    fn finalize_g15_stock_empty_phase2(
+        &mut self,
+        command_fwva: u64,
+        command: &mut fw::compute::raw::RunComputeG15V14_7<'_>,
+    ) -> Result {
+        #[ver(G != G15)]
+        {
+            let _ = (command_fwva, command);
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            self._g15_stock_empty_assets
+                .as_mut()
+                .ok_or(EINVAL)?
+                .finalize(command_fwva, command)
         }
     }
 
@@ -2194,7 +2270,7 @@ impl Queue for Queue::ver {
                     .as_ref()
                     .and_then(|subqueue| subqueue._g15_compute_channel.clone()),
                 #[ver(G == G15)]
-                _g15_stock_empty_prepare: None,
+                _g15_stock_empty_assets: None,
                 sj_vtx: self
                     .q_vtx
                     .as_mut()
