@@ -1285,6 +1285,13 @@ pub(crate) struct QueueJob {
     dev: AsahiDevRef,
     vm_bind: mmu::VmBind,
     op_guard: Option<gpu::OpGuard>,
+    // E174 typed per-job retain of the exact E155 Compute WorkQueue channel
+    // slot. This is a clone of the same Arc stored by `SubQueue` and retained
+    // opaquely by `WorkQueue`; it creates no channel and performs no lock or
+    // command preparation. Keeping it in QueueJob gives a future E134 token a
+    // single per-submission lifetime home without inventing a second owner.
+    #[ver(G == G15)]
+    _g15_compute_channel: Option<Arc<Mutex<Option<G15UnpublishedComputeChannel::ver>>>>,
     sj_vtx: Option<SubQueueJob::ver>,
     sj_frag: Option<SubQueueJob::ver>,
     sj_comp: Option<SubQueueJob::ver>,
@@ -2055,6 +2062,11 @@ impl Queue for Queue::ver {
                 dev: self.dev.clone(),
                 vm_bind,
                 op_guard,
+                #[ver(G == G15)]
+                _g15_compute_channel: self
+                    .q_comp
+                    .as_ref()
+                    .and_then(|subqueue| subqueue._g15_compute_channel.clone()),
                 sj_vtx: self
                     .q_vtx
                     .as_mut()
