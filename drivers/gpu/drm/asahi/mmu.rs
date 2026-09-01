@@ -39,6 +39,7 @@ use kernel::{
     new_mutex,
     page::Page,
     prelude::*,
+    processor::cpu_relax,
     types::Owned,
     static_lock_class,
     sync::{
@@ -2022,10 +2023,10 @@ impl G15MappingNotifier {
                 return Err(ETIMEDOUT);
             }
 
-            // Keep the host serialized on the notifier while firmware advances
-            // the shared read cursor; a 1-ms sleep avoids a hot CPU poll while
-            // remaining well inside Apple's exact 150-ms lifetime bound.
-            fsleep(Delta::from_millis(1));
+            // Exact 23J220 blockForRingEmpty() tight-polls q22 until the
+            // consumer catches up or the 150-ms deadline expires. Sleeping here
+            // creates a host-side lifetime gap that Apple does not have.
+            cpu_relax();
         }
     }
 }
