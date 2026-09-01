@@ -175,7 +175,11 @@ impl super::QueueInner::ver {
                 | ((entry_addr >> 32) << 16);
             bytes[pos..pos + 8].copy_from_slice(&shifted_entry.to_le_bytes());
             pos += 8;
-            put32(bytes, &mut pos, 0x0000_0040);
+            // Exact 23J220 ordinary direct-launch dword 3 (E241/E242/E244).
+            // The older m1n1 bring-up stream used 0x40 here, but the target
+            // producer derives this from ComputeProgramVariant +0xa24 and the
+            // default distribution mode, yielding bit 30 set and no low bits.
+            put32(bytes, &mut pos, 0x4000_0000);
             for _ in 0..6 {
                 put32(bytes, &mut pos, 1);
             }
