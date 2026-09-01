@@ -58,9 +58,19 @@ const DEBUG_CLASS: DebugFlags = DebugFlags::File;
 
 pub(crate) const MAX_COMMANDS_PER_SUBMISSION: u32 = 64;
 
-// E199 lab-only, module-lifetime one-shot claim. The signed first Compute
-// discriminator may cross the G15 file gate at most once per candidate boot.
-static G15_FIRST_COMPUTE_PROBE_USED: AtomicBool = AtomicBool::new(false);
+// J615 bounded module-lifetime one-shot claim. The normal-UAPI stock-empty
+// Compute path may reach GPU execution at most once per candidate boot.
+static G15_STOCK_EMPTY_COMPUTE_USED: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn claim_g15_stock_empty_compute() -> Result {
+    if G15_STOCK_EMPTY_COMPUTE_USED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return Err(EBUSY);
+    }
+    Ok(())
+}
 
 /// A client instance of an `mmu::Vm` address space.
 struct Vm {
@@ -1067,41 +1077,22 @@ impl File {
         debug::update_debug_flags();
 
         let is_g15 = device.gpu.get_cfg().gpu_gen == hw::GpuGen::G15;
-        const G15_FIRST_COMPUTE_PROBE_FLAGS: u32 = 0x4731_3545; // "G15E"
-        const G15_FIRST_COMPUTE_PROBE_PAD: u32 = 0x4531_3939; // "E199"
+        let expected_g15_size = core::mem::size_of::<uapi::drm_asahi_cmd_header>()
+            + core::mem::size_of::<uapi::drm_asahi_cmd_compute>();
+        let g15_stock_empty_compute = is_g15
+            && data.flags == 0
+            && data.pad == 0
+            && data.syncs == 0
+            && data.in_sync_count == 0
+            && data.out_sync_count == 0
+            && data.cmdbuf != 0
+            && data.cmdbuf_size as usize == expected_g15_size;
 
-        let g15_first_compute_probe = is_g15
-            && data.flags == G15_FIRST_COMPUTE_PROBE_FLAGS
-            && data.pad == G15_FIRST_COMPUTE_PROBE_PAD;
-
-        if is_g15 {
-            if g15_first_compute_probe {
-                let expected_size = core::mem::size_of::<uapi::drm_asahi_cmd_header>()
-                    + core::mem::size_of::<uapi::drm_asahi_cmd_compute>();
-                if data.syncs != 0
-                    || data.in_sync_count != 0
-                    || data.out_sync_count != 0
-                    || data.cmdbuf == 0
-                    || data.cmdbuf_size as usize != expected_size
-                {
-                    return Err(ENODEV);
-                }
-                if G15_FIRST_COMPUTE_PROBE_USED
-                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                    .is_err()
-                {
-                    return Err(EBUSY);
-                }
-                dev_info!(
-                    device.as_ref(),
-                    "T8122 G15 E199 signed first stock-empty Compute accepted at outer gate; one-shot consumed\n"
-                );
-            } else {
-                return Err(ENODEV);
-            }
+        if is_g15 && !g15_stock_empty_compute {
+            return Err(ENODEV);
         }
 
-        if !g15_first_compute_probe && (data.flags != 0 || data.pad != 0) {
+        if data.flags != 0 || data.pad != 0 {
             cls_pr_debug!(Errors, "submit: Invalid arguments\n");
             return Err(EINVAL);
         }

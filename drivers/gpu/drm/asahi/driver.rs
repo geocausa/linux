@@ -372,7 +372,7 @@ impl platform::Driver for AsahiDriver {
             drm::driver::Registration::new_foreign_owned(&drm, pdev.as_ref(), 0)?;
             dev_info!(
                 pdev.as_ref(),
-                "T8122 G15 one-shot Compute diagnostic ready; ordinary G15 submit blocked\n"
+                "T8122 G15 bounded stock-empty Compute ready; other G15 submit blocked\n"
             );
             return Ok(Self { drm });
         }

@@ -649,6 +649,14 @@ impl super::QueueInner::ver {
                 return Err(EINVAL);
             }
 
+            // Claim the bounded execution slot only after the normal UAPI
+            // command has been copied and mechanically proven stock-empty.
+            file::claim_g15_stock_empty_compute()?;
+            dev_info!(
+                self.dev.as_ref(),
+                "T8122 G15 normal-UAPI stock-empty Compute accepted; one-shot consumed\n"
+            );
+
             let gpu = match (*self.dev)
                 .gpu
                 .as_any()
