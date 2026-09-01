@@ -708,11 +708,11 @@ impl G15SkuBacking {
 pub(crate) struct RunCompute {
     pub(crate) notifier: Arc<GpuObject<event::Notifier::ver>>,
     pub(crate) preempt_buf: GpuArray<u8>,
-    // Exact 23J220 stock-empty G15 CDM root. beginComputePass() publishes
-    // the pool-0x16 root and endComputePass() writes one 0x40000000
-    // Stream Terminate token there before descriptor submission.
+    // E248 bounded G15 command-owned test blob. The first 0x30 bytes are the
+    // fixed CDM stream; entry/body shaders and a result word live at fixed
+    // offsets in the same VM allocation so their lifetime cannot diverge.
     #[ver(G == G15)]
-    pub(crate) g15_cdm_root: GpuArray<u32>,
+    pub(crate) g15_cdm_root: GpuArray<u8>,
     pub(crate) micro_seq: microseq::MicroSequence,
     pub(crate) vm_bind: mmu::VmBind,
     pub(crate) timestamps: Arc<GpuObject<job::JobTimestamps>>,

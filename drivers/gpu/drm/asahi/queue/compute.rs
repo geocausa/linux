@@ -95,18 +95,110 @@ impl super::QueueInner::ver {
 
         #[ver(G == G15)]
         let g15_cdm_root = {
-            let mut root = self
+            const CDM_LEN: usize = 0x30;
+            const ENTRY_OFF: usize = 0x100;
+            const BODY_OFF: usize = 0x200;
+            const RESULT_OFF: usize = 0x300;
+            const BLOB_LEN: usize = 0x400;
+
+            fn swizzle_imm32(value: u32) -> u64 {
+                let value = value as u64;
+                let a = value & 0x7f;
+                let b = (value >> 7) & 0xf;
+                let c = (value >> 11) & 0x3;
+                let d = (value >> 13) & 0xfff;
+                let e = (value >> 25) & 0x7f;
+                (a << 8) | (b << 33) | (c << 42) | (d << 48) | (e << 25)
+            }
+
+            fn imm_inst(reg: u8, value: u32) -> [u8; 8] {
+                (0x0000_0000_0002_800c_u64
+                    | ((reg as u64) << 4)
+                    | swizzle_imm32(value))
+                    .to_le_bytes()
+            }
+
+            let mut blob = self
                 .ualloc
                 .lock()
-                .array_empty_tagged::<u32>(1, b"CDM0")?;
-            root[0] = 0x4000_0000;
-            root
+                .array_empty_tagged::<u8>(BLOB_LEN, b"CDM1")?;
+            let base = blob.gpu_va().get();
+            let entry_addr = base.checked_add(ENTRY_OFF as u64).ok_or(EOVERFLOW)?;
+            let body_addr = base.checked_add(BODY_OFF as u64).ok_or(EOVERFLOW)?;
+            let result_addr = base.checked_add(RESULT_OFF as u64).ok_or(EOVERFLOW)?;
+            let bytes = blob.as_mut_slice();
+
+            // Result sentinel. The fixed body shader must replace this with the
+            // IEEE-754 bits for 1337.0 before WorkQueue completion.
+            bytes[RESULT_OFF..RESULT_OFF + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+
+            // Alyssa's dynamically-proven 14.x G15 body shader: materialize the
+            // full result GPUVA in r0/r1, f32 1337.0 in r2, device_store, stop.
+            let mut pos = BODY_OFF;
+            for inst in [
+                imm_inst(0, result_addr as u32),
+                imm_inst(1, (result_addr >> 32) as u32),
+                imm_inst(2, 1337.0f32.to_bits()),
+            ] {
+                bytes[pos..pos + 8].copy_from_slice(&inst);
+                pos += 8;
+            }
+            const STORE_STOP: [u8; 18] = [
+                0xe7, 0x00, 0x54, 0x04, 0x00, 0x00, 0x00, 0x00,
+                0x11, 0x01, 0x00, 0x90, 0x08, 0x00,
+                0x0e, 0x00, 0x00, 0x00,
+            ];
+            bytes[pos..pos + STORE_STOP.len()].copy_from_slice(&STORE_STOP);
+
+            // Simplified entry shader from Alyssa's follow-up ad190c0: load the
+            // real shader address (encoded >> 7), clear the entry state, stop.
+            let mut pos = ENTRY_OFF;
+            bytes[pos..pos + 3].copy_from_slice(&[0x77, 0x01, 0x2a]);
+            pos += 3;
+            let shifted_body = (body_addr >> 7).to_le_bytes();
+            bytes[pos..pos + 5].copy_from_slice(&shifted_body[..5]);
+            pos += 5;
+            bytes[pos..pos + 6].copy_from_slice(&[0x04, 0x00, 0x0e, 0x00, 0x00, 0x00]);
+
+            // The 0x30-byte G15 direct stream independently appears in Alyssa's
+            // working m1n1 path and pac85's standalone macOS AGX demo.
+            fn put32(bytes: &mut [u8], pos: &mut usize, value: u32) {
+                bytes[*pos..*pos + 4].copy_from_slice(&value.to_le_bytes());
+                *pos += 4;
+            }
+
+            let mut pos = 0usize;
+            put32(bytes, &mut pos, 0x0008_0000);
+            let shifted_entry = ((entry_addr & 0xffff_ffff) << 26)
+                | ((entry_addr >> 32) << 16);
+            bytes[pos..pos + 8].copy_from_slice(&shifted_entry.to_le_bytes());
+            pos += 8;
+            put32(bytes, &mut pos, 0x0000_0040);
+            for _ in 0..6 {
+                put32(bytes, &mut pos, 1);
+            }
+            put32(bytes, &mut pos, 0x6000_0160);
+            put32(bytes, &mut pos, 0x4000_0000);
+            if pos != CDM_LEN {
+                return Err(EIO);
+            }
+
+            core::sync::atomic::fence(Ordering::SeqCst);
+            dev_info!(
+                self.dev.as_ref(),
+                "T8122 G15 E248 fixed shader blob CDM={:#x} entry={:#x} body={:#x} result={:#x}\n",
+                base,
+                entry_addr,
+                body_addr,
+                result_addr
+            );
+            blob
         };
         #[ver(G == G15)]
         let cdm_ctrl_stream_end = g15_cdm_root
             .gpu_va()
             .get()
-            .checked_add(core::mem::size_of::<u32>() as u64)
+            .checked_add(0x30)
             .ok_or(EOVERFLOW)?;
         #[ver(G != G15)]
         let cdm_ctrl_stream_end = cmdbuf.cdm_ctrl_stream_end;

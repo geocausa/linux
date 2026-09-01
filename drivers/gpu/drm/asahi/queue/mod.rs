@@ -972,6 +972,22 @@ impl G15StockEmptyWorkQueuePayload::ver {
         let channel = (&*slot).as_ref().ok_or(EINVAL)?;
         channel.transport_state()
     }
+
+    #[ver(G == G15)]
+    fn fixed_shader_result(&self) -> Result<u32> {
+        const RESULT_OFF: usize = 0x300;
+        let command = self.command.as_ref().ok_or(EINVAL)?;
+        let bytes = command.g15_cdm_root.as_slice();
+        if bytes.len() < RESULT_OFF + 4 {
+            return Err(EIO);
+        }
+        Ok(u32::from_le_bytes([
+            bytes[RESULT_OFF],
+            bytes[RESULT_OFF + 1],
+            bytes[RESULT_OFF + 2],
+            bytes[RESULT_OFF + 3],
+        ]))
+    }
 }
 
 #[versions(AGX)]
@@ -1876,15 +1892,19 @@ impl QueueJob::ver {
             let comp_job = self.get_comp()?;
             comp_job.add_cb(command_ref, vm_slot, move |error| {
                 let selected_state = payload.transport_state();
+                let fixed_result = payload.fixed_shader_result();
                 dev_info!(
                     dev.as_ref(),
-                    "T8122 G15 stock-empty WorkQueue completion job={} error={:?} selected_state={:?}\n",
+                    "T8122 G15 E248 WorkQueue completion job={} error={:?} selected_state={:?} result={:?}\n",
                     job_id,
                     error,
-                    selected_state
+                    selected_state,
+                    fixed_result
                 );
                 if let Some(err) = error {
                     fence.set_error(err.into());
+                } else if fixed_result != Ok(1337.0f32.to_bits()) {
+                    fence.set_error(EIO);
                 }
                 core::mem::drop(payload);
             })?;
