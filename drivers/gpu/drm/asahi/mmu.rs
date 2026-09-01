@@ -1969,13 +1969,6 @@ impl G15MappingNotifier {
 
         self.dev.gpu.g15_mapping_pressure_kick()?;
         let start = Instant::<Monotonic>::now();
-        let (kick_read, kick_write) = self.cursors();
-        let _ = self.dev.gpu.g15_log_runtime_state_with_cursors(
-            "drain-kick-sent",
-            kick_read,
-            kick_write,
-        );
-        let mut pending_sampled = false;
 
         loop {
             if self.dev.gpu.is_crashed() {
@@ -2000,20 +1993,7 @@ impl G15MappingNotifier {
             if read == write {
                 return Ok(());
             }
-            if !pending_sampled {
-                pending_sampled = true;
-                let _ = self.dev.gpu.g15_log_runtime_state_with_cursors(
-                    "drain-pending",
-                    read,
-                    write,
-                );
-            }
             if start.elapsed() >= Self::DRAIN_TIMEOUT {
-                let _ = self.dev.gpu.g15_log_runtime_state_with_cursors(
-                    "drain-timeout",
-                    read,
-                    write,
-                );
                 dev_err!(
                     self.dev.as_ref(),
                     "MMU: G15 q22 drain timed out after 150 ms (read={} write={})\n",
@@ -2064,20 +2044,6 @@ impl Drop for G15SharedBank1Mapping {
                 G15MappingNotifyMode::AfterActivation => notifier.is_active(),
             };
             if publish {
-                let before = notifier.cursors();
-                let _ = notifier
-                    .dev
-                    .gpu
-                    .g15_log_runtime_state_with_cursors("drop-begin", before.0, before.1);
-                dev_info!(
-                    notifier.dev.as_ref(),
-                    "T8122 G15 E211 drop begin base={:#x} size={:#x} mode={:?} q22={}:{}\n",
-                    iova,
-                    size,
-                    self.notify_mode,
-                    before.0,
-                    before.1
-                );
                 if notifier.publish_unmapping(iova, &self.phys_pages).is_err() {
                     pr_err!(
                         "MMU: failed to publish G15 shared bank-1 unmapping {:#x}:{:#x}; preserving PTE and VA reservation\n",
@@ -2092,14 +2058,6 @@ impl Drop for G15SharedBank1Mapping {
                     core::mem::forget(node);
                     return;
                 }
-                let after_publish = notifier.cursors();
-                dev_info!(
-                    notifier.dev.as_ref(),
-                    "T8122 G15 E211 drop published base={:#x} q22={}:{}\n",
-                    iova,
-                    after_publish.0,
-                    after_publish.1
-                );
                 if notifier.drain_before_unmap().is_err() {
                     pr_err!(
                         "MMU: failed to drain G15 q22 before shared bank-1 unmap {:#x}:{:#x}; preserving PTE and VA reservation\n",
@@ -2114,19 +2072,7 @@ impl Drop for G15SharedBank1Mapping {
                     core::mem::forget(node);
                     return;
                 }
-                let after_drain = notifier.cursors();
-                dev_info!(
-                    notifier.dev.as_ref(),
-                    "T8122 G15 E211 drop drained base={:#x} q22={}:{}\n",
-                    iova,
-                    after_drain.0,
-                    after_drain.1
-                );
-                let _ = notifier.dev.gpu.g15_log_runtime_state_with_cursors(
-                    "drop-drained",
-                    after_drain.0,
-                    after_drain.1,
-                );
+
             }
         }
         {
