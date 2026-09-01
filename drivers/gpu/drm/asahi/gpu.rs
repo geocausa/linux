@@ -327,12 +327,6 @@ pub(crate) trait GpuManager: Send + Sync {
     /// This should be useful to reduce latency on work submission, so we can ask the firmware to
     /// wake up while we do some preparatory work for the work submission.
     fn kick_firmware(&self) -> Result;
-    /// Read-only G15 q21/q22 runtime telemetry for bounded bring-up probes.
-    fn g15_log_q22_runtime_state(&self, label: &str) -> Result;
-    /// E214 variant for callers that already hold the q22 notifier lock. The
-    /// caller supplies the observed cursors so this helper never recursively
-    /// locks the mapping notifier.
-    fn g15_log_runtime_state_with_cursors(&self, label: &str, read: u32, write: u32) -> Result;
     /// Send the native G15 q22 mapping-ring pressure async note on EP21.
     fn g15_mapping_pressure_kick(&self) -> Result;
     /// Flush the entire firmware cache.
@@ -3203,116 +3197,6 @@ impl GpuManager for GpuManager::ver {
         rtk.send_message(EP_DOORBELL, MSG_TX_DOORBELL | DOORBELL_KICKFW)?;
 
         Ok(())
-    }
-
-    /// E210 read-only host-visible runtime snapshot. This does not send any
-    /// firmware message or mutate q21/q22 state.
-    fn g15_log_q22_runtime_state(&self, label: &str) -> Result {
-        #[ver(G != G15)]
-        {
-            let _ = label;
-            return Err(EINVAL);
-        }
-        #[ver(G == G15)]
-        {
-            let (read, write) = self.initdata.g15_mapping_notifier.lock().cursors();
-            self.g15_log_runtime_state_with_cursors(label, read, write)
-        }
-    }
-
-    /// E214 read-only snapshot for q22 teardown callers that already hold the
-    /// notifier mutex. Besides E210's q21/q22 fields, include the remaining
-    /// q21 words and the q23 idle counters/gate so a firmware-idle transition
-    /// can be distinguished from a mapping-ring state transition.
-    fn g15_log_runtime_state_with_cursors(&self, label: &str, read: u32, write: u32) -> Result {
-        #[ver(G != G15)]
-        {
-            let _ = (label, read, write);
-            return Err(EINVAL);
-        }
-        #[ver(G == G15)]
-        {
-            let (
-                q21_flags,
-                q21_banner,
-                q21_08,
-                busy,
-                q21_10,
-                ready,
-                power,
-                q21_1c,
-            ) = self.initdata.g15_q21.with(|raw, _inner| {
-                (
-                    raw.host_flags,
-                    raw.banner_guard.load(Ordering::Acquire),
-                    raw.unk_08,
-                    raw.busy.load(Ordering::Acquire),
-                    raw.unk_10,
-                    raw.firmware_ready.load(Ordering::Acquire),
-                    raw.power_state.load(Ordering::Acquire),
-                    raw.unk_1c,
-                )
-            });
-            let (epoch, state_4590, state_45a0, state_45b0, counter_45c0, host_flag_45c4) =
-                self.initdata.g15_q22.with(|raw, _inner| {
-                    (
-                        raw.epoch_4580.0,
-                        raw.state_4590.0,
-                        raw.state_45a0.0,
-                        raw.state_45b0.0,
-                        raw.counter_45c0.0,
-                        raw.host_flag_45c4.0,
-                    )
-                });
-            let (idle_entries, idle_ticks, q23_epoch, q23_idle_gate) =
-                self.initdata.g15_q23.with(|raw, _inner| {
-                    (
-                        raw.idle_entry_count_1b4.0,
-                        raw.idle_ticks_1bc.0,
-                        raw.epoch_1cc.0,
-                        raw.idle_gate_230.0,
-                    )
-                });
-            let (q4_gate, smart_idle, keepalive, gfxc_keepalive) =
-                self.initdata.g15_globals.with(|raw, _inner| {
-                    (
-                        raw.command_submission_enabled_070.load(Ordering::Acquire),
-                        raw.smart_idle_off_enabled_030.0,
-                        raw.gpu_keepalive_override_de9.0,
-                        raw.gfxc_keepalive_override_ded.0,
-                    )
-                });
-            dev_info!(
-                self.dev.as_ref(),
-                "T8122 G15 E214 runtime {}: q21 flags={:#x} banner={} u08={:#x} busy={} u10={:#x} ready={} power={} u1c={:#x}; q4={} smart_idle={} keepalive={} gfxc_keepalive={}; q22={}:{} epoch={} s4590={} s45a0={} s45b0={} c45c0={} flag45c4={}; q23 idle_entries={} idle_ticks={} epoch={} idle_gate={}\n",
-                label,
-                q21_flags,
-                q21_banner,
-                q21_08,
-                busy,
-                q21_10,
-                ready,
-                power,
-                q21_1c,
-                q4_gate,
-                smart_idle,
-                keepalive,
-                gfxc_keepalive,
-                read,
-                write,
-                epoch,
-                state_4590,
-                state_45a0,
-                state_45b0,
-                counter_45c0,
-                host_flag_45c4,
-                idle_entries,
-                idle_ticks,
-                q23_epoch,
-                q23_idle_gate
-            );
-            Ok(())
-        }
     }
 
     fn g15_mapping_pressure_kick(&self) -> Result {
