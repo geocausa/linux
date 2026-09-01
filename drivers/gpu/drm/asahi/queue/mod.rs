@@ -965,7 +965,7 @@ struct G15StockEmptyWorkQueuePayload {
 #[versions(AGX)]
 impl G15StockEmptyWorkQueuePayload::ver {
     /// Snapshot the real selected uncached channel cursors after firmware stamp
-    /// completion and before host resource cleanup. E199 uses this to observe
+    /// completion and before host resource cleanup. The bounded path uses this to observe
     /// whether the first command advances the selected done pointer.
     fn transport_state(&self) -> Result<buffer::G15ChannelTransportState> {
         let slot = self.channel.lock();
@@ -1806,7 +1806,7 @@ impl QueueJob::ver {
         }
     }
 
-    /// Dormant E180 transaction wrapper. Phase 1 installs the armed RAII owner
+    /// Stock-empty transaction wrapper. Phase 1 installs the armed RAII owner
     /// before `build_command` can run, so command allocation can never precede
     /// the E134 fence reference / rotating-slot bindings through this API. Any
     /// builder or phase-2 error drops the owner immediately and therefore runs
@@ -1842,7 +1842,7 @@ impl QueueJob::ver {
         }
     }
 
-    /// Dormant E182 one-way transfer into the existing Compute WorkQueue job.
+    /// Stock-empty one-way transfer into the existing Compute WorkQueue job.
     /// Phase 1 already armed exactly one command reference, so this path must
     /// not call `add_command()` again. The callback payload owns the finalized
     /// token and actual command allocation; `add_cb()` receives only its GPU VA
@@ -1878,7 +1878,7 @@ impl QueueJob::ver {
                 let selected_state = payload.transport_state();
                 dev_info!(
                     dev.as_ref(),
-                    "T8122 G15 E199 stock-empty WorkQueue completion job={} error={:?} selected_state={:?}\n",
+                    "T8122 G15 stock-empty WorkQueue completion job={} error={:?} selected_state={:?}\n",
                     job_id,
                     error,
                     selected_state

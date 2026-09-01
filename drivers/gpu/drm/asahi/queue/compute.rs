@@ -616,7 +616,7 @@ impl super::QueueInner::ver {
         Ok(())
     }
 
-    /// Dormant E181 stock-empty command construction route. The no-launch UAPI
+    /// Stock-empty command construction route. The normal UAPI
     /// fields are validated before E180 is entered; E180 then arms phase 1 before
     /// invoking the exact shared builder above. The fully finalized command stays
     /// trapped in the QueueJob RAII owner and is never added to a WorkQueue here.
@@ -654,7 +654,7 @@ impl super::QueueInner::ver {
             file::claim_g15_stock_empty_compute()?;
             dev_info!(
                 self.dev.as_ref(),
-                "T8122 G15 normal-UAPI stock-empty Compute accepted; one-shot consumed\n"
+                "T8122 G15 normal-UAPI stock-empty Compute accepted; bounded slot claimed\n"
             );
 
             let gpu = match (*self.dev)
@@ -687,7 +687,7 @@ impl super::QueueInner::ver {
     }
 
 
-    /// Dormant E183 composition boundary. This produces one fully-owned pending
+    /// Stock-empty composition boundary. This produces one fully-owned pending
     /// Compute WorkQueue command but deliberately stops before Job::commit(),
     /// Job::submit(), QueueInfo publication, pipe transport, or GPU execution.
     pub(super) fn prepare_g15_stock_empty_workqueue_unpublished(

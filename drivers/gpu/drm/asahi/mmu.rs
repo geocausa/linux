@@ -1490,7 +1490,7 @@ impl G15SharedBank1PageTable {
 
         if unmap_result.is_err() || !cleared {
             // Never release data backing while a possibly-live leaf can still
-            // reference it. This branch is terminal for the one-shot test.
+            // reference it. This branch is terminal for the bounded G15 path.
             core::mem::forget(data);
             return Err(EIO);
         }
