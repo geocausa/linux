@@ -164,6 +164,10 @@ pub(crate) mod prot {
     /// `PROT_GPU_FW_PRIV_RW`, which would add PXN/UXN bits not present here.
     pub(crate) const PROT_G15_RANGE5_CACHED: Prot =
         PROT_FW_GPU_NA.memattr(MEMATTR_CACHED);
+    /// Dynamically proven M3/G15 code heap class from the 14.8.3 m1n1 path:
+    /// OS=1, AP=GPU-only (2), cached, UXN=1, PXN=0.
+    pub(crate) const PROT_G15_RANGE5_CODE: Prot =
+        PROT_GPU_RW.memattr(MEMATTR_CACHED);
     /// Exact 23J220 AGXUMAFList Page Pool List / Backup Page List class.
     /// Both list mappings use eGartRange 5 with caller options 0x20000000003;
     /// SecureMemoryMap + SecureGart reduce that path to compact UAT option
@@ -208,6 +212,9 @@ const _: [(); 1] = [(); ((prot::PROT_G15_RANGE5_UNCACHED.as_pte() & UAT_PROT_BIT
 // with no PXN/UXN bits.
 const _: [(); 1] = [(); ((prot::PROT_G15_RANGE5_CACHED.as_pte() & UAT_PROT_BITS)
     == 0x0080_0000_0000_0000) as usize];
+// M3/G15 code heap: cached GPU-only RW, UXN=1, PXN=0.
+const _: [(); 1] = [(); ((prot::PROT_G15_RANGE5_CODE.as_pte() & UAT_PROT_BITS)
+    == 0x00c0_0000_0000_0080) as usize];
 // FList Page/Backup lists: exact compact 0x300, intentionally equal to the
 // cached range-5 protection bits while retaining separate ownership semantics.
 const _: [(); 1] = [(); ((prot::PROT_G15_RANGE5_FLIST_LIST.as_pte() & UAT_PROT_BITS)

@@ -196,11 +196,17 @@ const _: [(); 1] = [(); (G15_GART_RANGE5.end <= (1u64 << G15_HW_UAT_IAS)) as usi
 /// uses one range with per-mapping PTE attributes; DefaultAllocator fixes one
 /// protection class per heap, so keep the exact G15 0x308 and 0x303 classes in
 /// separate halves. This split is an implementation detail, not an Apple ABI.
+/// Exact M3/G15 code/entry-shader arena used by the dynamically working
+/// 14.8.3 m1n1 path: range-5 VA, cached, GPU-only, UXN=1, PXN=0.
+pub(crate) const G15_GART_RANGE5_CODE: Range<u64> =
+    G15_GART_RANGE5.start..0x101_0000_0000;
 pub(crate) const G15_GART_RANGE5_UNCACHED: Range<u64> =
-    G15_GART_RANGE5.start..0x200_0000_0000;
+    G15_GART_RANGE5_CODE.end..0x200_0000_0000;
 pub(crate) const G15_GART_RANGE5_CACHED: Range<u64> =
     G15_GART_RANGE5_UNCACHED.end..G15_GART_RANGE5.end;
+const _: [(); 1] = [(); (G15_GART_RANGE5_CODE.end == G15_GART_RANGE5_UNCACHED.start) as usize];
 const _: [(); 1] = [(); (G15_GART_RANGE5_UNCACHED.end == G15_GART_RANGE5_CACHED.start) as usize];
+const _: [(); 5] = [(); g15_apple_gart_range(G15_GART_RANGE5_CODE.start) as usize];
 const _: [(); 5] = [(); g15_apple_gart_range(G15_GART_RANGE5_UNCACHED.start) as usize];
 const _: [(); 5] = [(); g15_apple_gart_range(G15_GART_RANGE5_CACHED.start) as usize];
 

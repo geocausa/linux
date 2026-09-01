@@ -119,7 +119,9 @@ impl super::QueueInner::ver {
             }
 
             let mut blob = self
-                .ualloc
+                ._g15_range5_code
+                .as_ref()
+                .ok_or(EINVAL)?
                 .lock()
                 .array_empty_tagged::<u8>(BLOB_LEN, b"CDM1")?;
             let base = blob.gpu_va().get();

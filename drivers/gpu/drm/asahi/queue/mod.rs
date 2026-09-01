@@ -822,6 +822,8 @@ pub(crate) struct QueueInner {
     #[ver(G == G15)]
     _g15_uma_shared_pools: Option<Arc<Mutex<buffer::G15ClientUmaPoolContainerState>>>,
     #[ver(G == G15)]
+    _g15_range5_code: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
+    #[ver(G == G15)]
     _g15_range5_uncached: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
     #[ver(G == G15)]
     _g15_range5_cached: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
@@ -2211,6 +2213,7 @@ impl Queue::ver {
         alloc: &mut gpu::KernelAllocators,
         ualloc: Arc<Mutex<alloc::DefaultAllocator>>,
         ualloc_priv: Arc<Mutex<alloc::DefaultAllocator>>,
+        _g15_ualloc_range5_code: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
         _g15_ualloc_range5_uncached: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
         _g15_ualloc_range5_cached: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
         _g15_uma_shared_pools: Option<Arc<Mutex<buffer::G15ClientUmaPoolContainerState>>>,
@@ -2261,6 +2264,8 @@ impl Queue::ver {
         let buffer =
             buffer::Buffer::ver::new(&*(*dev).gpu, alloc, ualloc.clone(), ualloc_priv, mgr)?;
 
+        #[ver(G == G15)]
+        let g15_lazy_range5_code = _g15_ualloc_range5_code.clone();
         #[ver(G == G15)]
         let g15_lazy_range5_uncached = _g15_ualloc_range5_uncached.clone();
         #[ver(G == G15)]
@@ -2365,6 +2370,8 @@ impl Queue::ver {
                 g15_ta_object_payload,
                 #[ver(G == G15)]
                 _g15_uma_shared_pools,
+                #[ver(G == G15)]
+                _g15_range5_code: g15_lazy_range5_code,
                 #[ver(G == G15)]
                 _g15_range5_uncached: g15_lazy_range5_uncached,
                 #[ver(G == G15)]
