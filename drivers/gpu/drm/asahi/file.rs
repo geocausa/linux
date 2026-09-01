@@ -1067,12 +1067,6 @@ impl File {
         debug::update_debug_flags();
 
         let is_g15 = device.gpu.get_cfg().gpu_gen == hw::GpuGen::G15;
-        const G15_VM_BIND_PROBE_FLAGS: u32 = 0x4731_3556; // "G15V"
-        const G15_VM_BIND_PROBE_PAD: u32 = 0x4531_3635; // "E165"
-        const G15_CL_CHANNEL_PROBE_FLAGS: u32 = 0x4731_3543; // "G15C"
-        const G15_CL_CHANNEL_PROBE_PAD: u32 = 0x4531_3636; // "E166"
-        const G15_BARRIER_REG_PROBE_FLAGS: u32 = 0x4731_3552; // "G15R"
-        const G15_BARRIER_REG_PROBE_PAD: u32 = 0x4531_3731; // "E171"
         const G15_FIRST_COMPUTE_PROBE_FLAGS: u32 = 0x4731_3545; // "G15E"
         const G15_FIRST_COMPUTE_PROBE_PAD: u32 = 0x4531_3939; // "E199"
 
@@ -1103,54 +1097,6 @@ impl File {
                     "T8122 G15 E199 signed first stock-empty Compute accepted at outer gate; one-shot consumed\n"
                 );
             } else {
-                let vm_bind_probe = data.flags == G15_VM_BIND_PROBE_FLAGS
-                    && data.pad == G15_VM_BIND_PROBE_PAD;
-                let cl_channel_probe = data.flags == G15_CL_CHANNEL_PROBE_FLAGS
-                    && data.pad == G15_CL_CHANNEL_PROBE_PAD;
-                let barrier_reg_probe = data.flags == G15_BARRIER_REG_PROBE_FLAGS
-                    && data.pad == G15_BARRIER_REG_PROBE_PAD;
-                // Existing bounded probes remain deliberately zero-payload.
-                // Every ordinary G15 submission still stops here with ENODEV.
-                if (!vm_bind_probe && !cl_channel_probe && !barrier_reg_probe)
-                    || data.syncs != 0
-                    || data.cmdbuf != 0
-                    || data.in_sync_count != 0
-                    || data.out_sync_count != 0
-                    || data.cmdbuf_size != 0
-                {
-                    return Err(ENODEV);
-                }
-
-                let queue: Arc<Mutex<KBox<dyn queue::Queue>>> = file
-                    .inner()
-                    .queues()
-                    .lock()
-                    .get(data.queue_id.try_into()?)
-                    .ok_or(ENOENT)?
-                    .into();
-                if vm_bind_probe {
-                    let slot = queue.lock().preflight_vm_bind_only()?;
-                    dev_info!(
-                        device.as_ref(),
-                        "T8122 G15 E165 VM-context GPTBAT bind PASS (slot {}); QueueInfo/channel/commands blocked\n",
-                        slot
-                    );
-                } else if cl_channel_probe {
-                    let pool_id = queue.lock().preflight_g15_lazy_compute_channel()?;
-                    dev_info!(
-                        device.as_ref(),
-                        "T8122 G15 E166 lazy CL channel PASS (pool {}); QueueInfo/commands blocked\n",
-                        pool_id
-                    );
-                } else if barrier_reg_probe {
-                    let (slot, pool_id) = queue.lock().preflight_g15_barrier_registration()?;
-                    dev_info!(
-                        device.as_ref(),
-                        "T8122 G15 E171 fresh-slot Barrier registration PASS (slot {}, pool {}); GPU engine commands blocked\n",
-                        slot,
-                        pool_id
-                    );
-                }
                 return Err(ENODEV);
             }
         }

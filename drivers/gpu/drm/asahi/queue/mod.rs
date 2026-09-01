@@ -64,15 +64,6 @@ mod render;
 
 /// Trait implemented by all versioned queues.
 pub(crate) trait Queue: Send + Sync {
-    /// Publish this queue's VM in a UAT user slot without constructing or
-    /// submitting any GPU work. This is used only by the bounded G15 bring-up
-    /// gate immediately before the real submission path.
-    fn preflight_vm_bind_only(&mut self) -> Result<u32>;
-
-    fn preflight_g15_lazy_compute_channel(&mut self) -> Result<u64>;
-
-    fn preflight_g15_barrier_registration(&mut self) -> Result<(u32, u64)>;
-
     fn submit(
         &mut self,
         id: u64,
@@ -2566,76 +2557,6 @@ fn build_attachments(reader: &mut Reader<'_>, size: usize) -> Result<microseq::A
 
 #[versions(AGX)]
 impl Queue for Queue::ver {
-    fn preflight_vm_bind_only(&mut self) -> Result<u32> {
-        let bind = (*self.dev).gpu.bind_vm(&self.vm)?;
-        let slot = bind.slot();
-        core::mem::drop(bind);
-        Ok(slot)
-    }
-
-    fn preflight_g15_lazy_compute_channel(&mut self) -> Result<u64> {
-        #[ver(G != G15)]
-        {
-            return Err(EINVAL);
-        }
-
-        #[ver(G == G15)]
-        {
-            let gpu = (*self.dev)
-                .gpu
-                .clone()
-                .arc_as_any()
-                .downcast::<gpu::GpuManager::ver>()
-                .map_err(|_| EIO)?;
-            self.g15_ensure_unpublished_nonforeground_compute_channel(&gpu)
-        }
-    }
-
-
-    fn preflight_g15_barrier_registration(&mut self) -> Result<(u32, u64)> {
-        #[ver(G != G15)]
-        {
-            return Err(EINVAL);
-        }
-
-        #[ver(G == G15)]
-        {
-            let gpu = (*self.dev)
-                .gpu
-                .clone()
-                .arc_as_any()
-                .downcast::<gpu::GpuManager::ver>()
-                .map_err(|_| EIO)?;
-
-            // Keep firmware-visible VM context exposure narrower than the
-            // fallible channel construction. E168 already proves this complete
-            // channel/pool owner graph can be assembled and retired privately.
-            let pool_id = self.g15_ensure_unpublished_nonforeground_compute_channel(&gpu)?;
-
-            // E059/E060 kept the GPTBAT bind guard alive through QueueInfo
-            // registration and native ReleaseResource. Preserve that lifetime
-            // exactly; drop it only after both transport stages complete.
-            let bind = (*self.dev).gpu.bind_vm(&self.vm)?;
-            let slot = bind.slot();
-
-            // E188 normal-runtime parity: q4 +0x070 is already enabled by
-            // GpuManager::init() and remains enabled across submissions. The
-            // E171 registration surrogate may consume that settled state but
-            // must never create a per-command gate lifetime.
-            if !gpu.g15_firmware_command_gate_enabled() {
-                return Err(EIO);
-            }
-            self.q_comp
-                .as_ref()
-                .ok_or(EIO)?
-                .wq
-                .g15_register_barrier(&gpu)?;
-
-            core::mem::drop(bind);
-            Ok((slot, pool_id))
-        }
-    }
-
     fn submit(
         &mut self,
         id: u64,
