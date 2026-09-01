@@ -20,7 +20,6 @@ use crate::fw::channels::{
 };
 use crate::fw::types::*;
 use crate::fw::workqueue::*;
-use crate::gpu::GpuManager as _;
 use crate::no_debug;
 use crate::object::OpaqueGpuObject;
 use crate::{
@@ -176,18 +175,6 @@ impl GpuContext {
     /// Returns the GPU pointer to the inner GPU context data structure.
     pub(crate) fn gpu_pointer(&self) -> GpuPointer<'_, fw::workqueue::GpuContextData> {
         self.data.as_ref().unwrap().gpu_pointer()
-    }
-
-    pub(crate) fn data(&self) -> &GpuObject<fw::workqueue::GpuContextData> {
-        self.data.as_ref().unwrap()
-    }
-
-    pub(crate) fn mark_published_to_firmware(&self) {
-        self.published_to_firmware.store(true, Ordering::Release);
-    }
-
-    pub(crate) fn mark_released_from_firmware(&self) {
-        self.published_to_firmware.store(false, Ordering::Release);
     }
 
     pub(crate) fn is_published_to_firmware(&self) -> bool {
