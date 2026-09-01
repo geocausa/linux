@@ -159,9 +159,24 @@ impl EventManager {
         for _i in 0..(NUM_EVENTS as usize) {
             owners.push(None, GFP_KERNEL)?;
         }
+        // On G15 both host-visible and firmware completion stamps are touched
+        // by the RCE/CDM path. Alyssa's independently working M3 m1n1 Compute
+        // experiment requires both stamp counters in GPU/FW shared RW memory;
+        // the older shared/private split faults on M3. Preserve the established
+        // allocation classes on pre-G15 hardware.
+        let stamps = if g15_zero_based_counters {
+            alloc.gpu.array_empty(NUM_EVENTS as usize)?
+        } else {
+            alloc.shared.array_empty(NUM_EVENTS as usize)?
+        };
+        let fw_stamps = if g15_zero_based_counters {
+            alloc.gpu.array_empty(NUM_EVENTS as usize)?
+        } else {
+            alloc.private.array_empty(NUM_EVENTS as usize)?
+        };
         let inner = EventManagerInner {
-            stamps: alloc.shared.array_empty(NUM_EVENTS as usize)?,
-            fw_stamps: alloc.private.array_empty(NUM_EVENTS as usize)?,
+            stamps,
+            fw_stamps,
             owners,
         };
 

@@ -214,8 +214,18 @@ impl super::QueueInner::ver {
             ev_comp.value.next(),
         );
 
+        // G15's RCE/CDM path directly touches the command timestamps. The
+        // dynamically working M3 m1n1 path faults when these live in the
+        // firmware-only shared heap and moves both start/end timestamps to
+        // GPU/FW shared RW memory. Keep the legacy placement on older GPUs.
+        #[ver(G != G15)]
         let timestamps = Arc::new(
             kalloc.shared.new_default::<fw::job::JobTimestamps>()?,
+            GFP_KERNEL,
+        )?;
+        #[ver(G == G15)]
+        let timestamps = Arc::new(
+            kalloc.gpu.new_default::<fw::job::JobTimestamps>()?,
             GFP_KERNEL,
         )?;
 
@@ -231,8 +241,17 @@ impl super::QueueInner::ver {
         // the command-queue-wide sequence used at command +0x04.
         let count = self.counter.fetch_add(1, Ordering::Relaxed);
 
+        // G15 uses the same GPU/FW shared RW command placement as the
+        // independently working M3 m1n1 Compute path. In particular, RCE/CDM
+        // must be able to access command-side state that is GPU-read-only on
+        // older generations.
+        #[ver(G != G15)]
+        let comp_alloc = kalloc.gpu_ro.alloc_object()?;
+        #[ver(G == G15)]
+        let comp_alloc = kalloc.gpu.alloc_object()?;
+
         let comp = GpuObject::new_init_prealloc(
-            kalloc.gpu_ro.alloc_object()?,
+            comp_alloc,
             |ptr: GpuWeakPointer<fw::compute::RunCompute::ver>| {
                 let notifier = notifier.clone();
                 let vm_bind = vm_bind.clone();
