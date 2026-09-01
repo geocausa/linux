@@ -990,6 +990,48 @@ impl G15StockEmptyWorkQueuePayload::ver {
             bytes[RESULT_OFF + 3],
         ]))
     }
+
+    #[ver(G == G15)]
+    /// E251 observes whether firmware appends the G15-only register tail that
+    /// Alyssa's independently working M3 path sees after the host list. This is
+    /// deliberately read-only completion telemetry: the command and register
+    /// array have already been submitted and no field is mutated here.
+    fn log_register_snapshot(&self, dev: &kernel::device::Device) -> Result {
+        const HOST_REGISTER_COUNT: usize = 20;
+        const SNAPSHOT_END: usize = 40;
+        let command = self.command.as_ref().ok_or(EINVAL)?;
+
+        command.with(|raw, _inner| {
+            let regs = &raw.registers;
+            let count = regs.count;
+            let length = regs.length;
+            let addr: u64 = regs.addr.into();
+            dev_info!(
+                dev,
+                "T8122 G15 E251 RegisterArray post count={} length={:#x} addr={:#x}\n",
+                count,
+                length,
+                addr
+            );
+
+            for index in HOST_REGISTER_COUNT..SNAPSHOT_END {
+                let reg = &regs.registers[index];
+                let number = reg.number;
+                let value = reg.value.0;
+                if number != 0 || value != 0 || index < count as usize {
+                    dev_info!(
+                        dev,
+                        "T8122 G15 E251 RegisterArray[{}] number={:#x} value={:#x}\n",
+                        index,
+                        number,
+                        value
+                    );
+                }
+            }
+        });
+
+        Ok(())
+    }
 }
 
 #[versions(AGX)]
@@ -1895,13 +1937,15 @@ impl QueueJob::ver {
             comp_job.add_cb(command_ref, vm_slot, move |error| {
                 let selected_state = payload.transport_state();
                 let fixed_result = payload.fixed_shader_result();
+                let register_snapshot = payload.log_register_snapshot(dev.as_ref());
                 dev_info!(
                     dev.as_ref(),
-                    "T8122 G15 E248 WorkQueue completion job={} error={:?} selected_state={:?} result={:?}\n",
+                    "T8122 G15 E251 WorkQueue completion job={} error={:?} selected_state={:?} result={:?} register_snapshot={:?}\n",
                     job_id,
                     error,
                     selected_state,
-                    fixed_result
+                    fixed_result,
+                    register_snapshot
                 );
                 if let Some(err) = error {
                     fence.set_error(err.into());
