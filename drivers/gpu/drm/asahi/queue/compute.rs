@@ -108,7 +108,7 @@ impl super::QueueInner::ver {
         let g15_result_addr = g15_result.gpu_va().get();
 
         #[ver(G == G15)]
-        let g15_cdm_root = {
+        let (g15_code, g15_cdm_root) = {
             const CDM_LEN: usize = 0x30;
             const ENTRY_OFF: usize = 0x100;
             const BODY_OFF: usize = 0x200;
@@ -131,17 +131,19 @@ impl super::QueueInner::ver {
                     .to_le_bytes()
             }
 
-            let mut blob = self
+            // Keep the executable allocation size and placement identical to
+            // E274. Only the CDM root moves out of this object.
+            let mut code = self
                 ._g15_range5_code
                 .as_ref()
                 .ok_or(EINVAL)?
                 .lock()
-                .array_empty_tagged::<u8>(BLOB_LEN, b"CDM1")?;
-            let base = blob.gpu_va().get();
-            let entry_addr = base.checked_add(ENTRY_OFF as u64).ok_or(EOVERFLOW)?;
-            let body_addr = base.checked_add(BODY_OFF as u64).ok_or(EOVERFLOW)?;
+                .array_empty_tagged::<u8>(BLOB_LEN, b"CDS1")?;
+            let code_base = code.gpu_va().get();
+            let entry_addr = code_base.checked_add(ENTRY_OFF as u64).ok_or(EOVERFLOW)?;
+            let body_addr = code_base.checked_add(BODY_OFF as u64).ok_or(EOVERFLOW)?;
             let result_addr = g15_result_addr;
-            let bytes = blob.as_mut_slice();
+            let bytes = code.as_mut_slice();
 
             // Alyssa's dynamically-proven 14.x G15 body shader: materialize the
             // separate data-result GPUVA in r0/r1, f32 1337.0 in r2,
@@ -189,6 +191,17 @@ impl super::QueueInner::ver {
             ];
             bytes[pos..pos + ENTRY_EPILOG.len()].copy_from_slice(&ENTRY_EPILOG);
 
+            // Both working hand-written G15 implementations place the CDM
+            // encoder in a distinct allocation from shader storage.
+            let mut cdm = self
+                ._g15_range5_code
+                .as_ref()
+                .ok_or(EINVAL)?
+                .lock()
+                .array_empty_tagged::<u8>(CDM_LEN, b"CDM1")?;
+            let cdm_base = cdm.gpu_va().get();
+            let bytes = cdm.as_mut_slice();
+
             // The 0x30-byte G15 direct stream independently appears in Alyssa's
             // working m1n1 path and pac85's standalone macOS AGX demo.
             fn put32(bytes: &mut [u8], pos: &mut usize, value: u32) {
@@ -220,12 +233,12 @@ impl super::QueueInner::ver {
             dev_info!(
                 self.dev.as_ref(),
                 "T8122 G15 E248 fixed shader blob CDM={:#x} entry={:#x} body={:#x} result={:#x}\n",
-                base,
+                cdm_base,
                 entry_addr,
                 body_addr,
                 result_addr
             );
-            blob
+            (code, cdm)
         };
         #[ver(G == G15)]
         let cdm_ctrl_stream_end = g15_cdm_root
@@ -293,6 +306,8 @@ impl super::QueueInner::ver {
                     preempt_buf: preempt_buf,
                     #[ver(G == G15)]
                     g15_result: g15_result,
+                    #[ver(G == G15)]
+                    g15_code: g15_code,
                     #[ver(G == G15)]
                     g15_cdm_root: g15_cdm_root,
                     micro_seq: {

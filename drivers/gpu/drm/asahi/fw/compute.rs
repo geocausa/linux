@@ -712,8 +712,10 @@ pub(crate) struct RunCompute {
     // lifetime data memory, separate from the executable range-5 code object.
     #[ver(G == G15)]
     pub(crate) g15_result: GpuArray<u8>,
-    // E248 bounded G15 command-owned test blob. The first 0x30 bytes are the
-    // fixed CDM stream; entry/body shaders remain at fixed offsets.
+    // E275 retains the executable entry/body storage independently from the
+    // CDM control-stream root, matching both working hand-written G15 paths.
+    #[ver(G == G15)]
+    pub(crate) g15_code: GpuArray<u8>,
     #[ver(G == G15)]
     pub(crate) g15_cdm_root: GpuArray<u8>,
     pub(crate) micro_seq: microseq::MicroSequence,
