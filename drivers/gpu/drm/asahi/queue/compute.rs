@@ -204,7 +204,10 @@ impl super::QueueInner::ver {
         let cdm_ctrl_stream_end = g15_cdm_root
             .gpu_va()
             .get()
-            .checked_add(0x30)
+            // Exact 23J220 endComputePass() publishes raw +0x60 from the
+            // pre-increment write pointer: the Stream Terminate token itself,
+            // not the allocator's one-past pointer. E248's 0x30 was off by 4.
+            .checked_add(0x2c)
             .ok_or(EOVERFLOW)?;
         #[ver(G != G15)]
         let cdm_ctrl_stream_end = cmdbuf.cdm_ctrl_stream_end;
