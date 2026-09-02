@@ -150,8 +150,8 @@ impl super::QueueInner::ver {
             let mut pos = BODY_OFF;
             for inst in [
                 imm_inst(0, result_addr as u32),
-                imm_inst(1, (result_addr >> 32) as u32),
                 imm_inst(2, 1337.0f32.to_bits()),
+                imm_inst(1, (result_addr >> 32) as u32),
             ] {
                 bytes[pos..pos + 8].copy_from_slice(&inst);
                 pos += 8;
