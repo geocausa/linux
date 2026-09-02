@@ -191,12 +191,13 @@ impl super::QueueInner::ver {
             ];
             bytes[pos..pos + ENTRY_EPILOG.len()].copy_from_slice(&ENTRY_EPILOG);
 
-            // Both working hand-written G15 implementations place the CDM
-            // encoder in a distinct allocation from shader storage.
+            // Exact 23J220 beginComputePass() obtains the CDM stream from
+            // DataBufferAllocator / command-buffer storage, not the executable
+            // ProgramVariant heap.  Keep E275's distinct CDM owner, but put it
+            // back in the ordinary per-VM GPU-shared-RW allocation class that
+            // also carried the known-good E199 terminate-only root.
             let mut cdm = self
-                ._g15_range5_code
-                .as_ref()
-                .ok_or(EINVAL)?
+                .ualloc
                 .lock()
                 .array_empty_tagged::<u8>(CDM_LEN, b"CDM1")?;
             let cdm_base = cdm.gpu_va().get();
