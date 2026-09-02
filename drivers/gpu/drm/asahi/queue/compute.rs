@@ -94,11 +94,22 @@ impl super::QueueInner::ver {
             .array_empty_tagged(preempt_size, b"CPMT")?;
 
         #[ver(G == G15)]
+        let mut g15_result = self
+            .ualloc
+            .lock()
+            .array_empty_tagged::<u8>(0x100, b"CDR1")?;
+        #[ver(G == G15)]
+        for byte in g15_result.as_mut_slice().iter_mut() {
+            *byte = 0xff;
+        }
+        #[ver(G == G15)]
+        let g15_result_addr = g15_result.gpu_va().get();
+
+        #[ver(G == G15)]
         let g15_cdm_root = {
             const CDM_LEN: usize = 0x30;
             const ENTRY_OFF: usize = 0x100;
             const BODY_OFF: usize = 0x200;
-            const RESULT_OFF: usize = 0x300;
             const BLOB_LEN: usize = 0x400;
 
             fn swizzle_imm32(value: u32) -> u64 {
@@ -127,15 +138,13 @@ impl super::QueueInner::ver {
             let base = blob.gpu_va().get();
             let entry_addr = base.checked_add(ENTRY_OFF as u64).ok_or(EOVERFLOW)?;
             let body_addr = base.checked_add(BODY_OFF as u64).ok_or(EOVERFLOW)?;
-            let result_addr = base.checked_add(RESULT_OFF as u64).ok_or(EOVERFLOW)?;
+            let result_addr = g15_result_addr;
             let bytes = blob.as_mut_slice();
 
-            // Result sentinel. The fixed body shader must replace this with the
-            // IEEE-754 bits for 1337.0 before WorkQueue completion.
-            bytes[RESULT_OFF..RESULT_OFF + 4].copy_from_slice(&u32::MAX.to_le_bytes());
-
             // Alyssa's dynamically-proven 14.x G15 body shader: materialize the
-            // full result GPUVA in r0/r1, f32 1337.0 in r2, device_store, stop.
+            // separate data-result GPUVA in r0/r1, f32 1337.0 in r2,
+            // device_store, stop. Keeping the store off the executing code
+            // allocation matches both independent working G15 implementations.
             let mut pos = BODY_OFF;
             for inst in [
                 imm_inst(0, result_addr as u32),
@@ -280,6 +289,8 @@ impl super::QueueInner::ver {
                 let vm_bind = vm_bind.clone();
                 try_init!(fw::compute::RunCompute::ver {
                     preempt_buf: preempt_buf,
+                    #[ver(G == G15)]
+                    g15_result: g15_result,
                     #[ver(G == G15)]
                     g15_cdm_root: g15_cdm_root,
                     micro_seq: {

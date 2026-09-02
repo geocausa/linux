@@ -708,9 +708,12 @@ impl G15SkuBacking {
 pub(crate) struct RunCompute {
     pub(crate) notifier: Arc<GpuObject<event::Notifier::ver>>,
     pub(crate) preempt_buf: GpuArray<u8>,
+    // E272 keeps the bounded shader's writable result in ordinary command-
+    // lifetime data memory, separate from the executable range-5 code object.
+    #[ver(G == G15)]
+    pub(crate) g15_result: GpuArray<u8>,
     // E248 bounded G15 command-owned test blob. The first 0x30 bytes are the
-    // fixed CDM stream; entry/body shaders and a result word live at fixed
-    // offsets in the same VM allocation so their lifetime cannot diverge.
+    // fixed CDM stream; entry/body shaders remain at fixed offsets.
     #[ver(G == G15)]
     pub(crate) g15_cdm_root: GpuArray<u8>,
     pub(crate) micro_seq: microseq::MicroSequence,
