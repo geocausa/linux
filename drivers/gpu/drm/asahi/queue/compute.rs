@@ -95,7 +95,9 @@ impl super::QueueInner::ver {
 
         #[ver(G == G15)]
         let mut g15_result = self
-            .ualloc
+            ._g15_range5_code
+            .as_ref()
+            .ok_or(EINVAL)?
             .lock()
             .array_empty_tagged::<u8>(0x100, b"CDR1")?;
         #[ver(G == G15)]
