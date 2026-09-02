@@ -498,7 +498,14 @@ impl super::QueueInner::ver {
                             r.add(0x101d1, 0);
                             r.add(0x0d479, 0);
                             r.add(0x1a0e9, 0);
-                            r.add(0x107a1, 0x00ff0000);
+                            // E258/E259 exact 23J220 real-dispatch closure:
+                            // __GPU_METADATA ShaderInfo field 40 is has_intersect_ray,
+                            // false for this ordinary compute path, preserving the
+                            // {0,0,0,1} requirement tuple. That derives context
+                            // +0x664=0x60 and a nonzero raw +0x158 baseline (>=0x59),
+                            // selecting Apple's dynamic 0x107a0 encoding from raw
+                            // +0x1b0: (0x60 << 16) | 0x01000000 = 0x01600000.
+                            r.add(0x107a1, 0x0160_0000);
                         },
                     ),
                     #[ver(G != G15)]
