@@ -152,15 +152,31 @@ impl super::QueueInner::ver {
             ];
             bytes[pos..pos + STORE_STOP.len()].copy_from_slice(&STORE_STOP);
 
-            // Simplified entry shader from Alyssa's follow-up ad190c0: load the
-            // real shader address (encoded >> 7), clear the entry state, stop.
+            // Full G15 entry-state program from Alyssa's explicitly working
+            // a1006e52 M3 Compute path, independently matched by pac85's macOS
+            // G15 demo: load entry state 0x82, load the real shader, then run
+            // the 68-byte G15 entry epilog.
             let mut pos = ENTRY_OFF;
+            bytes[pos..pos + 8]
+                .copy_from_slice(&[0x77, 0x00, 0x2a, 0x41, 0x00, 0x00, 0x00, 0x00]);
+            pos += 8;
             bytes[pos..pos + 3].copy_from_slice(&[0x77, 0x01, 0x2a]);
             pos += 3;
             let shifted_body = (body_addr >> 7).to_le_bytes();
             bytes[pos..pos + 5].copy_from_slice(&shifted_body[..5]);
             pos += 5;
-            bytes[pos..pos + 6].copy_from_slice(&[0x04, 0x00, 0x0e, 0x00, 0x00, 0x00]);
+            const ENTRY_EPILOG: [u8; 68] = [
+                0x04, 0x00, 0xf7, 0x00, 0x2a, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x1c, 0x80, 0x02, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x14, 0x81, 0x11, 0x06,
+                0x00, 0x00, 0x00, 0x00, 0x0c, 0x80, 0x02, 0x00,
+                0x04, 0x00, 0x00, 0x00, 0x9f, 0x11, 0x54, 0x00,
+                0x02, 0x00, 0x08, 0xa8, 0x10, 0x05, 0x1c, 0x80,
+                0x02, 0x00, 0x04, 0x00, 0x00, 0x00, 0x0f, 0x12,
+                0x54, 0x00, 0x4c, 0xff, 0x0e, 0x00, 0x00, 0x00,
+                0x0e, 0x00, 0x00, 0x00,
+            ];
+            bytes[pos..pos + ENTRY_EPILOG.len()].copy_from_slice(&ENTRY_EPILOG);
 
             // The 0x30-byte G15 direct stream independently appears in Alyssa's
             // working m1n1 path and pac85's standalone macOS AGX demo.
