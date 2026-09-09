@@ -106,6 +106,17 @@ impl super::QueueInner::ver {
         }
         #[ver(G == G15)]
         let g15_result_addr = g15_result.gpu_va().get();
+        #[ver(G == G15)]
+        let g15_args_addr = {
+            const ARGS_OFF: usize = 0x80;
+            let addr = g15_result_addr
+                .checked_add(ARGS_OFF as u64)
+                .ok_or(EOVERFLOW)?;
+            let bytes = g15_result.as_mut_slice();
+            bytes[ARGS_OFF..ARGS_OFF + 8].copy_from_slice(&g15_result_addr.to_le_bytes());
+            bytes[ARGS_OFF + 8..ARGS_OFF + 16].fill(0);
+            addr
+        };
 
         #[ver(G == G15)]
         let g15_cdm_root = {
@@ -143,31 +154,43 @@ impl super::QueueInner::ver {
             let result_addr = g15_result_addr;
             let bytes = blob.as_mut_slice();
 
-            // Alyssa's dynamically-proven 14.x G15 body shader: materialize the
-            // separate data-result GPUVA in r0/r1, f32 1337.0 in r2,
-            // device_store, stop. Keeping the store off the executing code
-            // allocation matches both independent working G15 implementations.
-            let mut pos = BODY_OFF;
+            // Provenance-clean exact 23J220 backend body. The Mach-O symbol
+            // `_agc.main` is at __TEXT+0x40; this is precisely that 58-byte
+            // function body. It expects the writable UserBuffer pointer in
+            // u0/u1 and writes 0x0539015c when gid == 0.
+            const PROD_MAIN: [u8; 58] = [
+                0x1c, 0xa0, 0x10, 0x06, 0x06, 0x04, 0x06, 0x00,
+                0x06, 0x00, 0x06, 0x00, 0x0a, 0x03, 0x2b, 0x80,
+                0x06, 0x00, 0x07, 0x22, 0x00, 0x00, 0x0f, 0x05,
+                0x54, 0x01, 0x1c, 0xdc, 0x02, 0x04, 0x04, 0x00,
+                0xc8, 0x09, 0xe7, 0x00, 0x54, 0x02, 0x00, 0x00,
+                0x00, 0x00, 0x51, 0x00, 0x00, 0x90, 0x00, 0x00,
+                0x0f, 0x06, 0x04, 0x01, 0x00, 0x00, 0x0e, 0x00,
+                0x00, 0x00,
+            ];
+            bytes[BODY_OFF..BODY_OFF + PROD_MAIN.len()].copy_from_slice(&PROD_MAIN);
+
+            // E280's exact compiler metadata requires one 8-byte UserBuffer
+            // BufferBindings record. Keep that record at result+0x80, load it
+            // into r18/r19, and zero r20/r21 in the same 16-byte fetch. The
+            // production G15 tail then transfers r18..r21 to u0..u3 before the
+            // selected shader runs. This is the concrete ABI delta missing from
+            // E274's hand-written entry.
+            let mut pos = ENTRY_OFF;
             for inst in [
-                imm_inst(0, result_addr as u32),
-                imm_inst(2, 1337.0f32.to_bits()),
-                imm_inst(1, (result_addr >> 32) as u32),
+                imm_inst(2, g15_args_addr as u32),
+                imm_inst(3, (g15_args_addr >> 32) as u32),
             ] {
                 bytes[pos..pos + 8].copy_from_slice(&inst);
                 pos += 8;
             }
-            const STORE_STOP: [u8; 18] = [
-                0xe7, 0x00, 0x54, 0x04, 0x00, 0x00, 0x00, 0x00,
-                0x11, 0x01, 0x00, 0x90, 0x08, 0x00,
-                0x0e, 0x00, 0x00, 0x00,
+            const ARG_LOAD: [u8; 14] = [
+                0x67, 0x00, 0x54, 0x24, 0x02, 0x00, 0x00, 0x00,
+                0x57, 0x00, 0x00, 0x40, 0x26, 0x00,
             ];
-            bytes[pos..pos + STORE_STOP.len()].copy_from_slice(&STORE_STOP);
+            bytes[pos..pos + ARG_LOAD.len()].copy_from_slice(&ARG_LOAD);
+            pos += ARG_LOAD.len();
 
-            // Full G15 entry-state program from Alyssa's explicitly working
-            // a1006e52 M3 Compute path, independently matched by pac85's macOS
-            // G15 demo: load entry state 0x82, load the real shader, then run
-            // the 68-byte G15 entry epilog.
-            let mut pos = ENTRY_OFF;
             bytes[pos..pos + 8]
                 .copy_from_slice(&[0x77, 0x00, 0x2a, 0x41, 0x00, 0x00, 0x00, 0x00]);
             pos += 8;
@@ -176,7 +199,12 @@ impl super::QueueInner::ver {
             let shifted_body = (body_addr >> 7).to_le_bytes();
             bytes[pos..pos + 5].copy_from_slice(&shifted_body[..5]);
             pos += 5;
-            const ENTRY_EPILOG: [u8; 68] = [
+
+            // First 59 bytes are common to E274 and the production-generated
+            // state loader. The remaining production tail is independently
+            // matched by the current G15 generator and pac85's G15 entry trace:
+            // wait, move r18..r21 into u0..u3, then stop.
+            const PROD_ENTRY_EPILOG: [u8; 88] = [
                 0x04, 0x00, 0xf7, 0x00, 0x2a, 0x00, 0x00, 0x00,
                 0x00, 0x00, 0x00, 0x00, 0x1c, 0x80, 0x02, 0x00,
                 0x00, 0x00, 0x00, 0x00, 0x14, 0x81, 0x11, 0x06,
@@ -184,10 +212,12 @@ impl super::QueueInner::ver {
                 0x04, 0x00, 0x00, 0x00, 0x9f, 0x11, 0x54, 0x00,
                 0x02, 0x00, 0x08, 0xa8, 0x10, 0x05, 0x1c, 0x80,
                 0x02, 0x00, 0x04, 0x00, 0x00, 0x00, 0x0f, 0x12,
-                0x54, 0x00, 0x4c, 0xff, 0x0e, 0x00, 0x00, 0x00,
-                0x0e, 0x00, 0x00, 0x00,
+                0x54, 0x00, 0x4c, 0x00, 0x06, 0x08, 0x06, 0x00,
+                0x06, 0x00, 0x06, 0x00, 0x0b, 0x24, 0x09, 0x04,
+                0x1b, 0x26, 0x09, 0x04, 0x2b, 0x28, 0x09, 0x04,
+                0x3b, 0x2a, 0x09, 0x04, 0x0e, 0x00, 0x00, 0x00,
             ];
-            bytes[pos..pos + ENTRY_EPILOG.len()].copy_from_slice(&ENTRY_EPILOG);
+            bytes[pos..pos + PROD_ENTRY_EPILOG.len()].copy_from_slice(&PROD_ENTRY_EPILOG);
 
             // The 0x30-byte G15 direct stream independently appears in Alyssa's
             // working m1n1 path and pac85's standalone macOS AGX demo.
@@ -219,11 +249,12 @@ impl super::QueueInner::ver {
             core::sync::atomic::fence(Ordering::SeqCst);
             dev_info!(
                 self.dev.as_ref(),
-                "T8122 G15 E248 fixed shader blob CDM={:#x} entry={:#x} body={:#x} result={:#x}\n",
+                "T8122 G15 E281 production-body ABI CDM={:#x} entry={:#x} body={:#x} result={:#x} args={:#x}\n",
                 base,
                 entry_addr,
                 body_addr,
-                result_addr
+                result_addr,
+                g15_args_addr
             );
             blob
         };

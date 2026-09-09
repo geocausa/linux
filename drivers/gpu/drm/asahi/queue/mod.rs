@@ -1949,7 +1949,7 @@ impl QueueJob::ver {
                 );
                 if let Some(err) = error {
                     fence.set_error(err.into());
-                } else if fixed_result != Ok(1337.0f32.to_bits()) {
+                } else if fixed_result != Ok(0x0539_015c) {
                     fence.set_error(EIO);
                 }
                 core::mem::drop(payload);
