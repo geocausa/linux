@@ -107,15 +107,16 @@ impl super::QueueInner::ver {
         #[ver(G == G15)]
         let g15_result_addr = g15_result.gpu_va().get();
         #[ver(G == G15)]
-        let g15_args_addr = {
+        let (g15_args_addr, g15_statics_addr) = {
             const ARGS_OFF: usize = 0x80;
-            let addr = g15_result_addr
+            let args_addr = g15_result_addr
                 .checked_add(ARGS_OFF as u64)
                 .ok_or(EOVERFLOW)?;
+            let statics_addr = args_addr.checked_add(8).ok_or(EOVERFLOW)?;
             let bytes = g15_result.as_mut_slice();
             bytes[ARGS_OFF..ARGS_OFF + 8].copy_from_slice(&g15_result_addr.to_le_bytes());
             bytes[ARGS_OFF + 8..ARGS_OFF + 16].fill(0);
-            addr
+            (args_addr, statics_addr)
         };
 
         #[ver(G == G15)]
@@ -137,7 +138,8 @@ impl super::QueueInner::ver {
 
             fn imm_inst(reg: u8, value: u32) -> [u8; 8] {
                 (0x0000_0000_0002_800c_u64
-                    | ((reg as u64) << 4)
+                    | (((reg & 0x0f) as u64) << 4)
+                    | (((reg >> 4) as u64) << 22)
                     | swizzle_imm32(value))
                     .to_le_bytes()
             }
@@ -170,26 +172,29 @@ impl super::QueueInner::ver {
             ];
             bytes[BODY_OFF..BODY_OFF + PROD_MAIN.len()].copy_from_slice(&PROD_MAIN);
 
-            // E280's exact compiler metadata requires one 8-byte UserBuffer
-            // BufferBindings record. Keep that record at result+0x80, load it
-            // into r18/r19, and zero r20/r21 in the same 16-byte fetch. The
-            // production G15 tail then transfers r18..r21 to u0..u3 before the
-            // selected shader runs. This is the concrete ABI delta missing from
-            // E274's hand-written entry.
+            // Exact 23J220 metadata has two independent two-word DMA loads:
+            // BufferBindings -> words 0..1 and Statics -> words 2..3. E282
+            // proves the Statics source is exactly eight zero bytes. Materialize
+            // the two concrete Linux source addresses, then use the same two
+            // two-word load encodings seen in the generated G15 state loader.
             let mut pos = ENTRY_OFF;
             for inst in [
                 imm_inst(2, g15_args_addr as u32),
                 imm_inst(3, (g15_args_addr >> 32) as u32),
+                imm_inst(20, g15_statics_addr as u32),
+                imm_inst(21, (g15_statics_addr >> 32) as u32),
             ] {
                 bytes[pos..pos + 8].copy_from_slice(&inst);
                 pos += 8;
             }
-            const ARG_LOAD: [u8; 14] = [
+            const ARG_LOADS: [u8; 28] = [
                 0x67, 0x00, 0x54, 0x24, 0x02, 0x00, 0x00, 0x00,
-                0x57, 0x00, 0x00, 0x40, 0x26, 0x00,
+                0x59, 0x00, 0x00, 0x40, 0x26, 0x00,
+                0x67, 0x00, 0x54, 0x28, 0x14, 0x00, 0x00, 0x00,
+                0x59, 0x04, 0x00, 0x40, 0x26, 0x00,
             ];
-            bytes[pos..pos + ARG_LOAD.len()].copy_from_slice(&ARG_LOAD);
-            pos += ARG_LOAD.len();
+            bytes[pos..pos + ARG_LOADS.len()].copy_from_slice(&ARG_LOADS);
+            pos += ARG_LOADS.len();
 
             bytes[pos..pos + 8]
                 .copy_from_slice(&[0x77, 0x00, 0x2a, 0x41, 0x00, 0x00, 0x00, 0x00]);
@@ -249,12 +254,13 @@ impl super::QueueInner::ver {
             core::sync::atomic::fence(Ordering::SeqCst);
             dev_info!(
                 self.dev.as_ref(),
-                "T8122 G15 E281 production-body ABI CDM={:#x} entry={:#x} body={:#x} result={:#x} args={:#x}\n",
+                "T8122 G15 E283 two-load ABI CDM={:#x} entry={:#x} body={:#x} result={:#x} args={:#x} statics={:#x}\n",
                 base,
                 entry_addr,
                 body_addr,
                 result_addr,
-                g15_args_addr
+                g15_args_addr,
+                g15_statics_addr
             );
             blob
         };
