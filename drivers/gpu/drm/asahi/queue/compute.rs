@@ -126,22 +126,39 @@ impl super::QueueInner::ver {
             const BODY_OFF: usize = 0x200;
             const BLOB_LEN: usize = 0x400;
 
-            fn swizzle_imm32(value: u32) -> u64 {
-                let value = value as u64;
-                let a = value & 0x7f;
-                let b = (value >> 7) & 0xf;
-                let c = (value >> 11) & 0x3;
-                let d = (value >> 13) & 0xfff;
-                let e = (value >> 25) & 0x7f;
-                (a << 8) | (b << 33) | (c << 42) | (d << 48) | (e << 25)
-            }
+            // macOS 14.8.3 / 23J220 G15 uses the older two-LDIMM pointer
+            // grammar here, not the newer generator form used by E283. E284
+            // recovered the exact bit-preserving pointer fixup performed by
+            // loadBufferPointer(); keep it isolated so runtime GPU VAs remain
+            // dynamic while the instruction grammar stays byte-exact.
+            fn exact_pointer(addr: u64) -> [u8; 16] {
+                const TEMPLATE: [u8; 16] = [
+                    0x1c, 0x80, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00,
+                    0x1c, 0x80, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
+                ];
+                const INDEX: [usize; 16] = [
+                    0, 0, 0, 3, 8, 8, 9, 10, 4, 4, 4, 7, 12, 12, 13, 14,
+                ];
+                const RSHIFT: [u8; 16] = [
+                    0, 0, 0, 0, 1, 4, 0, 0, 0, 0, 0, 0, 1, 4, 0, 0,
+                ];
+                const PRESERVE: [u8; 16] = [
+                    0xff, 0x80, 0xff, 0x01, 0xe1, 0xf3, 0x00, 0xf0,
+                    0xff, 0x80, 0xff, 0x01, 0xe1, 0xf3, 0x00, 0xf0,
+                ];
 
-            fn imm_inst(reg: u8, value: u32) -> [u8; 8] {
-                (0x0000_0000_0002_800c_u64
-                    | (((reg & 0x0f) as u64) << 4)
-                    | (((reg >> 4) as u64) << 22)
-                    | swizzle_imm32(value))
-                    .to_le_bytes()
+                let mut table = [0u8; 16];
+                table[..8].copy_from_slice(&addr.to_le_bytes());
+                table[8..].copy_from_slice(&(addr >> 5).to_le_bytes());
+
+                let mut out = TEMPLATE;
+                let mut i = 0;
+                while i < out.len() {
+                    let shifted = table[INDEX[i]] >> RSHIFT[i];
+                    out[i] = shifted ^ ((shifted ^ TEMPLATE[i]) & PRESERVE[i]);
+                    i += 1;
+                }
+                out
             }
 
             let mut blob = self
@@ -172,30 +189,30 @@ impl super::QueueInner::ver {
             ];
             bytes[BODY_OFF..BODY_OFF + PROD_MAIN.len()].copy_from_slice(&PROD_MAIN);
 
-            // Exact 23J220 metadata has two independent two-word DMA loads:
-            // BufferBindings -> words 0..1 and Statics -> words 2..3. E282
-            // proves the Statics source is exactly eight zero bytes. Materialize
-            // the two concrete Linux source addresses, then use the same two
-            // two-word load encodings seen in the generated G15 state loader.
+            // Exact 23J220 direct state-loader entry, reconstructed in E284/E285.
+            // The two pointer sequences stay runtime-patched; every opcode and
+            // dependency/result-transfer byte is from the exact target driver.
+            const ENTRY_LEN: usize = 116;
             let mut pos = ENTRY_OFF;
-            for inst in [
-                imm_inst(2, g15_args_addr as u32),
-                imm_inst(3, (g15_args_addr >> 32) as u32),
-                imm_inst(20, g15_statics_addr as u32),
-                imm_inst(21, (g15_statics_addr >> 32) as u32),
-            ] {
-                bytes[pos..pos + 8].copy_from_slice(&inst);
-                pos += 8;
-            }
-            const ARG_LOADS: [u8; 28] = [
-                0x67, 0x00, 0x54, 0x24, 0x02, 0x00, 0x00, 0x00,
-                0x59, 0x00, 0x00, 0x40, 0x26, 0x00,
-                0x67, 0x00, 0x54, 0x28, 0x14, 0x00, 0x00, 0x00,
-                0x59, 0x04, 0x00, 0x40, 0x26, 0x00,
-            ];
-            bytes[pos..pos + ARG_LOADS.len()].copy_from_slice(&ARG_LOADS);
-            pos += ARG_LOADS.len();
 
+            for ptr in [exact_pointer(g15_args_addr), exact_pointer(g15_statics_addr)] {
+                bytes[pos..pos + ptr.len()].copy_from_slice(&ptr);
+                pos += ptr.len();
+            }
+
+            const LOADS: [u8; 28] = [
+                // BufferBindings/UserBuffer -> r0/r1.
+                0x67, 0x10, 0x54, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x59, 0x00, 0x00, 0x50, 0x26, 0x00,
+                // Statics -> r2/r3.
+                0x67, 0x10, 0x54, 0x04, 0x02, 0x00, 0x00, 0x00,
+                0x59, 0x00, 0x00, 0x40, 0x26, 0x00,
+            ];
+            bytes[pos..pos + LOADS.len()].copy_from_slice(&LOADS);
+            pos += LOADS.len();
+
+            // appendLdshdr() reserves exactly 0x1c bytes. finish() later patches
+            // them with this exact LoadShader encoding; only the body VA varies.
             bytes[pos..pos + 8]
                 .copy_from_slice(&[0x77, 0x00, 0x2a, 0x41, 0x00, 0x00, 0x00, 0x00]);
             pos += 8;
@@ -204,25 +221,31 @@ impl super::QueueInner::ver {
             let shifted_body = (body_addr >> 7).to_le_bytes();
             bytes[pos..pos + 5].copy_from_slice(&shifted_body[..5]);
             pos += 5;
-
-            // First 59 bytes are common to E274 and the production-generated
-            // state loader. The remaining production tail is independently
-            // matched by the current G15 generator and pac85's G15 entry trace:
-            // wait, move r18..r21 into u0..u3, then stop.
-            const PROD_ENTRY_EPILOG: [u8; 88] = [
-                0x04, 0x00, 0xf7, 0x00, 0x2a, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x1c, 0x80, 0x02, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x14, 0x81, 0x11, 0x06,
-                0x00, 0x00, 0x00, 0x00, 0x0c, 0x80, 0x02, 0x00,
-                0x04, 0x00, 0x00, 0x00, 0x9f, 0x11, 0x54, 0x00,
-                0x02, 0x00, 0x08, 0xa8, 0x10, 0x05, 0x1c, 0x80,
-                0x02, 0x00, 0x04, 0x00, 0x00, 0x00, 0x0f, 0x12,
-                0x54, 0x00, 0x4c, 0x00, 0x06, 0x08, 0x06, 0x00,
-                0x06, 0x00, 0x06, 0x00, 0x0b, 0x24, 0x09, 0x04,
-                0x1b, 0x26, 0x09, 0x04, 0x2b, 0x28, 0x09, 0x04,
-                0x3b, 0x2a, 0x09, 0x04, 0x0e, 0x00, 0x00, 0x00,
+            const LOAD_SHADER_TAIL: [u8; 12] = [
+                0x04, 0x00, 0xf7, 0x00, 0x2a, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             ];
-            bytes[pos..pos + PROD_ENTRY_EPILOG.len()].copy_from_slice(&PROD_ENTRY_EPILOG);
+            bytes[pos..pos + LOAD_SHADER_TAIL.len()].copy_from_slice(&LOAD_SHADER_TAIL);
+            pos += LOAD_SHADER_TAIL.len();
+
+            // Both inflight loads carry dependency class 1, so finishRound()
+            // reduces them to aggregate mask 2: NOP(2), then three NOP(0).
+            // COPYs hand the exact r0..r3 load results to u0..u3, then stop.
+            const FINISH: [u8; 28] = [
+                0x06, 0x08, 0x06, 0x00, 0x06, 0x00, 0x06, 0x00,
+                0x0b, 0x00, 0x09, 0x24,
+                0x1b, 0x02, 0x09, 0x24,
+                0x2b, 0x04, 0x09, 0x24,
+                0x3b, 0x06, 0x09, 0x24,
+                0x0e, 0x00, 0x00, 0x00,
+            ];
+            bytes[pos..pos + FINISH.len()].copy_from_slice(&FINISH);
+            pos += FINISH.len();
+
+            if pos != ENTRY_OFF + ENTRY_LEN {
+                return Err(EIO);
+            }
+            bytes[pos..BODY_OFF].fill(0);
 
             // The 0x30-byte G15 direct stream independently appears in Alyssa's
             // working m1n1 path and pac85's standalone macOS AGX demo.
@@ -254,7 +277,7 @@ impl super::QueueInner::ver {
             core::sync::atomic::fence(Ordering::SeqCst);
             dev_info!(
                 self.dev.as_ref(),
-                "T8122 G15 E283 two-load ABI CDM={:#x} entry={:#x} body={:#x} result={:#x} args={:#x} statics={:#x}\n",
+                "T8122 G15 E286 exact-23J220 entry CDM={:#x} entry={:#x} body={:#x} result={:#x} args={:#x} statics={:#x}\n",
                 base,
                 entry_addr,
                 body_addr,
