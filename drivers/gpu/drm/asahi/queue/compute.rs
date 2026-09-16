@@ -119,10 +119,29 @@ impl super::QueueInner::ver {
             (args_addr, statics_addr)
         };
 
+        // E296 mirrors the exact 23J220 enqueue-time ownership transition:
+        // the finalized direct ESL is copied into command-buffer DataBuffer
+        // pool 5, whose exact G15 UAT class is range-5 uncached
+        // (0x0080_0000_0000_0008 protection bits). Keep the actual shader
+        // body and persistent profile helper in the independently proven code
+        // heap; this experiment changes only the entry-copy backing class.
+        #[ver(G == G15)]
+        let mut g15_entry = self
+            ._g15_range5_uncached
+            .as_ref()
+            .ok_or(EINVAL)?
+            .lock()
+            .array_empty_tagged::<u8>(0x100, b"ESL5")?;
+        #[ver(G == G15)]
+        let g15_entry_addr = g15_entry.gpu_va().get();
+        #[ver(G == G15)]
+        if g15_entry_addr & 0x3f != 0 {
+            return Err(EIO);
+        }
+
         #[ver(G == G15)]
         let (g15_cdm_root, g15_profile_helper) = {
             const CDM_LEN: usize = 0x30;
-            const ENTRY_OFF: usize = 0x100;
             const BODY_OFF: usize = 0x200;
             const BLOB_LEN: usize = 0x400;
 
@@ -174,6 +193,7 @@ impl super::QueueInner::ver {
                 (blob, helper)
             };
             let base = blob.gpu_va().get();
+            let entry_addr = g15_entry_addr;
             let profile_helper_addr = profile_helper.gpu_va().get();
 
             // Exact USCProfileControlStateLoaderGen1<G15> helper: two CNDRET_0
@@ -183,10 +203,10 @@ impl super::QueueInner::ver {
             helper[4..8].copy_from_slice(&CNDRET);
             helper[12..16].copy_from_slice(&CNDRET);
 
-            let entry_addr = base.checked_add(ENTRY_OFF as u64).ok_or(EOVERFLOW)?;
             let body_addr = base.checked_add(BODY_OFF as u64).ok_or(EOVERFLOW)?;
             let result_addr = g15_result_addr;
             let bytes = blob.as_mut_slice();
+            let entry_bytes = g15_entry.as_mut_slice();
 
             // E291 isolates shader-engine entry from body-side memory/state.
             // Keep E289's exact direct ESL + inactive-profile helper unchanged,
@@ -222,10 +242,10 @@ impl super::QueueInner::ver {
             // Exact 23J220 direct state-loader entry. E289 adds the production
             // inactive-profile BL_0 that E285/E286 omitted.
             const ENTRY_LEN: usize = 126;
-            let mut pos = ENTRY_OFF;
+            let mut pos = 0usize;
 
             for ptr in [exact_pointer(g15_args_addr), exact_pointer(g15_statics_addr)] {
-                bytes[pos..pos + ptr.len()].copy_from_slice(&ptr);
+                entry_bytes[pos..pos + ptr.len()].copy_from_slice(&ptr);
                 pos += ptr.len();
             }
 
@@ -237,24 +257,24 @@ impl super::QueueInner::ver {
                 0x67, 0x10, 0x54, 0x04, 0x02, 0x00, 0x00, 0x00,
                 0x59, 0x00, 0x00, 0x40, 0x26, 0x00,
             ];
-            bytes[pos..pos + LOADS.len()].copy_from_slice(&LOADS);
+            entry_bytes[pos..pos + LOADS.len()].copy_from_slice(&LOADS);
             pos += LOADS.len();
 
             // appendLdshdr() reserves exactly 0x1c bytes. finish() later patches
             // them with this exact LoadShader encoding; only the body VA varies.
-            bytes[pos..pos + 8]
+            entry_bytes[pos..pos + 8]
                 .copy_from_slice(&[0x77, 0x00, 0x2a, 0x41, 0x00, 0x00, 0x00, 0x00]);
             pos += 8;
-            bytes[pos..pos + 3].copy_from_slice(&[0x77, 0x01, 0x2a]);
+            entry_bytes[pos..pos + 3].copy_from_slice(&[0x77, 0x01, 0x2a]);
             pos += 3;
             let shifted_body = (body_addr >> 7).to_le_bytes();
-            bytes[pos..pos + 5].copy_from_slice(&shifted_body[..5]);
+            entry_bytes[pos..pos + 5].copy_from_slice(&shifted_body[..5]);
             pos += 5;
             const LOAD_SHADER_TAIL: [u8; 12] = [
                 0x04, 0x00, 0xf7, 0x00, 0x2a, 0x00,
                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             ];
-            bytes[pos..pos + LOAD_SHADER_TAIL.len()].copy_from_slice(&LOAD_SHADER_TAIL);
+            entry_bytes[pos..pos + LOAD_SHADER_TAIL.len()].copy_from_slice(&LOAD_SHADER_TAIL);
             pos += LOAD_SHADER_TAIL.len();
 
             // Both inflight loads carry dependency class 1, so finishRound()
@@ -267,21 +287,21 @@ impl super::QueueInner::ver {
                 0x2b, 0x04, 0x09, 0x24,
                 0x3b, 0x06, 0x09, 0x24,
             ];
-            bytes[pos..pos + ROUND_AND_COPIES.len()].copy_from_slice(&ROUND_AND_COPIES);
+            entry_bytes[pos..pos + ROUND_AND_COPIES.len()].copy_from_slice(&ROUND_AND_COPIES);
             pos += ROUND_AND_COPIES.len();
 
             let profile = profile_bl(profile_helper_addr);
-            bytes[pos..pos + profile.len()].copy_from_slice(&profile);
+            entry_bytes[pos..pos + profile.len()].copy_from_slice(&profile);
             pos += profile.len();
 
             const STOP: [u8; 4] = [0x0e, 0x00, 0x00, 0x00];
-            bytes[pos..pos + STOP.len()].copy_from_slice(&STOP);
+            entry_bytes[pos..pos + STOP.len()].copy_from_slice(&STOP);
             pos += STOP.len();
 
-            if pos != ENTRY_OFF + ENTRY_LEN {
+            if pos != ENTRY_LEN {
                 return Err(EIO);
             }
-            bytes[pos..BODY_OFF].fill(0);
+            entry_bytes[pos..].fill(0);
 
             // The 0x30-byte G15 direct stream independently appears in Alyssa's
             // working m1n1 path and pac85's standalone macOS AGX demo.
@@ -313,7 +333,7 @@ impl super::QueueInner::ver {
             core::sync::atomic::fence(Ordering::SeqCst);
             dev_info!(
                 self.dev.as_ref(),
-                "T8122 G15 E291 stop-body exact-profile entry CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
+                "T8122 G15 E296 pool5-entry stop-body exact-profile CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
                 base,
                 entry_addr,
                 body_addr,
@@ -392,6 +412,8 @@ impl super::QueueInner::ver {
                     g15_result: g15_result,
                     #[ver(G == G15)]
                     g15_cdm_root: g15_cdm_root,
+                    #[ver(G == G15)]
+                    g15_entry: g15_entry,
                     #[ver(G == G15)]
                     g15_profile_helper: g15_profile_helper,
                     micro_seq: {

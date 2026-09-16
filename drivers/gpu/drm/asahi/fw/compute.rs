@@ -713,9 +713,13 @@ pub(crate) struct RunCompute {
     #[ver(G == G15)]
     pub(crate) g15_result: GpuArray<u8>,
     // E248 bounded G15 command-owned test blob. The first 0x30 bytes are the
-    // fixed CDM stream; entry/body shaders remain at fixed offsets.
+    // fixed CDM stream; the STOP body remains at its fixed code-heap offset.
     #[ver(G == G15)]
     pub(crate) g15_cdm_root: GpuArray<u8>,
+    // E296 exact 23J220 enqueue-time ProgramVariant copy. Apple executes this
+    // ESL from DataBuffer pool 5, whose bank-0 PTE class is range-5 uncached.
+    #[ver(G == G15)]
+    pub(crate) g15_entry: GpuArray<u8>,
     // E289 exact 23J220 inactive-profile state-loader helper. Apple keeps this
     // 0x10-byte helper in the same executable Heap<true> as the direct ESL.
     #[ver(G == G15)]
