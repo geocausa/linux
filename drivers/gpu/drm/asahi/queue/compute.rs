@@ -120,7 +120,7 @@ impl super::QueueInner::ver {
         };
 
         #[ver(G == G15)]
-        let g15_cdm_root = {
+        let (g15_cdm_root, g15_profile_helper) = {
             const CDM_LEN: usize = 0x30;
             const ENTRY_OFF: usize = 0x100;
             const BODY_OFF: usize = 0x200;
@@ -161,13 +161,28 @@ impl super::QueueInner::ver {
                 out
             }
 
-            let mut blob = self
-                ._g15_range5_code
-                .as_ref()
-                .ok_or(EINVAL)?
-                .lock()
-                .array_empty_tagged::<u8>(BLOB_LEN, b"CDM1")?;
+            // Preserve E286 allocation order for the main blob, then place the
+            // exact 0x10-byte profile helper in the same range-5 executable heap.
+            let (mut blob, mut profile_helper) = {
+                let mut code = self
+                    ._g15_range5_code
+                    .as_ref()
+                    .ok_or(EINVAL)?
+                    .lock();
+                let blob = code.array_empty_tagged::<u8>(BLOB_LEN, b"CDM1")?;
+                let helper = code.array_empty_tagged::<u8>(0x10, b"PRFL")?;
+                (blob, helper)
+            };
             let base = blob.gpu_va().get();
+            let profile_helper_addr = profile_helper.gpu_va().get();
+
+            // Exact USCProfileControlStateLoaderGen1<G15> helper: two CNDRET_0
+            // entry points at offsets 0 and 8, each instruction stored at +4.
+            const CNDRET: [u8; 4] = [0x8f, 0x02, 0x54, 0x01];
+            let helper = profile_helper.as_mut_slice();
+            helper[4..8].copy_from_slice(&CNDRET);
+            helper[12..16].copy_from_slice(&CNDRET);
+
             let entry_addr = base.checked_add(ENTRY_OFF as u64).ok_or(EOVERFLOW)?;
             let body_addr = base.checked_add(BODY_OFF as u64).ok_or(EOVERFLOW)?;
             let result_addr = g15_result_addr;
@@ -189,10 +204,34 @@ impl super::QueueInner::ver {
             ];
             bytes[BODY_OFF..BODY_OFF + PROD_MAIN.len()].copy_from_slice(&PROD_MAIN);
 
-            // Exact 23J220 direct state-loader entry, reconstructed in E284/E285.
-            // The two pointer sequences stay runtime-patched; every opcode and
-            // dependency/result-transfer byte is from the exact target driver.
-            const ENTRY_LEN: usize = 116;
+            // Exact inactive-profile BL_0 emitted after the final load round and
+            // before finish() appends STOP. The target is helper entry 0.
+            fn profile_bl(helper_addr: u64) -> [u8; 10] {
+                let value = ((helper_addr & 0xffff_ffff_ffff) << 1) | 1;
+                let lo = value as u32;
+                let hi = (value >> 32) as u32;
+                let words = [
+                    (((hi >> 6) & 0x800) | 0x8f) as u16,
+                    ((((lo & 0x01ff_fffc) << 7) | ((lo & 1) << 8) | 0x54)
+                        & 0xffff) as u16,
+                    ((value >> 9) & 0xffff) as u16,
+                    ((value >> 25) & 0xffff) as u16,
+                    ((hi >> 9) & 0xff) as u16,
+                ];
+                let mut out = [0u8; 10];
+                let mut i = 0;
+                while i < words.len() {
+                    let bytes = words[i].to_le_bytes();
+                    out[i * 2] = bytes[0];
+                    out[i * 2 + 1] = bytes[1];
+                    i += 1;
+                }
+                out
+            }
+
+            // Exact 23J220 direct state-loader entry. E289 adds the production
+            // inactive-profile BL_0 that E285/E286 omitted.
+            const ENTRY_LEN: usize = 126;
             let mut pos = ENTRY_OFF;
 
             for ptr in [exact_pointer(g15_args_addr), exact_pointer(g15_statics_addr)] {
@@ -230,17 +269,24 @@ impl super::QueueInner::ver {
 
             // Both inflight loads carry dependency class 1, so finishRound()
             // reduces them to aggregate mask 2: NOP(2), then three NOP(0).
-            // COPYs hand the exact r0..r3 load results to u0..u3, then stop.
-            const FINISH: [u8; 28] = [
+            // COPYs hand the exact r0..r3 load results to u0..u3.
+            const ROUND_AND_COPIES: [u8; 24] = [
                 0x06, 0x08, 0x06, 0x00, 0x06, 0x00, 0x06, 0x00,
                 0x0b, 0x00, 0x09, 0x24,
                 0x1b, 0x02, 0x09, 0x24,
                 0x2b, 0x04, 0x09, 0x24,
                 0x3b, 0x06, 0x09, 0x24,
-                0x0e, 0x00, 0x00, 0x00,
             ];
-            bytes[pos..pos + FINISH.len()].copy_from_slice(&FINISH);
-            pos += FINISH.len();
+            bytes[pos..pos + ROUND_AND_COPIES.len()].copy_from_slice(&ROUND_AND_COPIES);
+            pos += ROUND_AND_COPIES.len();
+
+            let profile = profile_bl(profile_helper_addr);
+            bytes[pos..pos + profile.len()].copy_from_slice(&profile);
+            pos += profile.len();
+
+            const STOP: [u8; 4] = [0x0e, 0x00, 0x00, 0x00];
+            bytes[pos..pos + STOP.len()].copy_from_slice(&STOP);
+            pos += STOP.len();
 
             if pos != ENTRY_OFF + ENTRY_LEN {
                 return Err(EIO);
@@ -277,15 +323,16 @@ impl super::QueueInner::ver {
             core::sync::atomic::fence(Ordering::SeqCst);
             dev_info!(
                 self.dev.as_ref(),
-                "T8122 G15 E286 exact-23J220 entry CDM={:#x} entry={:#x} body={:#x} result={:#x} args={:#x} statics={:#x}\n",
+                "T8122 G15 E289 exact-profile entry CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
                 base,
                 entry_addr,
                 body_addr,
+                profile_helper_addr,
                 result_addr,
                 g15_args_addr,
                 g15_statics_addr
             );
-            blob
+            (blob, profile_helper)
         };
         #[ver(G == G15)]
         let cdm_ctrl_stream_end = g15_cdm_root
@@ -355,6 +402,8 @@ impl super::QueueInner::ver {
                     g15_result: g15_result,
                     #[ver(G == G15)]
                     g15_cdm_root: g15_cdm_root,
+                    #[ver(G == G15)]
+                    g15_profile_helper: g15_profile_helper,
                     micro_seq: {
                         let mut builder = microseq::Builder::new();
 

@@ -716,6 +716,10 @@ pub(crate) struct RunCompute {
     // fixed CDM stream; entry/body shaders remain at fixed offsets.
     #[ver(G == G15)]
     pub(crate) g15_cdm_root: GpuArray<u8>,
+    // E289 exact 23J220 inactive-profile state-loader helper. Apple keeps this
+    // 0x10-byte helper in the same executable Heap<true> as the direct ESL.
+    #[ver(G == G15)]
+    pub(crate) g15_profile_helper: GpuArray<u8>,
     pub(crate) micro_seq: microseq::MicroSequence,
     pub(crate) vm_bind: mmu::VmBind,
     pub(crate) timestamps: Arc<GpuObject<job::JobTimestamps>>,
