@@ -188,21 +188,11 @@ impl super::QueueInner::ver {
             let result_addr = g15_result_addr;
             let bytes = blob.as_mut_slice();
 
-            // Provenance-clean exact 23J220 backend body. The Mach-O symbol
-            // `_agc.main` is at __TEXT+0x40; this is precisely that 58-byte
-            // function body. It expects the writable UserBuffer pointer in
-            // u0/u1 and writes 0x0539015c when gid == 0.
-            const PROD_MAIN: [u8; 58] = [
-                0x1c, 0xa0, 0x10, 0x06, 0x06, 0x04, 0x06, 0x00,
-                0x06, 0x00, 0x06, 0x00, 0x0a, 0x03, 0x2b, 0x80,
-                0x06, 0x00, 0x07, 0x22, 0x00, 0x00, 0x0f, 0x05,
-                0x54, 0x01, 0x1c, 0xdc, 0x02, 0x04, 0x04, 0x00,
-                0xc8, 0x09, 0xe7, 0x00, 0x54, 0x02, 0x00, 0x00,
-                0x00, 0x00, 0x51, 0x00, 0x00, 0x90, 0x00, 0x00,
-                0x0f, 0x06, 0x04, 0x01, 0x00, 0x00, 0x0e, 0x00,
-                0x00, 0x00,
-            ];
-            bytes[BODY_OFF..BODY_OFF + PROD_MAIN.len()].copy_from_slice(&PROD_MAIN);
+            // E291 isolates shader-engine entry from body-side memory/state.
+            // Keep E289's exact direct ESL + inactive-profile helper unchanged,
+            // but select the smallest possible real shader: STOP only.
+            const STOP_BODY: [u8; 4] = [0x0e, 0x00, 0x00, 0x00];
+            bytes[BODY_OFF..BODY_OFF + STOP_BODY.len()].copy_from_slice(&STOP_BODY);
 
             // Exact inactive-profile BL_0 emitted after the final load round and
             // before finish() appends STOP. The target is helper entry 0.
@@ -323,7 +313,7 @@ impl super::QueueInner::ver {
             core::sync::atomic::fence(Ordering::SeqCst);
             dev_info!(
                 self.dev.as_ref(),
-                "T8122 G15 E289 exact-profile entry CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
+                "T8122 G15 E291 stop-body exact-profile entry CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
                 base,
                 entry_addr,
                 body_addr,

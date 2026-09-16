@@ -1949,7 +1949,9 @@ impl QueueJob::ver {
                 );
                 if let Some(err) = error {
                     fence.set_error(err.into());
-                } else if fixed_result != Ok(0x0539_015c) {
+                } else if fixed_result != Ok(0xffff_ffff) {
+                    // E291's STOP-only shader deliberately performs no store.
+                    // A successful engine retirement must leave the sentinel intact.
                     fence.set_error(EIO);
                 }
                 core::mem::drop(payload);
