@@ -107,17 +107,36 @@ impl super::QueueInner::ver {
         #[ver(G == G15)]
         let g15_result_addr = g15_result.gpu_va().get();
         #[ver(G == G15)]
-        let (g15_args_addr, g15_statics_addr) = {
+        let g15_args_addr = {
             const ARGS_OFF: usize = 0x80;
             let args_addr = g15_result_addr
                 .checked_add(ARGS_OFF as u64)
                 .ok_or(EOVERFLOW)?;
-            let statics_addr = args_addr.checked_add(8).ok_or(EOVERFLOW)?;
             let bytes = g15_result.as_mut_slice();
             bytes[ARGS_OFF..ARGS_OFF + 8].copy_from_slice(&g15_result_addr.to_le_bytes());
-            bytes[ARGS_OFF + 8..ARGS_OFF + 16].fill(0);
-            (args_addr, statics_addr)
+            args_addr
         };
+
+        // E299 mirrors the exact 23J220 per-variant Statics allocation. The
+        // direct emitter takes the exact 8-byte zero statics vector, allocates
+        // it from DataBuffer pool 0x0a with 32-byte alignment, and the ESL
+        // loadAbsolute record targets that allocation base. Pool 0x0a shares
+        // the exact range-5 uncached PTE class already proven for pool 5.
+        #[ver(G == G15)]
+        let mut g15_statics = self
+            ._g15_range5_uncached
+            .as_ref()
+            .ok_or(EINVAL)?
+            .lock()
+            .array_empty_tagged::<u8>(8, b"ST0A")?;
+        #[ver(G == G15)]
+        let g15_statics_addr = g15_statics.gpu_va().get();
+        #[ver(G == G15)]
+        if g15_statics_addr & 0x1f != 0 {
+            return Err(EIO);
+        }
+        #[ver(G == G15)]
+        g15_statics.as_mut_slice().fill(0);
 
         // E297 mirrors the exact 23J220 enqueue-time ownership transition:
         // the finalized direct ESL is copied into command-buffer DataBuffer
@@ -357,7 +376,7 @@ impl super::QueueInner::ver {
             core::sync::atomic::fence(Ordering::SeqCst);
             dev_info!(
                 self.dev.as_ref(),
-                "T8122 G15 E298 pool16-cdm exact-profile CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
+                "T8122 G15 E299 pool10-statics exact-profile CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
                 g15_cdm_addr,
                 entry_addr,
                 body_addr,
@@ -434,6 +453,8 @@ impl super::QueueInner::ver {
                     preempt_buf: preempt_buf,
                     #[ver(G == G15)]
                     g15_result: g15_result,
+                    #[ver(G == G15)]
+                    g15_statics: g15_statics,
                     #[ver(G == G15)]
                     g15_cdm_root: g15_cdm_root,
                     #[ver(G == G15)]

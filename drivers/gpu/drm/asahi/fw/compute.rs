@@ -712,6 +712,10 @@ pub(crate) struct RunCompute {
     // lifetime data memory, separate from the executable range-5 code object.
     #[ver(G == G15)]
     pub(crate) g15_result: GpuArray<u8>,
+    // E299 exact per-variant Statics copy. The 23J220 direct emitter allocates
+    // this from DataBuffer pool 0x0a, whose bank-0 class is range-5 uncached.
+    #[ver(G == G15)]
+    pub(crate) g15_statics: GpuArray<u8>,
     // E298 exact 23J220 direct-CDM DataBuffer pool 0x16 backing. Apple maps
     // this command stream with the same range-5 uncached bank-0 PTE class as
     // pool 5, but with separate pool ownership.
