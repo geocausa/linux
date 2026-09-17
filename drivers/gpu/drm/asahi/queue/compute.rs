@@ -139,8 +139,21 @@ impl super::QueueInner::ver {
             return Err(EIO);
         }
 
+        // E298 mirrors exact DataBuffer pool 0x16 ownership for the direct CDM
+        // stream. The preserved 23J220 setupDeferred/resource/PTE chain gives
+        // pool 0x16 the same range-5 uncached bank-0 protection class as pool 5.
         #[ver(G == G15)]
-        let (g15_cdm_root, g15_profile_helper) = {
+        let mut g15_cdm_root = self
+            ._g15_range5_uncached
+            .as_ref()
+            .ok_or(EINVAL)?
+            .lock()
+            .array_empty_tagged::<u8>(0x100, b"CD16")?;
+        #[ver(G == G15)]
+        let g15_cdm_addr = g15_cdm_root.gpu_va().get();
+
+        #[ver(G == G15)]
+        let (g15_body, g15_profile_helper) = {
             const CDM_LEN: usize = 0x30;
             const BODY_OFF: usize = 0x200;
             const BLOB_LEN: usize = 0x400;
@@ -192,7 +205,7 @@ impl super::QueueInner::ver {
                 let helper = code.array_empty_tagged::<u8>(0x10, b"PRFL")?;
                 (blob, helper)
             };
-            let base = blob.gpu_va().get();
+            let body_base = blob.gpu_va().get();
             let entry_addr = g15_entry_addr;
             let profile_helper_addr = profile_helper.gpu_va().get();
 
@@ -203,9 +216,9 @@ impl super::QueueInner::ver {
             helper[4..8].copy_from_slice(&CNDRET);
             helper[12..16].copy_from_slice(&CNDRET);
 
-            let body_addr = base.checked_add(BODY_OFF as u64).ok_or(EOVERFLOW)?;
+            let body_addr = body_base.checked_add(BODY_OFF as u64).ok_or(EOVERFLOW)?;
             let result_addr = g15_result_addr;
-            let bytes = blob.as_mut_slice();
+            let body_bytes = blob.as_mut_slice();
             let entry_bytes = g15_entry.as_mut_slice();
 
             // Provenance-clean exact 23J220 backend body. The Mach-O symbol
@@ -222,7 +235,7 @@ impl super::QueueInner::ver {
                 0x0f, 0x06, 0x04, 0x01, 0x00, 0x00, 0x0e, 0x00,
                 0x00, 0x00,
             ];
-            bytes[BODY_OFF..BODY_OFF + PROD_MAIN.len()].copy_from_slice(&PROD_MAIN);
+            body_bytes[BODY_OFF..BODY_OFF + PROD_MAIN.len()].copy_from_slice(&PROD_MAIN);
 
             // Exact inactive-profile BL_0 emitted after the final load round and
             // before finish() appends STOP. The target is helper entry 0.
@@ -320,22 +333,23 @@ impl super::QueueInner::ver {
                 *pos += 4;
             }
 
+            let cdm_bytes = g15_cdm_root.as_mut_slice();
             let mut pos = 0usize;
-            put32(bytes, &mut pos, 0x0008_0000);
+            put32(cdm_bytes, &mut pos, 0x0008_0000);
             let shifted_entry = ((entry_addr & 0xffff_ffff) << 26)
                 | ((entry_addr >> 32) << 16);
-            bytes[pos..pos + 8].copy_from_slice(&shifted_entry.to_le_bytes());
+            cdm_bytes[pos..pos + 8].copy_from_slice(&shifted_entry.to_le_bytes());
             pos += 8;
             // Exact 23J220 ordinary direct-launch dword 3 (E241/E242/E244).
             // The older m1n1 bring-up stream used 0x40 here, but the target
             // producer derives this from ComputeProgramVariant +0xa24 and the
             // default distribution mode, yielding bit 30 set and no low bits.
-            put32(bytes, &mut pos, 0x4000_0000);
+            put32(cdm_bytes, &mut pos, 0x4000_0000);
             for _ in 0..6 {
-                put32(bytes, &mut pos, 1);
+                put32(cdm_bytes, &mut pos, 1);
             }
-            put32(bytes, &mut pos, 0x6000_0160);
-            put32(bytes, &mut pos, 0x4000_0000);
+            put32(cdm_bytes, &mut pos, 0x6000_0160);
+            put32(cdm_bytes, &mut pos, 0x4000_0000);
             if pos != CDM_LEN {
                 return Err(EIO);
             }
@@ -343,8 +357,8 @@ impl super::QueueInner::ver {
             core::sync::atomic::fence(Ordering::SeqCst);
             dev_info!(
                 self.dev.as_ref(),
-                "T8122 G15 E297 pool5-entry exact-profile CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
-                base,
+                "T8122 G15 E298 pool16-cdm exact-profile CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
+                g15_cdm_addr,
                 entry_addr,
                 body_addr,
                 profile_helper_addr,
@@ -422,6 +436,8 @@ impl super::QueueInner::ver {
                     g15_result: g15_result,
                     #[ver(G == G15)]
                     g15_cdm_root: g15_cdm_root,
+                    #[ver(G == G15)]
+                    g15_body: g15_body,
                     #[ver(G == G15)]
                     g15_entry: g15_entry,
                     #[ver(G == G15)]

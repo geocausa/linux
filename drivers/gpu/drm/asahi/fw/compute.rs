@@ -712,10 +712,15 @@ pub(crate) struct RunCompute {
     // lifetime data memory, separate from the executable range-5 code object.
     #[ver(G == G15)]
     pub(crate) g15_result: GpuArray<u8>,
-    // E248 bounded G15 command-owned test blob. The first 0x30 bytes are the
-    // fixed CDM stream; the shader body remains at its fixed code-heap offset.
+    // E298 exact 23J220 direct-CDM DataBuffer pool 0x16 backing. Apple maps
+    // this command stream with the same range-5 uncached bank-0 PTE class as
+    // pool 5, but with separate pool ownership.
     #[ver(G == G15)]
     pub(crate) g15_cdm_root: GpuArray<u8>,
+    // Preserve the production shader body in the independently proven cached
+    // executable range-5 code heap while the CDM stream moves independently.
+    #[ver(G == G15)]
+    pub(crate) g15_body: GpuArray<u8>,
     // E297 exact 23J220 enqueue-time ProgramVariant copy. Apple executes this
     // ESL from DataBuffer pool 5, whose bank-0 PTE class is range-5 uncached.
     #[ver(G == G15)]
