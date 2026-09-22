@@ -712,6 +712,10 @@ pub(crate) struct RunCompute {
     // lifetime data memory, separate from the executable range-5 code object.
     #[ver(G == G15)]
     pub(crate) g15_result: GpuArray<u8>,
+    // E310 exact UserBuffer argument-table copy: 35 eight-byte slots in the
+    // separately retained command-buffer pool-3 range-5 uncached class.
+    #[ver(G == G15)]
+    pub(crate) g15_argument_table: GpuArray<u8>,
     // E299 exact per-variant Statics copy. The 23J220 direct emitter allocates
     // this from DataBuffer pool 0x0a, whose bank-0 class is range-5 uncached.
     #[ver(G == G15)]

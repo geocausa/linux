@@ -106,16 +106,30 @@ impl super::QueueInner::ver {
         }
         #[ver(G == G15)]
         let g15_result_addr = g15_result.gpu_va().get();
+        // E310 exact 23J220 UserBuffer argument table: a separate 35-entry,
+        // 8-byte-aligned command-buffer copy in pool 3. E309 proved that
+        // pool 3 is range-5 uncached (0x0080_0000_0000_0008 protection bits).
+        // The application result's mapping provenance remains a separate
+        // question; do not move it or the shader body by analogy.
         #[ver(G == G15)]
-        let g15_args_addr = {
-            const ARGS_OFF: usize = 0x80;
-            let args_addr = g15_result_addr
-                .checked_add(ARGS_OFF as u64)
-                .ok_or(EOVERFLOW)?;
-            let bytes = g15_result.as_mut_slice();
-            bytes[ARGS_OFF..ARGS_OFF + 8].copy_from_slice(&g15_result_addr.to_le_bytes());
-            args_addr
-        };
+        let mut g15_argument_table = self
+            ._g15_range5_uncached
+            .as_ref()
+            .ok_or(EINVAL)?
+            .lock()
+            .array_empty_tagged::<u8>(0x118, b"AT03")?;
+        #[ver(G == G15)]
+        let g15_args_addr = g15_argument_table.gpu_va().get();
+        #[ver(G == G15)]
+        if g15_args_addr & 7 != 0 {
+            return Err(EIO);
+        }
+        #[ver(G == G15)]
+        {
+            let entries = g15_argument_table.as_mut_slice();
+            entries.fill(0);
+            entries[..8].copy_from_slice(&g15_result_addr.to_le_bytes());
+        }
 
         // E299 mirrors the exact 23J220 per-variant Statics allocation. The
         // direct emitter takes the exact 8-byte zero statics vector, allocates
@@ -453,6 +467,8 @@ impl super::QueueInner::ver {
                     preempt_buf: preempt_buf,
                     #[ver(G == G15)]
                     g15_result: g15_result,
+                    #[ver(G == G15)]
+                    g15_argument_table: g15_argument_table,
                     #[ver(G == G15)]
                     g15_statics: g15_statics,
                     #[ver(G == G15)]
