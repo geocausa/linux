@@ -230,18 +230,23 @@ impl super::QueueInner::ver {
                 out
             }
 
-            // Preserve E286 allocation order for the main blob, then place the
-            // exact 0x10-byte profile helper in the same range-5 executable heap.
-            let (mut blob, mut profile_helper) = {
-                let mut code = self
-                    ._g15_range5_code
-                    .as_ref()
-                    .ok_or(EINVAL)?
-                    .lock();
-                let blob = code.array_empty_tagged::<u8>(BLOB_LEN, b"CDM1")?;
-                let helper = code.array_empty_tagged::<u8>(0x10, b"PRFL")?;
-                (blob, helper)
-            };
+            // E323 proves the exact 23J220 direct-Compute __TEXT body is
+            // allocated from AGXMetal.CodeHeap, whose bank-0 protection is the
+            // range-5 uncached class. Move only the existing body blob to that
+            // exact class. The inactive-profile helper remains in the prior
+            // code allocator so this is a one-variable body-mapping test.
+            let mut blob = self
+                ._g15_range5_uncached
+                .as_ref()
+                .ok_or(EINVAL)?
+                .lock()
+                .array_empty_tagged::<u8>(BLOB_LEN, b"CDM1")?;
+            let mut profile_helper = self
+                ._g15_range5_code
+                .as_ref()
+                .ok_or(EINVAL)?
+                .lock()
+                .array_empty_tagged::<u8>(0x10, b"PRFL")?;
             let body_base = blob.gpu_va().get();
             let entry_addr = g15_entry_addr;
             let profile_helper_addr = profile_helper.gpu_va().get();
@@ -384,7 +389,7 @@ impl super::QueueInner::ver {
             core::sync::atomic::fence(Ordering::SeqCst);
             dev_info!(
                 self.dev.as_ref(),
-                "T8122 G15 E321 stop-body on E319 mappings CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
+                "T8122 G15 E324 exact-CodeHeap body class CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
                 g15_cdm_addr,
                 entry_addr,
                 body_addr,
