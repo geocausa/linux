@@ -143,8 +143,11 @@ impl super::QueueInner::ver {
         // stream. The preserved 23J220 setupDeferred/resource/PTE chain gives
         // pool 0x16 the same range-5 uncached bank-0 protection class as pool 5.
         #[ver(G == G15)]
+        // E341 discriminator: retain E298's independent CDM allocation but
+        // place only that allocation back in the E297 range-5 code PTE class.
+        // This isolates allocation separation from the E298 uncached mapping.
         let mut g15_cdm_root = self
-            ._g15_range5_uncached
+            ._g15_range5_code
             .as_ref()
             .ok_or(EINVAL)?
             .lock()
@@ -336,7 +339,7 @@ impl super::QueueInner::ver {
             core::sync::atomic::fence(Ordering::SeqCst);
             dev_info!(
                 self.dev.as_ref(),
-                "T8122 G15 E339 E298-baseline terminate control CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
+                "T8122 G15 E341 split-code-CDM terminate control CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
                 g15_cdm_addr,
                 entry_addr,
                 body_addr,
