@@ -162,33 +162,17 @@ impl super::QueueInner::ver {
             pos += 5;
             bytes[pos..pos + 6].copy_from_slice(&[0x04, 0x00, 0x0e, 0x00, 0x00, 0x00]);
 
-            // The 0x30-byte G15 direct stream independently appears in Alyssa's
-            // working m1n1 path and pac85's standalone macOS AGX demo.
-            fn put32(bytes: &mut [u8], pos: &mut usize, value: u32) {
-                bytes[*pos..*pos + 4].copy_from_slice(&value.to_le_bytes());
-                *pos += 4;
-            }
-
-            let mut pos = 0usize;
-            put32(bytes, &mut pos, 0x0008_0000);
-            let shifted_entry = ((entry_addr & 0xffff_ffff) << 26)
-                | ((entry_addr >> 32) << 16);
-            bytes[pos..pos + 8].copy_from_slice(&shifted_entry.to_le_bytes());
-            pos += 8;
-            put32(bytes, &mut pos, 0x0000_0040);
-            for _ in 0..6 {
-                put32(bytes, &mut pos, 1);
-            }
-            put32(bytes, &mut pos, 0x6000_0160);
-            put32(bytes, &mut pos, 0x4000_0000);
-            if pos != CDM_LEN {
-                return Err(EIO);
-            }
+            // E331 bisection control: preserve the E252 outer state, including
+            // its G15 GPU/FW shared-RW RunCompute/timestamp/stamp placement, but
+            // execute only the exact four-byte stock-empty Stream Terminate
+            // command that completed in E199/E234.
+            bytes[..CDM_LEN].fill(0);
+            bytes[..4].copy_from_slice(&0x4000_0000u32.to_le_bytes());
 
             core::sync::atomic::fence(Ordering::SeqCst);
             dev_info!(
                 self.dev.as_ref(),
-                "T8122 G15 E248 fixed shader blob CDM={:#x} entry={:#x} body={:#x} result={:#x}\n",
+                "T8122 G15 E331 E252-baseline terminate control CDM={:#x} entry={:#x} body={:#x} result={:#x}\n",
                 base,
                 entry_addr,
                 body_addr,
@@ -200,7 +184,7 @@ impl super::QueueInner::ver {
         let cdm_ctrl_stream_end = g15_cdm_root
             .gpu_va()
             .get()
-            .checked_add(0x30)
+            .checked_add(4)
             .ok_or(EOVERFLOW)?;
         #[ver(G != G15)]
         let cdm_ctrl_stream_end = cmdbuf.cdm_ctrl_stream_end;
