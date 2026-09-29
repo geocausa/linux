@@ -232,9 +232,10 @@ impl super::QueueInner::ver {
 
             // E323 proves the exact 23J220 direct-Compute __TEXT body is
             // allocated from AGXMetal.CodeHeap, whose bank-0 protection is the
-            // range-5 uncached class. Move only the existing body blob to that
-            // exact class. The inactive-profile helper remains in the prior
-            // code allocator so this is a one-variable body-mapping test.
+            // range-5 uncached class. E289 independently proves the persistent
+            // inactive-profile helper uses that same Device Heap<true> at
+            // Device +0x158. E325 therefore places both allocations in the
+            // exact heap mapping class while changing only the helper from E324.
             let mut blob = self
                 ._g15_range5_uncached
                 .as_ref()
@@ -242,7 +243,7 @@ impl super::QueueInner::ver {
                 .lock()
                 .array_empty_tagged::<u8>(BLOB_LEN, b"CDM1")?;
             let mut profile_helper = self
-                ._g15_range5_code
+                ._g15_range5_uncached
                 .as_ref()
                 .ok_or(EINVAL)?
                 .lock()
@@ -389,7 +390,7 @@ impl super::QueueInner::ver {
             core::sync::atomic::fence(Ordering::SeqCst);
             dev_info!(
                 self.dev.as_ref(),
-                "T8122 G15 E324 exact-CodeHeap body class CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
+                "T8122 G15 E325 exact-CodeHeap body+profile class CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
                 g15_cdm_addr,
                 entry_addr,
                 body_addr,
