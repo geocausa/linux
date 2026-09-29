@@ -93,9 +93,13 @@ impl super::QueueInner::ver {
             .lock()
             .array_empty_tagged(preempt_size, b"CPMT")?;
 
+        // E319 exact 23J220 application-output parent: E318 traced the
+        // Shared Metal buffer through AGXBuffer/IOGPUMetalBuffer to an
+        // ordinary range-5 uncached bank-0 mapping. Change only the writable
+        // result backing class; executable body/profile storage stays code.
         #[ver(G == G15)]
         let mut g15_result = self
-            ._g15_range5_code
+            ._g15_range5_uncached
             .as_ref()
             .ok_or(EINVAL)?
             .lock()
@@ -109,8 +113,8 @@ impl super::QueueInner::ver {
         // E310 exact 23J220 UserBuffer argument table: a separate 35-entry,
         // 8-byte-aligned command-buffer copy in pool 3. E309 proved that
         // pool 3 is range-5 uncached (0x0080_0000_0000_0008 protection bits).
-        // The application result's mapping provenance remains a separate
-        // question; do not move it or the shader body by analogy.
+        // E318 separately closes the application result to the same range-5
+        // uncached PTE class; keep the argument table a distinct allocation.
         #[ver(G == G15)]
         let mut g15_argument_table = self
             ._g15_range5_uncached
