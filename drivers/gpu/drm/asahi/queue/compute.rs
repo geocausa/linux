@@ -313,37 +313,16 @@ impl super::QueueInner::ver {
             }
             entry_bytes[pos..].fill(0);
 
-            // The 0x30-byte G15 direct stream independently appears in Alyssa's
-            // working m1n1 path and pac85's standalone macOS AGX demo.
-            fn put32(bytes: &mut [u8], pos: &mut usize, value: u32) {
-                bytes[*pos..*pos + 4].copy_from_slice(&value.to_le_bytes());
-                *pos += 4;
-            }
-
-            let mut pos = 0usize;
-            put32(bytes, &mut pos, 0x0008_0000);
-            let shifted_entry = ((entry_addr & 0xffff_ffff) << 26)
-                | ((entry_addr >> 32) << 16);
-            bytes[pos..pos + 8].copy_from_slice(&shifted_entry.to_le_bytes());
-            pos += 8;
-            // Exact 23J220 ordinary direct-launch dword 3 (E241/E242/E244).
-            // The older m1n1 bring-up stream used 0x40 here, but the target
-            // producer derives this from ComputeProgramVariant +0xa24 and the
-            // default distribution mode, yielding bit 30 set and no low bits.
-            put32(bytes, &mut pos, 0x4000_0000);
-            for _ in 0..6 {
-                put32(bytes, &mut pos, 1);
-            }
-            put32(bytes, &mut pos, 0x6000_0160);
-            put32(bytes, &mut pos, 0x4000_0000);
-            if pos != CDM_LEN {
-                return Err(EIO);
-            }
+            // E337 bisection control: preserve the complete E297 outer state
+            // but execute only the exact four-byte stock-empty Stream Terminate
+            // command that completed through the E283 baseline.
+            bytes[..CDM_LEN].fill(0);
+            bytes[..4].copy_from_slice(&0x4000_0000u32.to_le_bytes());
 
             core::sync::atomic::fence(Ordering::SeqCst);
             dev_info!(
                 self.dev.as_ref(),
-                "T8122 G15 E297 pool5-entry exact-profile CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
+                "T8122 G15 E337 E297-baseline terminate control CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
                 base,
                 entry_addr,
                 body_addr,
@@ -358,10 +337,7 @@ impl super::QueueInner::ver {
         let cdm_ctrl_stream_end = g15_cdm_root
             .gpu_va()
             .get()
-            // Exact 23J220 endComputePass() publishes raw +0x60 from the
-            // pre-increment write pointer: the Stream Terminate token itself,
-            // not the allocator's one-past pointer. E248's 0x30 was off by 4.
-            .checked_add(0x2c)
+            .checked_add(4)
             .ok_or(EOVERFLOW)?;
         #[ver(G != G15)]
         let cdm_ctrl_stream_end = cmdbuf.cdm_ctrl_stream_end;
