@@ -479,7 +479,10 @@ impl File {
                             &vm,
                             mmu::G15_GART_RANGE5_CODE,
                             buffer::PAGE_SIZE,
-                            mmu::PROT_G15_RANGE5_CODE,
+                            // E343 discriminator: keep the completing low
+                            // range-5 VA arena but apply the exact pool-0x16
+                            // uncached PTE class to this allocator.
+                            mmu::PROT_G15_RANGE5_UNCACHED,
                             64 * 1024,
                             true,
                             fmt!("File {} VM {} G15 Range 5 Code", file_id, id),
