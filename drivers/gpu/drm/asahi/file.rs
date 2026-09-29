@@ -479,7 +479,9 @@ impl File {
                             &vm,
                             mmu::G15_GART_RANGE5_CODE,
                             buffer::PAGE_SIZE,
-                            mmu::PROT_G15_RANGE5_CODE,
+                            // E345: keep low VA and GPU RW access while
+                            // changing only to the uncached memory family.
+                            mmu::PROT_GPU_SHARED_RW,
                             64 * 1024,
                             true,
                             fmt!("File {} VM {} G15 Range 5 Code", file_id, id),
