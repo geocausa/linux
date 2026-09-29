@@ -479,9 +479,10 @@ impl File {
                             &vm,
                             mmu::G15_GART_RANGE5_CODE,
                             buffer::PAGE_SIZE,
-                            // E345: keep low VA and GPU RW access while
-                            // changing only to the uncached memory family.
-                            mmu::PROT_GPU_SHARED_RW,
+                            // E347: hold low VA and uncached memory fixed,
+                            // then clear only the GPU RW/UXN permission bit by
+                            // selecting the existing GPU-shared RO class.
+                            mmu::PROT_GPU_SHARED_RO,
                             64 * 1024,
                             true,
                             fmt!("File {} VM {} G15 Range 5 Code", file_id, id),
