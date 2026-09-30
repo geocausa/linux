@@ -184,40 +184,10 @@ impl super::QueueInner::ver {
             const BODY_OFF: usize = 0x200;
             const BLOB_LEN: usize = 0x400;
 
-            // macOS 14.8.3 / 23J220 G15 uses the older two-LDIMM pointer
-            // grammar here, not the newer generator form used by E283. E284
-            // recovered the exact bit-preserving pointer fixup performed by
-            // loadBufferPointer(); keep it isolated so runtime GPU VAs remain
-            // dynamic while the instruction grammar stays byte-exact.
-            fn exact_pointer(addr: u64) -> [u8; 16] {
-                const TEMPLATE: [u8; 16] = [
-                    0x1c, 0x80, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00,
-                    0x1c, 0x80, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
-                ];
-                const INDEX: [usize; 16] = [
-                    0, 0, 0, 3, 8, 8, 9, 10, 4, 4, 4, 7, 12, 12, 13, 14,
-                ];
-                const RSHIFT: [u8; 16] = [
-                    0, 0, 0, 0, 1, 4, 0, 0, 0, 0, 0, 0, 1, 4, 0, 0,
-                ];
-                const PRESERVE: [u8; 16] = [
-                    0xff, 0x80, 0xff, 0x01, 0xe1, 0xf3, 0x00, 0xf0,
-                    0xff, 0x80, 0xff, 0x01, 0xe1, 0xf3, 0x00, 0xf0,
-                ];
-
-                let mut table = [0u8; 16];
-                table[..8].copy_from_slice(&addr.to_le_bytes());
-                table[8..].copy_from_slice(&(addr >> 5).to_le_bytes());
-
-                let mut out = TEMPLATE;
-                let mut i = 0;
-                while i < out.len() {
-                    let shifted = table[INDEX[i]] >> RSHIFT[i];
-                    out[i] = shifted ^ ((shifted ^ TEMPLATE[i]) & PRESERVE[i]);
-                    i += 1;
-                }
-                out
-            }
+            // E357 deliberately replaces only the executed entry program with
+            // the independently known-working M3 G15 entry-state sequence. The
+            // exact E325 allocations remain unchanged for a clean activation
+            // discriminator.
 
             // E351 closes CodeHeap body and profile-helper mapping through
             // production UAT-PPL as compact 0x108, distinct from data-like
@@ -256,54 +226,14 @@ impl super::QueueInner::ver {
             const STOP_BODY: [u8; 4] = [0x0e, 0x00, 0x00, 0x00];
             body_bytes[BODY_OFF..BODY_OFF + STOP_BODY.len()].copy_from_slice(&STOP_BODY);
 
-            // Exact inactive-profile BL_0 emitted after the final load round and
-            // before finish() appends STOP. The target is helper entry 0.
-            fn profile_bl(helper_addr: u64) -> [u8; 10] {
-                let value = ((helper_addr & 0xffff_ffff_ffff) << 1) | 1;
-                let lo = value as u32;
-                let hi = (value >> 32) as u32;
-                let words = [
-                    (((hi >> 6) & 0x800) | 0x8f) as u16,
-                    ((((lo & 0x01ff_fffc) << 7) | ((lo & 1) << 8) | 0x54)
-                        & 0xffff) as u16,
-                    ((value >> 9) & 0xffff) as u16,
-                    ((value >> 25) & 0xffff) as u16,
-                    ((hi >> 9) & 0xff) as u16,
-                ];
-                let mut out = [0u8; 10];
-                let mut i = 0;
-                while i < words.len() {
-                    let bytes = words[i].to_le_bytes();
-                    out[i * 2] = bytes[0];
-                    out[i * 2 + 1] = bytes[1];
-                    i += 1;
-                }
-                out
-            }
-
-            // Exact 23J220 direct state-loader entry. E289 adds the production
-            // inactive-profile BL_0 that E285/E286 omitted.
-            const ENTRY_LEN: usize = 126;
+            // E357 diagnostic entry: full G15 entry-state program shared by
+            // Alyssa's explicitly successful a1006e52 M3 Compute path and
+            // pac85's independent G15 demo. This removes the exact-target
+            // LoadDev/profile operations from execution while preserving all
+            // E325 allocation classes and the STOP-only body.
+            const ENTRY_LEN: usize = 84;
             let mut pos = 0usize;
 
-            for ptr in [exact_pointer(g15_args_addr), exact_pointer(g15_statics_addr)] {
-                entry_bytes[pos..pos + ptr.len()].copy_from_slice(&ptr);
-                pos += ptr.len();
-            }
-
-            const LOADS: [u8; 28] = [
-                // BufferBindings/UserBuffer -> r0/r1.
-                0x67, 0x10, 0x54, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x59, 0x00, 0x00, 0x50, 0x26, 0x00,
-                // Statics -> r2/r3.
-                0x67, 0x10, 0x54, 0x04, 0x02, 0x00, 0x00, 0x00,
-                0x59, 0x00, 0x00, 0x40, 0x26, 0x00,
-            ];
-            entry_bytes[pos..pos + LOADS.len()].copy_from_slice(&LOADS);
-            pos += LOADS.len();
-
-            // appendLdshdr() reserves exactly 0x1c bytes. finish() later patches
-            // them with this exact LoadShader encoding; only the body VA varies.
             entry_bytes[pos..pos + 8]
                 .copy_from_slice(&[0x77, 0x00, 0x2a, 0x41, 0x00, 0x00, 0x00, 0x00]);
             pos += 8;
@@ -312,33 +242,21 @@ impl super::QueueInner::ver {
             let shifted_body = (body_addr >> 7).to_le_bytes();
             entry_bytes[pos..pos + 5].copy_from_slice(&shifted_body[..5]);
             pos += 5;
-            const LOAD_SHADER_TAIL: [u8; 12] = [
-                0x04, 0x00, 0xf7, 0x00, 0x2a, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+
+            const WORKING_ENTRY_EPILOG: [u8; 68] = [
+                0x04, 0x00, 0xf7, 0x00, 0x2a, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x1c, 0x80, 0x02, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x14, 0x81, 0x11, 0x06,
+                0x00, 0x00, 0x00, 0x00, 0x0c, 0x80, 0x02, 0x00,
+                0x04, 0x00, 0x00, 0x00, 0x9f, 0x11, 0x54, 0x00,
+                0x02, 0x00, 0x08, 0xa8, 0x10, 0x05, 0x1c, 0x80,
+                0x02, 0x00, 0x04, 0x00, 0x00, 0x00, 0x0f, 0x12,
+                0x54, 0x00, 0x4c, 0xff, 0x0e, 0x00, 0x00, 0x00,
+                0x0e, 0x00, 0x00, 0x00,
             ];
-            entry_bytes[pos..pos + LOAD_SHADER_TAIL.len()].copy_from_slice(&LOAD_SHADER_TAIL);
-            pos += LOAD_SHADER_TAIL.len();
-
-            // Both inflight loads carry dependency class 1, so finishRound()
-            // reduces them to aggregate mask 2: NOP(2), then three NOP(0).
-            // COPYs hand the exact r0..r3 load results to u0..u3.
-            const ROUND_AND_COPIES: [u8; 24] = [
-                0x06, 0x08, 0x06, 0x00, 0x06, 0x00, 0x06, 0x00,
-                0x0b, 0x00, 0x09, 0x24,
-                0x1b, 0x02, 0x09, 0x24,
-                0x2b, 0x04, 0x09, 0x24,
-                0x3b, 0x06, 0x09, 0x24,
-            ];
-            entry_bytes[pos..pos + ROUND_AND_COPIES.len()].copy_from_slice(&ROUND_AND_COPIES);
-            pos += ROUND_AND_COPIES.len();
-
-            let profile = profile_bl(profile_helper_addr);
-            entry_bytes[pos..pos + profile.len()].copy_from_slice(&profile);
-            pos += profile.len();
-
-            const STOP: [u8; 4] = [0x0e, 0x00, 0x00, 0x00];
-            entry_bytes[pos..pos + STOP.len()].copy_from_slice(&STOP);
-            pos += STOP.len();
+            entry_bytes[pos..pos + WORKING_ENTRY_EPILOG.len()]
+                .copy_from_slice(&WORKING_ENTRY_EPILOG);
+            pos += WORKING_ENTRY_EPILOG.len();
 
             if pos != ENTRY_LEN {
                 return Err(EIO);
@@ -376,7 +294,7 @@ impl super::QueueInner::ver {
             core::sync::atomic::fence(Ordering::SeqCst);
             dev_info!(
                 self.dev.as_ref(),
-                "T8122 G15 E325 exact-CodeHeap body+profile class CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
+                "T8122 G15 E357 working-entry corrected-PPL CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
                 g15_cdm_addr,
                 entry_addr,
                 body_addr,
