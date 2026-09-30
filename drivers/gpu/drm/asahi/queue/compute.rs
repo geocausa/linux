@@ -93,13 +93,12 @@ impl super::QueueInner::ver {
             .lock()
             .array_empty_tagged(preempt_size, b"CPMT")?;
 
-        // E319 exact 23J220 application-output parent: E318 traced the
-        // Shared Metal buffer through AGXBuffer/IOGPUMetalBuffer to an
-        // ordinary range-5 uncached bank-0 mapping. Change only the writable
-        // result backing class; executable body/profile storage stays code.
+        // E351 exact production-PPL application-output class. The Shared
+        // parent follows default range-5 compact 0x308, which UAT-PPL encodes
+        // as 0x00c0_0000_0000_0088 protection bits.
         #[ver(G == G15)]
         let mut g15_result = self
-            ._g15_range5_uncached
+            ._g15_range5_ppl308
             .as_ref()
             .ok_or(EINVAL)?
             .lock()
@@ -110,14 +109,12 @@ impl super::QueueInner::ver {
         }
         #[ver(G == G15)]
         let g15_result_addr = g15_result.gpu_va().get();
-        // E310 exact 23J220 UserBuffer argument table: a separate 35-entry,
-        // 8-byte-aligned command-buffer copy in pool 3. E309 proved that
-        // pool 3 is range-5 uncached (0x0080_0000_0000_0008 protection bits).
-        // E318 separately closes the application result to the same range-5
-        // uncached PTE class; keep the argument table a distinct allocation.
+        // E351 exact production-PPL UserBuffer argument table: pool 3
+        // preserves the default range-5 low control and maps as compact 0x308.
+        // Keep the 35-entry table a distinct allocation.
         #[ver(G == G15)]
         let mut g15_argument_table = self
-            ._g15_range5_uncached
+            ._g15_range5_ppl308
             .as_ref()
             .ok_or(EINVAL)?
             .lock()
@@ -135,14 +132,11 @@ impl super::QueueInner::ver {
             entries[..8].copy_from_slice(&g15_result_addr.to_le_bytes());
         }
 
-        // E299 mirrors the exact 23J220 per-variant Statics allocation. The
-        // direct emitter takes the exact 8-byte zero statics vector, allocates
-        // it from DataBuffer pool 0x0a with 32-byte alignment, and the ESL
-        // loadAbsolute record targets that allocation base. Pool 0x0a shares
-        // the exact range-5 uncached PTE class already proven for pool 5.
+        // E351 reclassifies exact pool-0x0a Statics through production
+        // UAT-PPL: selector 1 preserves low control 3, yielding compact 0x308.
         #[ver(G == G15)]
         let mut g15_statics = self
-            ._g15_range5_uncached
+            ._g15_range5_ppl308
             .as_ref()
             .ok_or(EINVAL)?
             .lock()
@@ -156,15 +150,11 @@ impl super::QueueInner::ver {
         #[ver(G == G15)]
         g15_statics.as_mut_slice().fill(0);
 
-        // E297 mirrors the exact 23J220 enqueue-time ownership transition:
-        // the finalized direct ESL is copied into command-buffer DataBuffer
-        // pool 5, whose exact G15 UAT class is range-5 uncached
-        // (0x0080_0000_0000_0008 protection bits). Keep the actual shader
-        // body and persistent profile helper in the independently proven code
-        // heap; this experiment changes only the entry-copy backing class.
+        // E351 reclassifies the finalized pool-5 ESL through production
+        // UAT-PPL: selector 1 yields compact 0x308.
         #[ver(G == G15)]
         let mut g15_entry = self
-            ._g15_range5_uncached
+            ._g15_range5_ppl308
             .as_ref()
             .ok_or(EINVAL)?
             .lock()
@@ -176,12 +166,11 @@ impl super::QueueInner::ver {
             return Err(EIO);
         }
 
-        // E298 mirrors exact DataBuffer pool 0x16 ownership for the direct CDM
-        // stream. The preserved 23J220 setupDeferred/resource/PTE chain gives
-        // pool 0x16 the same range-5 uncached bank-0 protection class as pool 5.
+        // E350/E351 exact pool-0x16 production UAT-PPL class: selector 0
+        // yields compact 0x108 / protection 0x0080_0000_0000_0088.
         #[ver(G == G15)]
         let mut g15_cdm_root = self
-            ._g15_range5_uncached
+            ._g15_range5_ppl108
             .as_ref()
             .ok_or(EINVAL)?
             .lock()
@@ -230,20 +219,17 @@ impl super::QueueInner::ver {
                 out
             }
 
-            // E323 proves the exact 23J220 direct-Compute __TEXT body is
-            // allocated from AGXMetal.CodeHeap, whose bank-0 protection is the
-            // range-5 uncached class. E289 independently proves the persistent
-            // inactive-profile helper uses that same Device Heap<true> at
-            // Device +0x158. E325 therefore places both allocations in the
-            // exact heap mapping class while changing only the helper from E324.
+            // E351 closes CodeHeap body and profile-helper mapping through
+            // production UAT-PPL as compact 0x108, distinct from data-like
+            // compact 0x308 resources.
             let mut blob = self
-                ._g15_range5_uncached
+                ._g15_range5_ppl108
                 .as_ref()
                 .ok_or(EINVAL)?
                 .lock()
                 .array_empty_tagged::<u8>(BLOB_LEN, b"CDM1")?;
             let mut profile_helper = self
-                ._g15_range5_uncached
+                ._g15_range5_ppl108
                 .as_ref()
                 .ok_or(EINVAL)?
                 .lock()

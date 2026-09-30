@@ -79,8 +79,9 @@ struct Vm {
     // G15 eGartRange 5 lives above the 39-bit userspace ABI but inside the
     // per-client bank-0 TTBR0. Only instantiate this on a sufficiently wide
     // hardware IAS; current G13/G14 VMs therefore keep no extra allocator.
-    g15_ualloc_range5_code: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
+    g15_ualloc_range5_ppl108: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
     g15_ualloc_range5_uncached: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
+    g15_ualloc_range5_ppl308: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
     g15_ualloc_range5_cached: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
     // Exact J615 `AGXShared +0x1b8` analogue. Keep only the four weak pool
     // identities at client-VM lifetime; E140 intentionally exposes no Queue
@@ -467,8 +468,9 @@ impl File {
         )?;
 
         let (
-            g15_ualloc_range5_code,
+            g15_ualloc_range5_ppl108,
             g15_ualloc_range5_uncached,
+            g15_ualloc_range5_ppl308,
             g15_ualloc_range5_cached,
             g15_uma_shared_pools,
         ) = if gpu.get_cfg().uat_ias >= 42 {
@@ -477,12 +479,12 @@ impl File {
                         new_mutex!(alloc::DefaultAllocator::new(
                             device,
                             &vm,
-                            mmu::G15_GART_RANGE5_CODE,
+                            mmu::G15_GART_RANGE5_PPL108,
                             buffer::PAGE_SIZE,
-                            mmu::PROT_G15_RANGE5_CODE,
+                            mmu::PROT_G15_RANGE5_PPL108,
                             64 * 1024,
                             true,
-                            fmt!("File {} VM {} G15 Range 5 Code", file_id, id),
+                            fmt!("File {} VM {} G15 Range 5 PPL108", file_id, id),
                             false,
                         )?),
                         GFP_KERNEL,
@@ -497,6 +499,20 @@ impl File {
                             64 * 1024,
                             true,
                             fmt!("File {} VM {} G15 Range 5 Uncached", file_id, id),
+                            false,
+                        )?),
+                        GFP_KERNEL,
+                    )?),
+                    Some(Arc::pin_init(
+                        new_mutex!(alloc::DefaultAllocator::new(
+                            device,
+                            &vm,
+                            mmu::G15_GART_RANGE5_PPL308,
+                            buffer::PAGE_SIZE,
+                            mmu::PROT_G15_RANGE5_PPL308,
+                            64 * 1024,
+                            true,
+                            fmt!("File {} VM {} G15 Range 5 PPL308", file_id, id),
                             false,
                         )?),
                         GFP_KERNEL,
@@ -524,7 +540,7 @@ impl File {
                     )?),
                 )
             } else {
-                (None, None, None, None)
+                (None, None, None, None, None)
             };
 
         mod_dev_dbg!(
@@ -543,8 +559,9 @@ impl File {
             Vm {
                 ualloc,
                 ualloc_priv,
-                g15_ualloc_range5_code,
+                g15_ualloc_range5_ppl108,
                 g15_ualloc_range5_uncached,
+                g15_ualloc_range5_ppl308,
                 g15_ualloc_range5_cached,
                 _g15_uma_shared_pools: g15_uma_shared_pools,
                 vm,
@@ -1046,8 +1063,9 @@ impl File {
         let vm = file_vm.vm.clone();
         let ualloc = file_vm.ualloc.clone();
         let ualloc_priv = file_vm.ualloc_priv.clone();
-        let g15_ualloc_range5_code = file_vm.g15_ualloc_range5_code.clone();
+        let g15_ualloc_range5_ppl108 = file_vm.g15_ualloc_range5_ppl108.clone();
         let g15_ualloc_range5_uncached = file_vm.g15_ualloc_range5_uncached.clone();
+        let g15_ualloc_range5_ppl308 = file_vm.g15_ualloc_range5_ppl308.clone();
         let g15_ualloc_range5_cached = file_vm.g15_ualloc_range5_cached.clone();
         let g15_uma_shared_pools = file_vm._g15_uma_shared_pools.clone();
         // Drop the vms lock eagerly. The Arc above is the exact client-VM
@@ -1059,8 +1077,9 @@ impl File {
             vm,
             ualloc,
             ualloc_priv,
-            g15_ualloc_range5_code,
+            g15_ualloc_range5_ppl108,
             g15_ualloc_range5_uncached,
+            g15_ualloc_range5_ppl308,
             g15_ualloc_range5_cached,
             g15_uma_shared_pools,
             file.inner().owner_pid,

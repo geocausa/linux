@@ -822,9 +822,11 @@ pub(crate) struct QueueInner {
     #[ver(G == G15)]
     _g15_uma_shared_pools: Option<Arc<Mutex<buffer::G15ClientUmaPoolContainerState>>>,
     #[ver(G == G15)]
-    _g15_range5_code: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
+    _g15_range5_ppl108: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
     #[ver(G == G15)]
     _g15_range5_uncached: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
+    #[ver(G == G15)]
+    _g15_range5_ppl308: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
     #[ver(G == G15)]
     _g15_range5_cached: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
     #[ver(G == G15)]
@@ -2259,8 +2261,9 @@ impl Queue::ver {
         alloc: &mut gpu::KernelAllocators,
         ualloc: Arc<Mutex<alloc::DefaultAllocator>>,
         ualloc_priv: Arc<Mutex<alloc::DefaultAllocator>>,
-        _g15_ualloc_range5_code: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
+        _g15_ualloc_range5_ppl108: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
         _g15_ualloc_range5_uncached: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
+        _g15_ualloc_range5_ppl308: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
         _g15_ualloc_range5_cached: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
         _g15_uma_shared_pools: Option<Arc<Mutex<buffer::G15ClientUmaPoolContainerState>>>,
         _owner_pid: u32,
@@ -2311,9 +2314,11 @@ impl Queue::ver {
             buffer::Buffer::ver::new(&*(*dev).gpu, alloc, ualloc.clone(), ualloc_priv, mgr)?;
 
         #[ver(G == G15)]
-        let g15_lazy_range5_code = _g15_ualloc_range5_code.clone();
+        let g15_lazy_range5_ppl108 = _g15_ualloc_range5_ppl108.clone();
         #[ver(G == G15)]
         let g15_lazy_range5_uncached = _g15_ualloc_range5_uncached.clone();
+        #[ver(G == G15)]
+        let g15_lazy_range5_ppl308 = _g15_ualloc_range5_ppl308.clone();
         #[ver(G == G15)]
         let g15_lazy_range5_cached = _g15_ualloc_range5_cached.clone();
         #[ver(G == G15)]
@@ -2417,9 +2422,11 @@ impl Queue::ver {
                 #[ver(G == G15)]
                 _g15_uma_shared_pools,
                 #[ver(G == G15)]
-                _g15_range5_code: g15_lazy_range5_code,
+                _g15_range5_ppl108: g15_lazy_range5_ppl108,
                 #[ver(G == G15)]
                 _g15_range5_uncached: g15_lazy_range5_uncached,
+                #[ver(G == G15)]
+                _g15_range5_ppl308: g15_lazy_range5_ppl308,
                 #[ver(G == G15)]
                 _g15_range5_cached: g15_lazy_range5_cached,
                 #[ver(G == G15)]

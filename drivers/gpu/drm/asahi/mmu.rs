@@ -192,22 +192,27 @@ pub(crate) const G15_GART_RANGE5: Range<u64> = 0x100_0000_0000..0x300_0000_0000;
 const _: [(); 1] = [(); (G15_GART_RANGE5.start >= (1u64 << UAT_USER_IAS)) as usize];
 const _: [(); 1] = [(); (G15_GART_RANGE5.end <= (1u64 << G15_HW_UAT_IAS)) as usize];
 
-/// Linux-internal non-overlapping sub-arenas within Apple eGartRange 5. Apple
-/// uses one range with per-mapping PTE attributes; DefaultAllocator fixes one
-/// protection class per heap, so keep the exact G15 0x308 and 0x303 classes in
-/// separate halves. This split is an implementation detail, not an Apple ABI.
-/// Exact M3/G15 code/entry-shader arena used by the dynamically working
-/// 14.8.3 m1n1 path: range-5 VA, cached, GPU-only, UXN=1, PXN=0.
-pub(crate) const G15_GART_RANGE5_CODE: Range<u64> =
+/// Linux-internal non-overlapping sub-arenas within Apple eGartRange 5.
+/// Apple uses one VA range with per-mapping PTE attributes, while
+/// DefaultAllocator fixes one protection class per heap. E350/E351 prove that
+/// production G15 UAT-PPL distinguishes compact 0x108 and 0x308, so execution
+/// resources need two uncached allocator classes rather than the old collapsed
+/// AP=0 class. Keep the old uncached arena at the same lower start for resources
+/// not yet reclassified; E352 only shortens its unused upper extent.
+pub(crate) const G15_GART_RANGE5_PPL108: Range<u64> =
     G15_GART_RANGE5.start..0x101_0000_0000;
 pub(crate) const G15_GART_RANGE5_UNCACHED: Range<u64> =
-    G15_GART_RANGE5_CODE.end..0x200_0000_0000;
+    G15_GART_RANGE5_PPL108.end..0x180_0000_0000;
+pub(crate) const G15_GART_RANGE5_PPL308: Range<u64> =
+    G15_GART_RANGE5_UNCACHED.end..0x200_0000_0000;
 pub(crate) const G15_GART_RANGE5_CACHED: Range<u64> =
-    G15_GART_RANGE5_UNCACHED.end..G15_GART_RANGE5.end;
-const _: [(); 1] = [(); (G15_GART_RANGE5_CODE.end == G15_GART_RANGE5_UNCACHED.start) as usize];
-const _: [(); 1] = [(); (G15_GART_RANGE5_UNCACHED.end == G15_GART_RANGE5_CACHED.start) as usize];
-const _: [(); 5] = [(); g15_apple_gart_range(G15_GART_RANGE5_CODE.start) as usize];
+    G15_GART_RANGE5_PPL308.end..G15_GART_RANGE5.end;
+const _: [(); 1] = [(); (G15_GART_RANGE5_PPL108.end == G15_GART_RANGE5_UNCACHED.start) as usize];
+const _: [(); 1] = [(); (G15_GART_RANGE5_UNCACHED.end == G15_GART_RANGE5_PPL308.start) as usize];
+const _: [(); 1] = [(); (G15_GART_RANGE5_PPL308.end == G15_GART_RANGE5_CACHED.start) as usize];
+const _: [(); 5] = [(); g15_apple_gart_range(G15_GART_RANGE5_PPL108.start) as usize];
 const _: [(); 5] = [(); g15_apple_gart_range(G15_GART_RANGE5_UNCACHED.start) as usize];
+const _: [(); 5] = [(); g15_apple_gart_range(G15_GART_RANGE5_PPL308.start) as usize];
 const _: [(); 5] = [(); g15_apple_gart_range(G15_GART_RANGE5_CACHED.start) as usize];
 
 /// G15's UnifiedAddressTranslator has two bank-local page-table state blocks.

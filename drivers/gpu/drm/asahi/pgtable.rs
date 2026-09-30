@@ -158,6 +158,14 @@ pub(crate) mod prot {
     /// PXN=UXN=0 for this resource class.
     pub(crate) const PROT_G15_RANGE5_UNCACHED: Prot =
         PROT_FW_GPU_NA.memattr(MEMATTR_UNCACHED);
+    /// Exact production G15 UAT-PPL compact 0x108 protection. E350 recovers
+    /// the private PPL option table and E348 independently proves this leaf at
+    /// the live CDM fetch boundary: AP=2, uncached, GPU-access=1, PXN=UXN=0.
+    pub(crate) const PROT_G15_RANGE5_PPL108: Prot = PROT_GPU_SHARED_RO;
+    /// Exact production G15 UAT-PPL compact 0x308 protection. The PPL table
+    /// differs from 0x108 by high bit 54 (UXN) while retaining AP=2 and the
+    /// uncached memory attribute.
+    pub(crate) const PROT_G15_RANGE5_PPL308: Prot = PROT_GPU_SHARED_RW;
     /// Exact non-legacy G15 range-5 cached PTE shape used by the PM record
     /// backing. SecureGart compact 0x300 emits AP=0, cached memory,
     /// GPU-access=1, PXN=UXN=0. This intentionally does not reuse the older
@@ -208,6 +216,12 @@ pub(crate) mod prot {
 // non-global bits.  PM scene/TPC compact 0x308 -> high GPU-access + uncached.
 const _: [(); 1] = [(); ((prot::PROT_G15_RANGE5_UNCACHED.as_pte() & UAT_PROT_BITS)
     == 0x0080_0000_0000_0008) as usize];
+// Production UAT-PPL compact 0x108: AP=2, uncached, GPU-access, executable.
+const _: [(); 1] = [(); ((prot::PROT_G15_RANGE5_PPL108.as_pte() & UAT_PROT_BITS)
+    == 0x0080_0000_0000_0088) as usize];
+// Production UAT-PPL compact 0x308: AP=2, uncached, GPU-access, UXN=1.
+const _: [(); 1] = [(); ((prot::PROT_G15_RANGE5_PPL308.as_pte() & UAT_PROT_BITS)
+    == 0x00c0_0000_0000_0088) as usize];
 // PM-record compact 0x300 -> G15 GPU-access high bit + cached memory,
 // with no PXN/UXN bits.
 const _: [(); 1] = [(); ((prot::PROT_G15_RANGE5_CACHED.as_pte() & UAT_PROT_BITS)
