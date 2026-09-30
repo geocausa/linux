@@ -963,7 +963,7 @@ impl workqueue::OpaqueCommandObject for G15StockEmptyCommandRef {}
 struct G15StockEmptyWorkQueuePayload {
     channel: Arc<Mutex<Option<G15UnpublishedComputeChannel::ver>>>,
     finalized: Option<G15ArmedUnpublishedRunComputeFieldStage::ver>,
-    command: Option<GpuObject<fw::compute::RunCompute::ver>>,
+    command: Option<Arc<GpuObject<fw::compute::RunCompute::ver>>>,
 }
 
 #[versions(AGX)]
@@ -1055,7 +1055,10 @@ impl Drop for G15StockEmptyWorkQueuePayload::ver {
 
         if let Some(finalized) = self.finalized.take() {
             match channel.complete_stock_empty(finalized) {
-                Ok(_) => channel.scrub_completed_stock_empty_slots(),
+                Ok(_) => {
+                    channel.scrub_completed_stock_empty_slots();
+                    channel.inflight_command = None;
+                }
                 Err(err) => pr_err!(
                     "G15 WorkQueue stock-empty completion cleanup failed: {:?}\n",
                     err
@@ -1166,8 +1169,24 @@ impl G15QueueJobStockEmptyAssets::ver {
         }
 
         let gpu_va = self.command.as_ref().ok_or(EINVAL)?.gpu_va();
+        let command = Arc::new(self.command.take().ok_or(EINVAL)?, GFP_KERNEL)?;
         let finalized = self.finalized.take().ok_or(EINVAL)?;
-        let command = self.command.take().ok_or(EINVAL)?;
+
+        {
+            let mut slot = self.channel.lock();
+            let Some(channel) = (&mut *slot).as_mut() else {
+                core::mem::forget(finalized);
+                core::mem::forget(command);
+                return Err(ENODEV);
+            };
+            if channel.inflight_command.is_some() {
+                core::mem::forget(finalized);
+                core::mem::forget(command);
+                return Err(EBUSY);
+            }
+            channel.inflight_command = Some(command.clone());
+        }
+
         Ok((
             G15StockEmptyCommandRef { gpu_va },
             G15StockEmptyWorkQueuePayload::ver {
@@ -1524,6 +1543,10 @@ struct G15UnpublishedComputeChannel {
     guards: G15StockEmptyAssetGuards::ver,
     _fw_channel_resources: buffer::G15FirmwareChannelResourceLeases,
     _scheduler_publication: Arc<G15SchedulerPublication>,
+    // E362 keeps a second host reference to the already-submitted command so
+    // Queue teardown can inspect firmware-appended RegisterArray state without
+    // changing the command or relying on its completion callback.
+    inflight_command: Option<Arc<GpuObject<fw::compute::RunCompute::ver>>>,
     commands_submitted: bool,
     pool: buffer::G15ClientUmaComputeChannelRef,
 }
@@ -1533,6 +1556,47 @@ struct G15UnpublishedComputeChannel {
 impl G15UnpublishedComputeChannel::ver {
     fn pool_id(&self) -> u64 {
         self.pool.pool_id()
+    }
+
+    #[ver(G == G15)]
+    fn log_inflight_register_snapshot(&self, dev: &kernel::device::Device) -> Result {
+        const HOST_REGISTER_COUNT: usize = 20;
+        const SNAPSHOT_END: usize = 40;
+        let command = self.inflight_command.as_ref().ok_or(EINVAL)?;
+
+        command.with(|raw, _inner| {
+            let regs = &raw.registers;
+            // Firmware owns the appended tail while this command is in flight.
+            // Volatile reads make E362 observation-only and avoid treating the
+            // DMA-updated words as ordinary CPU-stable state.
+            let count = unsafe { core::ptr::read_volatile(&regs.count) };
+            let length = unsafe { core::ptr::read_volatile(&regs.length) };
+            let addr: u64 = regs.addr.into();
+            dev_info!(
+                dev,
+                "T8122 G15 E362 RegisterArray inflight count={} length={:#x} addr={:#x}\n",
+                count,
+                length,
+                addr
+            );
+
+            for index in HOST_REGISTER_COUNT..SNAPSHOT_END {
+                let reg = &regs.registers[index];
+                let number = unsafe { core::ptr::read_volatile(&reg.number) };
+                let value = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(reg.value.0)) };
+                if number != 0 || value != 0 || index < count as usize {
+                    dev_info!(
+                        dev,
+                        "T8122 G15 E362 RegisterArray[{}] number={:#x} value={:#x}\n",
+                        index,
+                        number,
+                        value
+                    );
+                }
+            }
+        });
+
+        Ok(())
     }
 
     /// E172 gives the dormant E134 transaction its exact persistent lifetime
@@ -1776,6 +1840,7 @@ impl QueueInner::ver {
                 guards,
                 _fw_channel_resources: fw_channel_resources,
                 _scheduler_publication: self._g15_scheduler_publication.clone(),
+                inflight_command: None,
                 commands_submitted: false,
             })
         }
@@ -2523,6 +2588,15 @@ impl Queue::ver {
         Ok(ret)
     }
 
+    #[ver(G == G15)]
+    fn g15_log_inflight_register_snapshot(&self) -> Result {
+        let subqueue = self.q_comp.as_ref().ok_or(EINVAL)?;
+        let channel_slot = subqueue._g15_compute_channel.as_ref().ok_or(EINVAL)?;
+        let slot = channel_slot.lock();
+        let channel = (&*slot).as_ref().ok_or(EINVAL)?;
+        channel.log_inflight_register_snapshot(self.dev.as_ref())
+    }
+
     /// E190 exact command-queue teardown primitive. This remains zero-caller:
     /// a later lifecycle state must prove the selected scheduler resource was
     /// firmware-published before Queue Drop is allowed to invoke it.
@@ -3045,6 +3119,13 @@ impl Drop for Queue::ver {
                 G15SchedulerPublicationState::Unpublished
                 | G15SchedulerPublicationState::Released => {}
                 G15SchedulerPublicationState::Published => {
+                    let snapshot = self.g15_log_inflight_register_snapshot();
+                    dev_info!(
+                        self.dev.as_ref(),
+                        "T8122 G15 E362 pre-release RegisterArray snapshot={:?}\n",
+                        snapshot
+                    );
+
                     let gpu = (*self.dev)
                         .gpu
                         .clone()
