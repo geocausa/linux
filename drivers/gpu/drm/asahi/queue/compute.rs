@@ -220,17 +220,54 @@ impl super::QueueInner::ver {
             let body_bytes = blob.as_mut_slice();
             let entry_bytes = g15_entry.as_mut_slice();
 
-            // E321 carries E291's independently validated shader STOP
-            // discriminator onto the fully corrected E319 mapping baseline.
-            // This is the only GPU-facing delta from E319.
-            const STOP_BODY: [u8; 4] = [0x0e, 0x00, 0x00, 0x00];
-            body_bytes[BODY_OFF..BODY_OFF + STOP_BODY.len()].copy_from_slice(&STOP_BODY);
+            // E359 restores the body paired with the independently working
+            // M3 G15 entry used by E357.  This is the only executed-program
+            // delta from E357: materialize the PPL308 result GPUVA in r0/r1,
+            // materialize 1337.0f in r2, device-store r2 through r0:r1, STOP.
+            fn swizzle_imm32(value: u32) -> u64 {
+                let imm_a = (value & 0x7f) as u64;
+                let imm_b = ((value >> 7) & 0x0f) as u64;
+                let imm_c = ((value >> 11) & 0x03) as u64;
+                let imm_d = ((value >> 13) & 0x0fff) as u64;
+                let imm_e = ((value >> 25) & 0x7f) as u64;
 
-            // E357 diagnostic entry: full G15 entry-state program shared by
+                (imm_a << 8)
+                    | (imm_b << 33)
+                    | (imm_c << 42)
+                    | (imm_d << 48)
+                    | (imm_e << 25)
+            }
+
+            fn imm_inst(reg: u8, value: u32) -> [u8; 8] {
+                let base = u64::from_le_bytes([0x0c, 0x80, 0x02, 0, 0, 0, 0, 0]);
+                (base | ((reg as u64) << 4) | swizzle_imm32(value)).to_le_bytes()
+            }
+
+            let mut body_pos = BODY_OFF;
+            for inst in [
+                imm_inst(0, result_addr as u32),
+                imm_inst(2, 1337.0f32.to_bits()),
+                imm_inst(1, (result_addr >> 32) as u32),
+            ] {
+                body_bytes[body_pos..body_pos + inst.len()].copy_from_slice(&inst);
+                body_pos += inst.len();
+            }
+            const WORKING_BODY_TAIL: [u8; 18] = [
+                0xe7, 0x00, 0x54, 0x04, 0x00, 0x00, 0x00, 0x00,
+                0x11, 0x01, 0x00, 0x90, 0x08, 0x00,
+                0x0e, 0x00, 0x00, 0x00,
+            ];
+            body_bytes[body_pos..body_pos + WORKING_BODY_TAIL.len()]
+                .copy_from_slice(&WORKING_BODY_TAIL);
+            body_pos += WORKING_BODY_TAIL.len();
+            if body_pos != BODY_OFF + 42 {
+                return Err(EIO);
+            }
+
+            // E359 keeps E357's full G15 entry-state program shared by
             // Alyssa's explicitly successful a1006e52 M3 Compute path and
-            // pac85's independent G15 demo. This removes the exact-target
-            // LoadDev/profile operations from execution while preserving all
-            // E325 allocation classes and the STOP-only body.
+            // pac85's independent G15 demo.  The paired working body above is
+            // the only executed-program delta in this discriminator.
             const ENTRY_LEN: usize = 84;
             let mut pos = 0usize;
 
@@ -294,7 +331,7 @@ impl super::QueueInner::ver {
             core::sync::atomic::fence(Ordering::SeqCst);
             dev_info!(
                 self.dev.as_ref(),
-                "T8122 G15 E357 working-entry corrected-PPL CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
+                "T8122 G15 E359 working-entry+body corrected-PPL CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
                 g15_cdm_addr,
                 entry_addr,
                 body_addr,
