@@ -230,6 +230,24 @@ pub(crate) struct Resources {
     sgx: Pin<KBox<Devres<IoMem<SGX_SIZE>>>>,
 }
 
+/// E370 read-only J615/G15 hardware gate state.
+///
+/// Exact RTKit 2419 uses HwDataB I/O mapping record 3 (RGXRegs), whose
+/// virt_addr lives at HwDataB +0x6a8. That record maps physical
+/// 0x290000000, the same base as this sgx resource. Therefore the RTKit
+/// register offsets below are directly readable through this host mapping.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct G15HardwareGateSnapshot {
+    pub(crate) status_c020: u64,
+    pub(crate) register_list_c048: u64,
+    pub(crate) control_c050: u64,
+    pub(crate) slot_mask_c058: u64,
+    pub(crate) active_mask_c120: u64,
+    pub(crate) request_c140: u64,
+    pub(crate) ack_c148: u64,
+    pub(crate) active_slot_10398: u32,
+}
+
 impl Resources {
     /// Map the required resources given our platform device.
     pub(crate) fn new(pdev: &platform::Device<Core>) -> Result<Resources> {
@@ -264,6 +282,33 @@ impl Resources {
             sgx.relaxed().read64(OFF)
         } else {
             0
+        }
+    }
+
+    /// Snapshot the exact hardware registers consumed by the retained G15
+    /// scheduler/resource-admission path. This is observation-only.
+    pub(crate) fn g15_hardware_gate_snapshot(&self) -> G15HardwareGateSnapshot {
+        const STATUS: usize = 0xc020;
+        const REGISTER_LIST: usize = 0xc048;
+        const CONTROL: usize = 0xc050;
+        const SLOT_MASK: usize = 0xc058;
+        const ACTIVE_MASK: usize = 0xc120;
+        const REQUEST: usize = 0xc140;
+        const ACK: usize = 0xc148;
+        const ACTIVE_SLOT: usize = 0x10398;
+
+        const _: [(); 1] = [(); (STATUS + 8 <= 0x20000) as usize];
+        const _: [(); 1] = [(); (ACTIVE_SLOT + 4 <= 0x20000) as usize];
+
+        G15HardwareGateSnapshot {
+            status_c020: self.sgx_read64::<STATUS>(),
+            register_list_c048: self.sgx_read64::<REGISTER_LIST>(),
+            control_c050: self.sgx_read64::<CONTROL>(),
+            slot_mask_c058: self.sgx_read64::<SLOT_MASK>(),
+            active_mask_c120: self.sgx_read64::<ACTIVE_MASK>(),
+            request_c140: self.sgx_read64::<REQUEST>(),
+            ack_c148: self.sgx_read64::<ACK>(),
+            active_slot_10398: self.sgx_read32::<ACTIVE_SLOT>(),
         }
     }
 
