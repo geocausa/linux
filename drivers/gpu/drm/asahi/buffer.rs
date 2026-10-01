@@ -1527,6 +1527,10 @@ impl G15ClientUmaComputeChannelRef {
         f(slot.pool.as_mut().ok_or(EINVAL)?)
     }
 
+    pub(crate) fn dispatch_state_snapshot(&self) -> Result<(u32, u32, u32, u32)> {
+        self.with_pool(|pool| pool.dispatch_state_snapshot())
+    }
+
     /// Return the next dependency-free stock-empty command-buffer-state
     /// sequence after validating that this channel still names the live pool.
     ///
@@ -2194,6 +2198,28 @@ impl G15FListResourceOwner {
         Ok(self.page_pool_state.weak_item_pointer(0).into())
     }
 
+    /// E364 observation-only snapshot of the firmware-active shared-Compute
+    /// dispatch state. Exact 23J220 increments only the low byte at +0x5c when
+    /// a shared CL/Compute pool crosses the scheduler dispatch boundary.
+    pub(crate) fn dispatch_state_snapshot(&self) -> Result<(u32, u32, u32, u32)> {
+        if !self.firmware_state_initialized {
+            return Err(EINVAL);
+        }
+
+        let state = &self.page_pool_state.as_slice()[0];
+        let hardware_buffer_id =
+            unsafe { core::ptr::read_volatile(core::ptr::addr_of!(state.hardware_buffer_id.0)) };
+        let lifecycle =
+            unsafe { core::ptr::read_volatile(core::ptr::addr_of!(state.lifecycle_state_30.0)) };
+        let shared_compute =
+            unsafe { core::ptr::read_volatile(core::ptr::addr_of!(state.shared_compute_pool.0)) };
+        let dispatch_seq = unsafe {
+            core::ptr::read_volatile(core::ptr::addr_of!(state.shared_compute_dispatch_seq_5c.0))
+        };
+
+        Ok((hardware_buffer_id, lifecycle, shared_compute, dispatch_seq))
+    }
+
     pub(crate) fn complete_reference(&self, hardware_buffer_id: u32) -> Result<bool> {
         self.plan.complete_reference(hardware_buffer_id)
     }
@@ -2267,6 +2293,10 @@ impl G15SharedComputeUmaPoolOwner {
 
     pub(crate) fn initialized_page_pool_state_fwva(&self) -> Result<u64> {
         self.flist.initialized_page_pool_state_fwva()
+    }
+
+    pub(crate) fn dispatch_state_snapshot(&self) -> Result<(u32, u32, u32, u32)> {
+        self.flist.dispatch_state_snapshot()
     }
 
     pub(crate) fn complete_reference(&self, hardware_buffer_id: u32) -> Result<bool> {
