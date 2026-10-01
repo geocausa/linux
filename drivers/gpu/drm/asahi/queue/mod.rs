@@ -72,6 +72,10 @@ pub(crate) trait Queue: Send + Sync {
         cmdbuf_raw: &[u8],
         objects: Pin<&xarray::XArray<KBox<file::Object>>>,
     ) -> Result;
+
+    /// E368 lab-only, observation-only snapshot. This does not publish a
+    /// command, ring a firmware doorbell, or mutate GPU-visible state.
+    fn g15_debug_execution_snapshot(&self) -> Result;
 }
 
 #[versions(AGX)]
@@ -2803,6 +2807,18 @@ fn build_attachments(reader: &mut Reader<'_>, size: usize) -> Result<microseq::A
 
 #[versions(AGX)]
 impl Queue for Queue::ver {
+    fn g15_debug_execution_snapshot(&self) -> Result {
+        #[ver(G != G15)]
+        {
+            return Err(ENODEV);
+        }
+
+        #[ver(G == G15)]
+        {
+            self.g15_log_inflight_execution_snapshot()
+        }
+    }
+
     fn submit(
         &mut self,
         id: u64,
