@@ -2815,7 +2815,21 @@ impl Queue for Queue::ver {
 
         #[ver(G == G15)]
         {
-            self.g15_log_inflight_execution_snapshot()
+            self.g15_log_inflight_execution_snapshot()?;
+            let hw = (*self.dev).resources.g15_hardware_gate_snapshot();
+            dev_info!(
+                self.dev.as_ref(),
+                "T8122 G15 E370 hardware gate status={:#x} reglist={:#x} control={:#x} slotmask={:#x} active={:#x} request={:#x} ack={:#x} slot={}\n",
+                hw.status_c020,
+                hw.register_list_c048,
+                hw.control_c050,
+                hw.slot_mask_c058,
+                hw.active_mask_c120,
+                hw.request_c140,
+                hw.ack_c148,
+                hw.active_slot_10398
+            );
+            Ok(())
         }
     }
 
