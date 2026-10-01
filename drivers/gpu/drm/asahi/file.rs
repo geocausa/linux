@@ -1140,8 +1140,32 @@ impl File {
             && data.cmdbuf == 0
             && data.cmdbuf_size == 0;
 
-        if is_g15 && !g15_stock_empty_compute && !g15_exec_snapshot {
+        const G15_MMIO_PROBE_FLAGS: u32 = 0x4731_354d; // "G15M"
+        const G15_MMIO_PROBE_PAD: u32 = 0x4533_3830; // "E380"
+        let g15_mmio_probe = is_g15
+            && data.flags == G15_MMIO_PROBE_FLAGS
+            && data.pad == G15_MMIO_PROBE_PAD
+            && data.syncs == 0
+            && data.in_sync_count == 0
+            && data.out_sync_count == 0
+            && data.cmdbuf == 0
+            && data.cmdbuf_size >= 1
+            && data.cmdbuf_size <= 8;
+
+        if is_g15 && !g15_stock_empty_compute && !g15_exec_snapshot && !g15_mmio_probe {
             return Err(ENODEV);
+        }
+
+        if g15_mmio_probe {
+            let queue: Arc<Mutex<KBox<dyn queue::Queue>>> = file
+                .inner()
+                .queues()
+                .lock()
+                .get(data.queue_id.try_into()?)
+                .ok_or(ENOENT)?
+                .into();
+            queue.lock().g15_debug_mmio_probe(data.cmdbuf_size)?;
+            return Ok(0);
         }
 
         if g15_exec_snapshot {
