@@ -1543,10 +1543,10 @@ struct G15UnpublishedComputeChannel {
     guards: G15StockEmptyAssetGuards::ver,
     _fw_channel_resources: buffer::G15FirmwareChannelResourceLeases,
     _scheduler_publication: Arc<G15SchedulerPublication>,
-    // E363 keeps E362's second host reference to the already-submitted command so
-    // Queue teardown can inspect both firmware-appended RegisterArray state and
-    // the firmware-owned CDM dispatch/completion timestamps without changing
-    // the command or relying on its completion callback.
+    // E364 keeps E363's second host reference to the already-submitted command so
+    // Queue teardown can inspect firmware-appended RegisterArray/timing state and
+    // the shared UMA Page-Pool dispatch sequence without changing the command or
+    // relying on its completion callback.
     inflight_command: Option<Arc<GpuObject<fw::compute::RunCompute::ver>>>,
     commands_submitted: bool,
     pool: buffer::G15ClientUmaComputeChannelRef,
@@ -1568,14 +1568,14 @@ impl G15UnpublishedComputeChannel::ver {
         command.with(|raw, _inner| {
             let regs = &raw.registers;
             // Firmware owns the appended tail and timing state while this command is in
-            // flight. Volatile/unaligned reads keep E363 observation-only and avoid
+            // flight. Volatile/unaligned reads keep E364 observation-only and avoid
             // treating DMA-updated words as ordinary CPU-stable state.
             let count = unsafe { core::ptr::read_volatile(&regs.count) };
             let length = unsafe { core::ptr::read_volatile(&regs.length) };
             let addr: u64 = regs.addr.into();
             dev_info!(
                 dev,
-                "T8122 G15 E363 RegisterArray inflight count={} length={:#x} addr={:#x}\n",
+                "T8122 G15 E364 RegisterArray inflight count={} length={:#x} addr={:#x}\n",
                 count,
                 length,
                 addr
@@ -1588,7 +1588,7 @@ impl G15UnpublishedComputeChannel::ver {
                 if number != 0 || value != 0 || index < count as usize {
                     dev_info!(
                         dev,
-                        "T8122 G15 E363 RegisterArray[{}] number={:#x} value={:#x}\n",
+                        "T8122 G15 E364 RegisterArray[{}] number={:#x} value={:#x}\n",
                         index,
                         number,
                         value
@@ -1607,12 +1607,23 @@ impl G15UnpublishedComputeChannel::ver {
             };
             dev_info!(
                 dev,
-                "T8122 G15 E363 CDM timing dispatch={:#x} completion={:#x} recovery={:#x}\n",
+                "T8122 G15 E364 CDM timing dispatch={:#x} completion={:#x} recovery={:#x}\n",
                 dispatch,
                 completion,
                 recovery
             );
         });
+
+        let (hardware_buffer_id, lifecycle, shared_compute, dispatch_seq) =
+            self.pool.dispatch_state_snapshot()?;
+        dev_info!(
+            dev,
+            "T8122 G15 E364 PagePool dispatch hwid={} lifecycle={} shared_compute={} seq={:#x}\n",
+            hardware_buffer_id,
+            lifecycle,
+            shared_compute,
+            dispatch_seq
+        );
 
         Ok(())
     }
