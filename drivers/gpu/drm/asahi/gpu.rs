@@ -2734,7 +2734,7 @@ impl GpuManager::ver {
             };
             let mut pipe = pipes.get(index).ok_or(EIO)?.lock();
             let state_before = pipe.g15_state();
-            let (completion, pipe_token) = job.run(&mut pipe)?;
+            let (mut completion, pipe_token) = job.run(&mut pipe)?;
             let state_after_put = pipe.g15_state();
             dev_info!(
                 self.dev.as_ref(),
@@ -2799,6 +2799,22 @@ impl GpuManager::ver {
                 self.crashed.store(true, Ordering::Release);
                 return Err(err);
             }
+
+            // E366 samples after host publication is committed but before
+            // Queue destruction can block behind drm_sched timeout/RCU stalls.
+            // The four samples are observation-only and bounded to one second.
+            for (sample_ms, sleep_ms) in [(0, 0), (10, 10), (100, 90), (1000, 900)] {
+                if sleep_ms != 0 {
+                    fsleep(Delta::from_millis(sleep_ms));
+                }
+                dev_info!(
+                    self.dev.as_ref(),
+                    "T8122 G15 E366 early execution sample={}ms snapshot={:?}\n",
+                    sample_ms,
+                    completion.execution_snapshot()
+                );
+            }
+
             dev_info!(
                 self.dev.as_ref(),
                 "T8122 G15 selected first RunWorkQueue accepted by scheduler; awaiting engine completion\n"

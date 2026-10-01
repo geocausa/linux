@@ -1628,6 +1628,63 @@ impl G15UnpublishedComputeChannel::ver {
         Ok(())
     }
 
+    /// E366 takes the same firmware-owned state as E364 without logging from
+    /// Queue Drop. This lets the scheduler path sample before teardown blocks.
+    fn early_execution_snapshot(&self) -> Result<workqueue::G15ExecutionSnapshot> {
+        #[ver(G != G15)]
+        {
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            let command = self.inflight_command.as_ref().ok_or(EINVAL)?;
+
+            let (
+                register_count,
+                register_length,
+                context_store_req,
+                context_store_compl,
+                recovery_marker,
+            ) = command.with(|raw, _inner| {
+                let regs = &raw.registers;
+                let register_count = unsafe { core::ptr::read_volatile(&regs.count) };
+                let register_length = unsafe { core::ptr::read_volatile(&regs.length) };
+                let context_store_req = unsafe {
+                    core::ptr::read_unaligned(core::ptr::addr_of!(raw.context_store_req.0))
+                };
+                let context_store_compl = unsafe {
+                    core::ptr::read_unaligned(core::ptr::addr_of!(raw.context_store_compl.0))
+                };
+                let recovery_marker = unsafe {
+                    core::ptr::read_unaligned(core::ptr::addr_of!(raw.g15_recovery_marker_878.0))
+                };
+                (
+                    register_count,
+                    register_length,
+                    context_store_req,
+                    context_store_compl,
+                    recovery_marker,
+                )
+            });
+
+            let (hardware_buffer_id, lifecycle_state, shared_compute, dispatch_seq) =
+                self.pool.dispatch_state_snapshot()?;
+
+            Ok(workqueue::G15ExecutionSnapshot {
+                register_count,
+                register_length,
+                context_store_req,
+                context_store_compl,
+                recovery_marker,
+                hardware_buffer_id,
+                lifecycle_state,
+                shared_compute,
+                dispatch_seq,
+            })
+        }
+    }
+
     /// E172 gives the dormant E134 transaction its exact persistent lifetime
     /// home without making it reachable from Queue submission. All command-
     /// local rotating state stays under this CL channel, while shared UMA/FList
@@ -1761,6 +1818,12 @@ impl workqueue::G15WorkQueueTransport
             wptr: state.wptr,
             ring_size: state.ring_size,
         })
+    }
+
+    fn execution_snapshot(&self) -> Result<workqueue::G15ExecutionSnapshot> {
+        let slot = self.lock();
+        let channel = (&*slot).as_ref().ok_or(EINVAL)?;
+        channel.early_execution_snapshot()
     }
 
     fn write_command(&self, command_fwva: NonZeroU64) -> Result<u32> {

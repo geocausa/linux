@@ -76,11 +76,29 @@ pub(crate) struct G15WorkQueueTransportState {
     pub(crate) ring_size: u32,
 }
 
+/// E366 observation-only state sampled after the selected scheduler consumes
+/// RunWorkQueue and before userspace teardown can enter the known RCU-stall
+/// window. No field here is host-mutated by the sampler.
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
+pub(crate) struct G15ExecutionSnapshot {
+    pub(crate) register_count: u16,
+    pub(crate) register_length: u16,
+    pub(crate) context_store_req: u64,
+    pub(crate) context_store_compl: u64,
+    pub(crate) recovery_marker: u32,
+    pub(crate) hardware_buffer_id: u32,
+    pub(crate) lifecycle_state: u32,
+    pub(crate) shared_compute: u32,
+    pub(crate) dispatch_seq: u32,
+}
+
 /// Typed E185 bridge from generic WorkQueue ownership to the selected G15 CL
 /// channel transport. Methods remain unused by commit/submit/run in E185.
 pub(crate) trait G15WorkQueueTransport: Send + Sync {
     fn queue_info_fwva(&self) -> Result<NonZeroU64>;
     fn state(&self) -> Result<G15WorkQueueTransportState>;
+    fn execution_snapshot(&self) -> Result<G15ExecutionSnapshot>;
     fn write_command(&self, command_fwva: NonZeroU64) -> Result<u32>;
     fn begin_submission(&self) -> Result<bool>;
     fn finish_submission(&self, first_submission: bool) -> Result;
@@ -383,10 +401,14 @@ pub(crate) struct G15SelectedRunCommit {
 }
 
 impl G15SelectedRunCommit {
-    pub(crate) fn complete(mut self) -> Result {
+    pub(crate) fn complete(&mut self) -> Result {
         self.transport.finish_submission(self.first_submission)?;
         self.completed = true;
         Ok(())
+    }
+
+    pub(crate) fn execution_snapshot(&self) -> Result<G15ExecutionSnapshot> {
+        self.transport.execution_snapshot()
     }
 }
 
