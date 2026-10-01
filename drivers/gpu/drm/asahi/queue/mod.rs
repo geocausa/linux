@@ -76,6 +76,10 @@ pub(crate) trait Queue: Send + Sync {
     /// E368 lab-only, observation-only snapshot. This does not publish a
     /// command, ring a firmware doorbell, or mutate GPU-visible state.
     fn g15_debug_execution_snapshot(&self) -> Result;
+
+    /// E380 lab-only single-register MMIO safety probe. This reads exactly
+    /// one retained-23J220 RGX gate register and publishes no GPU command.
+    fn g15_debug_mmio_probe(&self, index: u32) -> Result;
 }
 
 #[versions(AGX)]
@@ -2828,6 +2832,27 @@ impl Queue for Queue::ver {
                 hw.request_c140,
                 hw.ack_c148,
                 hw.active_slot_10398
+            );
+            Ok(())
+        }
+    }
+
+    fn g15_debug_mmio_probe(&self, index: u32) -> Result {
+        #[ver(G != G15)]
+        {
+            let _ = index;
+            return Err(ENODEV);
+        }
+
+        #[ver(G == G15)]
+        {
+            let (offset, value) = (*self.dev).resources.g15_hardware_gate_probe(index)?;
+            dev_info!(
+                self.dev.as_ref(),
+                "T8122 G15 E380 MMIO probe index={} offset={:#x} value={:#x}\n",
+                index,
+                offset,
+                value
             );
             Ok(())
         }
