@@ -1152,6 +1152,12 @@ impl File {
                 .get(data.queue_id.try_into()?)
                 .ok_or(ENOENT)?
                 .into();
+            let mmio = device.resources.g15_scheduler_mmio_snapshot();
+            dev_info!(
+                device,
+                "T8122 G15 E370 RGX scheduler MMIO snapshot={:?}\n",
+                mmio
+            );
             queue.lock().g15_debug_execution_snapshot()?;
             return Ok(0);
         }
