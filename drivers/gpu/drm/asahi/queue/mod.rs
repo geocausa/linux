@@ -982,6 +982,13 @@ impl G15StockEmptyWorkQueuePayload::ver {
     }
 
     #[ver(G == G15)]
+    fn execution_snapshot(&self) -> Result<workqueue::G15ExecutionSnapshot> {
+        let slot = self.channel.lock();
+        let channel = (&*slot).as_ref().ok_or(EINVAL)?;
+        channel.early_execution_snapshot()
+    }
+
+    #[ver(G == G15)]
     fn fixed_shader_result(&self) -> Result<u32> {
         const RESULT_OFF: usize = 0x300;
         let command = self.command.as_ref().ok_or(EINVAL)?;
@@ -2099,14 +2106,16 @@ impl QueueJob::ver {
             let comp_job = self.get_comp()?;
             comp_job.add_cb(command_ref, vm_slot, move |error| {
                 let selected_state = payload.transport_state();
+                let execution_snapshot = payload.execution_snapshot();
                 let fixed_result = payload.fixed_shader_result();
                 let register_snapshot = payload.log_register_snapshot(dev.as_ref());
                 dev_info!(
                     dev.as_ref(),
-                    "T8122 G15 E251 WorkQueue completion job={} error={:?} selected_state={:?} result={:?} register_snapshot={:?}\n",
+                    "T8122 G15 E369 completion job={} error={:?} selected_state={:?} execution_snapshot={:?} result={:?} register_snapshot={:?}\n",
                     job_id,
                     error,
                     selected_state,
+                    execution_snapshot,
                     fixed_result,
                     register_snapshot
                 );
