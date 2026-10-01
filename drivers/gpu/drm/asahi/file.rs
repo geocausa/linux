@@ -1129,8 +1129,31 @@ impl File {
             && data.cmdbuf != 0
             && data.cmdbuf_size as usize == expected_g15_size;
 
-        if is_g15 && !g15_stock_empty_compute {
+        const G15_EXEC_SNAPSHOT_FLAGS: u32 = 0x4731_3553; // "G15S"
+        const G15_EXEC_SNAPSHOT_PAD: u32 = 0x4533_3638; // "E368"
+        let g15_exec_snapshot = is_g15
+            && data.flags == G15_EXEC_SNAPSHOT_FLAGS
+            && data.pad == G15_EXEC_SNAPSHOT_PAD
+            && data.syncs == 0
+            && data.in_sync_count == 0
+            && data.out_sync_count == 0
+            && data.cmdbuf == 0
+            && data.cmdbuf_size == 0;
+
+        if is_g15 && !g15_stock_empty_compute && !g15_exec_snapshot {
             return Err(ENODEV);
+        }
+
+        if g15_exec_snapshot {
+            let queue: Arc<Mutex<KBox<dyn queue::Queue>>> = file
+                .inner()
+                .queues()
+                .lock()
+                .get(data.queue_id.try_into()?)
+                .ok_or(ENOENT)?
+                .into();
+            queue.lock().g15_debug_execution_snapshot()?;
+            return Ok(0);
         }
 
         if data.flags != 0 || data.pad != 0 {
