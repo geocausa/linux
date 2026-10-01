@@ -289,6 +289,27 @@ impl Resources {
         }
     }
 
+    /// E381 lab-only safety probe for the exact E370 canonical snapshot.
+    /// Read exactly one register per call so a status-sensitive MMIO access
+    /// can be isolated without issuing any GPU command.
+    pub(crate) fn g15_scheduler_mmio_probe(&self, index: u32) -> Result<(usize, u64)> {
+        let (offset, value) = match index {
+            1 => (0xc020, self.sgx_read64::<0xc020>()),
+            2 => (0xc040, self.sgx_read64::<0xc040>()),
+            3 => (0xc048, self.sgx_read64::<0xc048>()),
+            4 => (0xc050, self.sgx_read64::<0xc050>()),
+            5 => (0xc058, self.sgx_read64::<0xc058>()),
+            6 => (0xc068, self.sgx_read64::<0xc068>()),
+            7 => (0xc140, self.sgx_read64::<0xc140>()),
+            8 => (0xc148, self.sgx_read64::<0xc148>()),
+            9 => (0xd800, self.sgx_read64::<0xd800>()),
+            10 => (0xd8f0, self.sgx_read64::<0xd8f0>()),
+            11 => (0x10398, self.sgx_read32::<0x10398>() as u64),
+            _ => return Err(EINVAL),
+        };
+        Ok((offset, value))
+    }
+
     pub(crate) fn g15_scheduler_mmio_snapshot(&self) -> G15SchedulerMmioSnapshot {
         G15SchedulerMmioSnapshot {
             c020: self.sgx_read64::<0xc020>(),
