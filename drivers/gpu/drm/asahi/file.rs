@@ -1140,8 +1140,33 @@ impl File {
             && data.cmdbuf == 0
             && data.cmdbuf_size == 0;
 
-        if is_g15 && !g15_stock_empty_compute && !g15_exec_snapshot {
+        const G15_MMIO_PROBE_FLAGS: u32 = 0x4731_354d; // "G15M"
+        const G15_MMIO_PROBE_PAD: u32 = 0x4533_3831; // "E381"
+        let g15_mmio_probe = is_g15
+            && data.flags == G15_MMIO_PROBE_FLAGS
+            && data.pad == G15_MMIO_PROBE_PAD
+            && data.syncs == 0
+            && data.in_sync_count == 0
+            && data.out_sync_count == 0
+            && data.cmdbuf == 0
+            && data.cmdbuf_size >= 1
+            && data.cmdbuf_size <= 11;
+
+        if is_g15 && !g15_stock_empty_compute && !g15_exec_snapshot && !g15_mmio_probe {
             return Err(ENODEV);
+        }
+
+        if g15_mmio_probe {
+            let (offset, value) = device.resources.g15_scheduler_mmio_probe(data.cmdbuf_size)?;
+            dev_info!(
+                device,
+                "T8122 G15 E381 MMIO probe index={} offset={:#x} value={:#x}
+",
+                data.cmdbuf_size,
+                offset,
+                value
+            );
+            return Ok(0);
         }
 
         if g15_exec_snapshot {
