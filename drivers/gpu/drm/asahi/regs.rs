@@ -285,6 +285,24 @@ impl Resources {
         }
     }
 
+    /// E380 single-register safety probe. Read exactly one register per call
+    /// so a bus-faulting/status-sensitive offset can be isolated without
+    /// conflating it with the rest of the E370 snapshot.
+    pub(crate) fn g15_hardware_gate_probe(&self, index: u32) -> Result<(usize, u64)> {
+        let (offset, value) = match index {
+            1 => (0xc020, self.sgx_read64::<0xc020>()),
+            2 => (0xc048, self.sgx_read64::<0xc048>()),
+            3 => (0xc050, self.sgx_read64::<0xc050>()),
+            4 => (0xc058, self.sgx_read64::<0xc058>()),
+            5 => (0xc120, self.sgx_read64::<0xc120>()),
+            6 => (0xc140, self.sgx_read64::<0xc140>()),
+            7 => (0xc148, self.sgx_read64::<0xc148>()),
+            8 => (0x10398, self.sgx_read32::<0x10398>() as u64),
+            _ => return Err(EINVAL),
+        };
+        Ok((offset, value))
+    }
+
     /// Snapshot the exact hardware registers consumed by the retained G15
     /// scheduler/resource-admission path. This is observation-only.
     pub(crate) fn g15_hardware_gate_snapshot(&self) -> G15HardwareGateSnapshot {
