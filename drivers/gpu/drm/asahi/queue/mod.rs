@@ -1543,9 +1543,10 @@ struct G15UnpublishedComputeChannel {
     guards: G15StockEmptyAssetGuards::ver,
     _fw_channel_resources: buffer::G15FirmwareChannelResourceLeases,
     _scheduler_publication: Arc<G15SchedulerPublication>,
-    // E362 keeps a second host reference to the already-submitted command so
-    // Queue teardown can inspect firmware-appended RegisterArray state without
-    // changing the command or relying on its completion callback.
+    // E363 keeps E362's second host reference to the already-submitted command so
+    // Queue teardown can inspect both firmware-appended RegisterArray state and
+    // the firmware-owned CDM dispatch/completion timestamps without changing
+    // the command or relying on its completion callback.
     inflight_command: Option<Arc<GpuObject<fw::compute::RunCompute::ver>>>,
     commands_submitted: bool,
     pool: buffer::G15ClientUmaComputeChannelRef,
@@ -1559,22 +1560,22 @@ impl G15UnpublishedComputeChannel::ver {
     }
 
     #[ver(G == G15)]
-    fn log_inflight_register_snapshot(&self, dev: &kernel::device::Device) -> Result {
+    fn log_inflight_execution_snapshot(&self, dev: &kernel::device::Device) -> Result {
         const HOST_REGISTER_COUNT: usize = 20;
         const SNAPSHOT_END: usize = 40;
         let command = self.inflight_command.as_ref().ok_or(EINVAL)?;
 
         command.with(|raw, _inner| {
             let regs = &raw.registers;
-            // Firmware owns the appended tail while this command is in flight.
-            // Volatile reads make E362 observation-only and avoid treating the
-            // DMA-updated words as ordinary CPU-stable state.
+            // Firmware owns the appended tail and timing state while this command is in
+            // flight. Volatile/unaligned reads keep E363 observation-only and avoid
+            // treating DMA-updated words as ordinary CPU-stable state.
             let count = unsafe { core::ptr::read_volatile(&regs.count) };
             let length = unsafe { core::ptr::read_volatile(&regs.length) };
             let addr: u64 = regs.addr.into();
             dev_info!(
                 dev,
-                "T8122 G15 E362 RegisterArray inflight count={} length={:#x} addr={:#x}\n",
+                "T8122 G15 E363 RegisterArray inflight count={} length={:#x} addr={:#x}\n",
                 count,
                 length,
                 addr
@@ -1587,13 +1588,30 @@ impl G15UnpublishedComputeChannel::ver {
                 if number != 0 || value != 0 || index < count as usize {
                     dev_info!(
                         dev,
-                        "T8122 G15 E362 RegisterArray[{}] number={:#x} value={:#x}\n",
+                        "T8122 G15 E363 RegisterArray[{}] number={:#x} value={:#x}\n",
                         index,
                         number,
                         value
                     );
                 }
             }
+
+            let dispatch = unsafe {
+                core::ptr::read_unaligned(core::ptr::addr_of!(raw.context_store_req.0))
+            };
+            let completion = unsafe {
+                core::ptr::read_unaligned(core::ptr::addr_of!(raw.context_store_compl.0))
+            };
+            let recovery = unsafe {
+                core::ptr::read_unaligned(core::ptr::addr_of!(raw.g15_recovery_marker_878.0))
+            };
+            dev_info!(
+                dev,
+                "T8122 G15 E363 CDM timing dispatch={:#x} completion={:#x} recovery={:#x}\n",
+                dispatch,
+                completion,
+                recovery
+            );
         });
 
         Ok(())
@@ -2589,12 +2607,12 @@ impl Queue::ver {
     }
 
     #[ver(G == G15)]
-    fn g15_log_inflight_register_snapshot(&self) -> Result {
+    fn g15_log_inflight_execution_snapshot(&self) -> Result {
         let subqueue = self.q_comp.as_ref().ok_or(EINVAL)?;
         let channel_slot = subqueue._g15_compute_channel.as_ref().ok_or(EINVAL)?;
         let slot = channel_slot.lock();
         let channel = (&*slot).as_ref().ok_or(EINVAL)?;
-        channel.log_inflight_register_snapshot(self.dev.as_ref())
+        channel.log_inflight_execution_snapshot(self.dev.as_ref())
     }
 
     /// E190 exact command-queue teardown primitive. This remains zero-caller:
@@ -3119,10 +3137,10 @@ impl Drop for Queue::ver {
                 G15SchedulerPublicationState::Unpublished
                 | G15SchedulerPublicationState::Released => {}
                 G15SchedulerPublicationState::Published => {
-                    let snapshot = self.g15_log_inflight_register_snapshot();
+                    let snapshot = self.g15_log_inflight_execution_snapshot();
                     dev_info!(
                         self.dev.as_ref(),
-                        "T8122 G15 E362 pre-release RegisterArray snapshot={:?}\n",
+                        "T8122 G15 E363 pre-release execution snapshot={:?}\n",
                         snapshot
                     );
 
