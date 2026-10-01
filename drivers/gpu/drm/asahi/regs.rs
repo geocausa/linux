@@ -230,6 +230,28 @@ pub(crate) struct Resources {
     sgx: Pin<KBox<Devres<IoMem<SGX_SIZE>>>>,
 }
 
+/// E370 read-only snapshot of the exact RGX register window consumed by the
+/// G15 RTKit scheduler path after RegisterArray construction.
+///
+/// Retained firmware proves HwDataB I/O mapping slot 3 is RGXRegs with physical
+/// base 0x290000000. DAT_fffffc000010e268 is loaded from that mapping's FWVA,
+/// so the offsets below are the same scheduler/control registers used by
+/// FUN_fffffc0000027c00() and FUN_fffffc000002bdd0().
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct G15SchedulerMmioSnapshot {
+    pub(crate) c020: u64,
+    pub(crate) c040: u64,
+    pub(crate) c048: u64,
+    pub(crate) c050: u64,
+    pub(crate) c058: u64,
+    pub(crate) c068: u64,
+    pub(crate) c140: u64,
+    pub(crate) c148: u64,
+    pub(crate) d800: u64,
+    pub(crate) d8f0: u64,
+    pub(crate) slot_10398: u32,
+}
+
 impl Resources {
     /// Map the required resources given our platform device.
     pub(crate) fn new(pdev: &platform::Device<Core>) -> Result<Resources> {
@@ -264,6 +286,22 @@ impl Resources {
             sgx.relaxed().read64(OFF)
         } else {
             0
+        }
+    }
+
+    pub(crate) fn g15_scheduler_mmio_snapshot(&self) -> G15SchedulerMmioSnapshot {
+        G15SchedulerMmioSnapshot {
+            c020: self.sgx_read64::<0xc020>(),
+            c040: self.sgx_read64::<0xc040>(),
+            c048: self.sgx_read64::<0xc048>(),
+            c050: self.sgx_read64::<0xc050>(),
+            c058: self.sgx_read64::<0xc058>(),
+            c068: self.sgx_read64::<0xc068>(),
+            c140: self.sgx_read64::<0xc140>(),
+            c148: self.sgx_read64::<0xc148>(),
+            d800: self.sgx_read64::<0xd800>(),
+            d8f0: self.sgx_read64::<0xd8f0>(),
+            slot_10398: self.sgx_read32::<0x10398>(),
         }
     }
 
