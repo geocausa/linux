@@ -14,6 +14,7 @@ use crate::{
     buffer,
     driver,
     gem,
+    hw,
     mmu,
     module_parameters,
     queue,
@@ -30,6 +31,7 @@ use core::mem::MaybeUninit;
 use core::ops::Deref;
 use core::ops::Range;
 use core::ptr::addr_of_mut;
+use core::sync::atomic::{AtomicBool, Ordering};
 use kernel::bindings;
 use kernel::dma_fence::RawDmaFence;
 use kernel::drm::gem::BaseObject;
@@ -56,10 +58,35 @@ const DEBUG_CLASS: DebugFlags = DebugFlags::File;
 
 pub(crate) const MAX_COMMANDS_PER_SUBMISSION: u32 = 64;
 
+// J615 bounded module-lifetime one-shot claim. The normal-UAPI stock-empty
+// Compute path may reach GPU execution at most once per candidate boot.
+static G15_STOCK_EMPTY_COMPUTE_USED: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn claim_g15_stock_empty_compute() -> Result {
+    if G15_STOCK_EMPTY_COMPUTE_USED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return Err(EBUSY);
+    }
+    Ok(())
+}
+
 /// A client instance of an `mmu::Vm` address space.
 struct Vm {
     ualloc: Arc<Mutex<alloc::DefaultAllocator>>,
     ualloc_priv: Arc<Mutex<alloc::DefaultAllocator>>,
+    // G15 eGartRange 5 lives above the 39-bit userspace ABI but inside the
+    // per-client bank-0 TTBR0. Only instantiate this on a sufficiently wide
+    // hardware IAS; current G13/G14 VMs therefore keep no extra allocator.
+    g15_ualloc_range5_ppl108: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
+    g15_ualloc_range5_uncached: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
+    g15_ualloc_range5_ppl308: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
+    g15_ualloc_range5_cached: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
+    // Exact J615 `AGXShared +0x1b8` analogue. Keep only the four weak pool
+    // identities at client-VM lifetime; E140 intentionally exposes no Queue
+    // accessor and performs no UMAPool construction/retention.
+    _g15_uma_shared_pools: Option<Arc<Mutex<buffer::G15ClientUmaPoolContainerState>>>,
     vm: mmu::Vm,
     kernel_range: Range<u64>,
     _dummy_mapping: mmu::KernelMapping,
@@ -201,6 +228,11 @@ pub(crate) enum Object {
 // #[pin_data]
 pub(crate) struct File {
     id: u64,
+    // E154 exact J615 IOGPUDevice +0x60 counterpart. Apple snapshots
+    // proc_pid(get_bsdtask_info(task)) at per-client device construction and
+    // copies it through IOGPUCommandQueue +0x490 -> AGXChannel +0x4c. Capture
+    // the opening process once so fd handoff cannot silently change identity.
+    owner_pid: u32,
     // #[pin]
     vms: xarray::XArray<KBox<Vm>>,
     // #[pin]
@@ -227,9 +259,14 @@ impl drm::file::DriverFile for File {
 
         let gpu = &device.gpu;
         let id = gpu.ids().file.next();
+        let owner_pid: u32 = kernel::current!()
+            .group_leader()
+            .pid()
+            .try_into()
+            .map_err(|_| EINVAL)?;
 
         mod_dev_dbg!(device, "[File {}]: DRM device opened\n", id);
-        Ok(KBox::pin_init(File::new(id), GFP_KERNEL)?)
+        Ok(KBox::pin_init(File::new(id, owner_pid), GFP_KERNEL)?)
     }
 
     fn as_raw(&self) -> *mut bindings::drm_file {
@@ -241,7 +278,18 @@ impl drm::file::DriverFile for File {
 unsafe impl AnyBitPattern for uapi::drm_asahi_gem_bind_op {}
 
 impl File {
-    fn new(id: u64) -> impl PinInit<Self, Error> {
+    /// E163 G15 userspace gate beyond passive Queue lifetime. Queue creation
+    /// may allocate private/unpublished QueueInfo state and q22-tracked resource
+    /// mappings, but special shared-object binding and submission remain blocked.
+    fn reject_g15_client_mutation(device: &AsahiDevice) -> Result<()> {
+        if device.gpu.get_cfg().gpu_gen == hw::GpuGen::G15 {
+            Err(ENODEV)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn new(id: u64, owner_pid: u32) -> impl PinInit<Self, Error> {
         unsafe {
             pin_init::pin_init_from_closure(move |slot: *mut Self| {
                 let raw_vms = addr_of_mut!((*slot).vms);
@@ -259,6 +307,7 @@ impl File {
                     .__pinned_init(raw_objects)?;
 
                 (*slot).id = id;
+                (*slot).owner_pid = owner_pid;
                 Ok(())
             })
         }
@@ -418,6 +467,82 @@ impl File {
             GFP_KERNEL,
         )?;
 
+        let (
+            g15_ualloc_range5_ppl108,
+            g15_ualloc_range5_uncached,
+            g15_ualloc_range5_ppl308,
+            g15_ualloc_range5_cached,
+            g15_uma_shared_pools,
+        ) = if gpu.get_cfg().uat_ias >= 42 {
+                (
+                    Some(Arc::pin_init(
+                        new_mutex!(alloc::DefaultAllocator::new(
+                            device,
+                            &vm,
+                            mmu::G15_GART_RANGE5_PPL108,
+                            buffer::PAGE_SIZE,
+                            mmu::PROT_G15_RANGE5_PPL108,
+                            64 * 1024,
+                            true,
+                            fmt!("File {} VM {} G15 Range 5 PPL108", file_id, id),
+                            false,
+                        )?),
+                        GFP_KERNEL,
+                    )?),
+                    Some(Arc::pin_init(
+                        new_mutex!(alloc::DefaultAllocator::new(
+                            device,
+                            &vm,
+                            mmu::G15_GART_RANGE5_UNCACHED,
+                            buffer::PAGE_SIZE,
+                            mmu::PROT_G15_RANGE5_UNCACHED,
+                            64 * 1024,
+                            true,
+                            fmt!("File {} VM {} G15 Range 5 Uncached", file_id, id),
+                            false,
+                        )?),
+                        GFP_KERNEL,
+                    )?),
+                    Some(Arc::pin_init(
+                        new_mutex!(alloc::DefaultAllocator::new(
+                            device,
+                            &vm,
+                            mmu::G15_GART_RANGE5_PPL308,
+                            buffer::PAGE_SIZE,
+                            mmu::PROT_G15_RANGE5_PPL308,
+                            64 * 1024,
+                            true,
+                            fmt!("File {} VM {} G15 Range 5 PPL308", file_id, id),
+                            false,
+                        )?),
+                        GFP_KERNEL,
+                    )?),
+                    Some(Arc::pin_init(
+                        new_mutex!(alloc::DefaultAllocator::new(
+                            device,
+                            &vm,
+                            mmu::G15_GART_RANGE5_CACHED,
+                            buffer::PAGE_SIZE,
+                            mmu::PROT_G15_RANGE5_CACHED,
+                            64 * 1024,
+                            true,
+                            fmt!("File {} VM {} G15 Range 5 Cached", file_id, id),
+                            false,
+                        )?),
+                        GFP_KERNEL,
+                    )?),
+                    Some(Arc::pin_init(
+                        new_mutex!(
+                            buffer::G15ClientUmaPoolContainerState::new_client_address_space(),
+                            "g15_uma_shared_pools"
+                        ),
+                        GFP_KERNEL,
+                    )?),
+                )
+            } else {
+                (None, None, None, None, None)
+            };
+
         mod_dev_dbg!(
             device,
             "[File {} VM {}]: Creating dummy object\n",
@@ -434,6 +559,11 @@ impl File {
             Vm {
                 ualloc,
                 ualloc_priv,
+                g15_ualloc_range5_ppl108,
+                g15_ualloc_range5_uncached,
+                g15_ualloc_range5_ppl308,
+                g15_ualloc_range5_cached,
+                _g15_uma_shared_pools: g15_uma_shared_pools,
                 vm,
                 kernel_range,
                 _dummy_mapping: dummy_mapping,
@@ -775,6 +905,7 @@ impl File {
         data: &mut uapi::drm_asahi_gem_bind_object,
         file: &DrmFile,
     ) -> Result<u32> {
+        Self::reject_g15_client_mutation(device)?;
         mod_dev_dbg!(
             device,
             "[File {} VM {}]: IOCTL: gem_bind_object op={:?} handle={:#x?} flags={:#x?} {:#x?}:{:#x?} object_handle={:#x?}\n",
@@ -932,7 +1063,13 @@ impl File {
         let vm = file_vm.vm.clone();
         let ualloc = file_vm.ualloc.clone();
         let ualloc_priv = file_vm.ualloc_priv.clone();
-        // Drop the vms lock eagerly
+        let g15_ualloc_range5_ppl108 = file_vm.g15_ualloc_range5_ppl108.clone();
+        let g15_ualloc_range5_uncached = file_vm.g15_ualloc_range5_uncached.clone();
+        let g15_ualloc_range5_ppl308 = file_vm.g15_ualloc_range5_ppl308.clone();
+        let g15_ualloc_range5_cached = file_vm.g15_ualloc_range5_cached.clone();
+        let g15_uma_shared_pools = file_vm._g15_uma_shared_pools.clone();
+        // Drop the vms lock eagerly. The Arc above is the exact client-VM
+        // lifetime bridge retained by a future lazy G15 channel transaction.
         let _ = file_vm;
         core::mem::drop(guard);
 
@@ -940,6 +1077,12 @@ impl File {
             vm,
             ualloc,
             ualloc_priv,
+            g15_ualloc_range5_ppl108,
+            g15_ualloc_range5_uncached,
+            g15_ualloc_range5_ppl308,
+            g15_ualloc_range5_cached,
+            g15_uma_shared_pools,
+            file.inner().owner_pid,
             // TODO: Plumb deeper the enum
             uapi::drm_asahi_priority_DRM_ASAHI_PRIORITY_REALTIME - data.priority,
             data.usc_exec_base,
@@ -974,6 +1117,51 @@ impl File {
     ) -> Result<u32> {
         debug::update_debug_flags();
 
+        let is_g15 = device.gpu.get_cfg().gpu_gen == hw::GpuGen::G15;
+        let expected_g15_size = core::mem::size_of::<uapi::drm_asahi_cmd_header>()
+            + core::mem::size_of::<uapi::drm_asahi_cmd_compute>();
+        let g15_stock_empty_compute = is_g15
+            && data.flags == 0
+            && data.pad == 0
+            && data.syncs == 0
+            && data.in_sync_count == 0
+            && data.out_sync_count == 0
+            && data.cmdbuf != 0
+            && data.cmdbuf_size as usize == expected_g15_size;
+
+        const G15_EXEC_SNAPSHOT_FLAGS: u32 = 0x4731_3553; // "G15S"
+        const G15_EXEC_SNAPSHOT_PAD: u32 = 0x4533_3638; // "E368"
+        let g15_exec_snapshot = is_g15
+            && data.flags == G15_EXEC_SNAPSHOT_FLAGS
+            && data.pad == G15_EXEC_SNAPSHOT_PAD
+            && data.syncs == 0
+            && data.in_sync_count == 0
+            && data.out_sync_count == 0
+            && data.cmdbuf == 0
+            && data.cmdbuf_size == 0;
+
+        if is_g15 && !g15_stock_empty_compute && !g15_exec_snapshot {
+            return Err(ENODEV);
+        }
+
+        if g15_exec_snapshot {
+            let queue: Arc<Mutex<KBox<dyn queue::Queue>>> = file
+                .inner()
+                .queues()
+                .lock()
+                .get(data.queue_id.try_into()?)
+                .ok_or(ENOENT)?
+                .into();
+            let mmio = device.resources.g15_scheduler_mmio_snapshot();
+            dev_info!(
+                device,
+                "T8122 G15 E370 RGX scheduler MMIO snapshot={:?}\n",
+                mmio
+            );
+            queue.lock().g15_debug_execution_snapshot()?;
+            return Ok(0);
+        }
+
         if data.flags != 0 || data.pad != 0 {
             cls_pr_debug!(Errors, "submit: Invalid arguments\n");
             return Err(EINVAL);
@@ -982,7 +1170,7 @@ impl File {
         let gpu = &device.gpu;
         gpu.update_globals();
 
-        // Upgrade to Arc<T> to drop the XArray lock early
+        // Upgrade to Arc<T> to drop the XArray lock early.
         let queue: Arc<Mutex<KBox<dyn queue::Queue>>> = file
             .inner()
             .queues()

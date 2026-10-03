@@ -59,6 +59,11 @@ impl EventValue {
         EventValue(self.0.wrapping_add(0x100))
     }
 
+    /// Return the exact firmware-visible stamp word.
+    pub(crate) fn raw(&self) -> u32 {
+        self.0
+    }
+
     /// Increments this `EventValue` in place.
     pub(crate) fn increment(&mut self) {
         self.0 = self.0.wrapping_add(0x100);
@@ -146,21 +151,46 @@ pub(crate) struct EventManager {
 impl EventManager {
     /// Create a new EventManager.
     #[inline(never)]
-    pub(crate) fn new(alloc: &mut gpu::KernelAllocators) -> Result<EventManager> {
+    pub(crate) fn new(
+        alloc: &mut gpu::KernelAllocators,
+        g15_zero_based_counters: bool,
+    ) -> Result<EventManager> {
         let mut owners = KVec::new();
         for _i in 0..(NUM_EVENTS as usize) {
             owners.push(None, GFP_KERNEL)?;
         }
+        // On G15 both host-visible and firmware completion stamps are touched
+        // by the RCE/CDM path. Alyssa's independently working M3 m1n1 Compute
+        // experiment requires both stamp counters in GPU/FW shared RW memory;
+        // the older shared/private split faults on M3. Preserve the established
+        // allocation classes on pre-G15 hardware.
+        let stamps = if g15_zero_based_counters {
+            alloc.gpu.array_empty(NUM_EVENTS as usize)?
+        } else {
+            alloc.shared.array_empty(NUM_EVENTS as usize)?
+        };
+        let fw_stamps = if g15_zero_based_counters {
+            alloc.gpu.array_empty(NUM_EVENTS as usize)?
+        } else {
+            alloc.private.array_empty(NUM_EVENTS as usize)?
+        };
         let inner = EventManagerInner {
-            stamps: alloc.shared.array_empty(NUM_EVENTS as usize)?,
-            fw_stamps: alloc.private.array_empty(NUM_EVENTS as usize)?,
+            stamps,
+            fw_stamps,
             owners,
         };
 
         for slot in 0..NUM_EVENTS {
+            // Exact 23J220 IOGPUEventMachine carries the stamp index
+            // separately on G15, so each GPU-visible counter starts at zero.
+            // Older firmware uses the inherited slot-biased stamp encoding.
+            let initial = if g15_zero_based_counters { 0 } else { slot << 24 };
             inner.stamps[slot as usize]
                 .0
-                .store(slot << 24, Ordering::Relaxed);
+                .store(initial, Ordering::Relaxed);
+            inner.fw_stamps[slot as usize]
+                .0
+                .store(0, Ordering::Relaxed);
         }
 
         Ok(EventManager {

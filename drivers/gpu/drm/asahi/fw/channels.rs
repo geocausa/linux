@@ -14,12 +14,17 @@ pub(crate) mod raw {
     #[repr(C)]
     pub(crate) struct ChannelState<'a> {
         pub(crate) read_ptr: AtomicU32,
-        __pad0: Pad<0x1c>,
-        pub(crate) write_ptr: AtomicU32,
+        __pad0: Pad<0xc>,
+        // G15 TX channels pass a separate pointer to this firmware-owned
+        // shadow slot. Older firmware treats it as padding.
+        pub(crate) write_ptr_shadow: AtomicU32,
         __pad1: Pad<0xc>,
+        pub(crate) write_ptr: AtomicU32,
+        __pad2: Pad<0xc>,
         _p: PhantomData<&'a ()>,
     }
     default_zeroed!(<'a>, ChannelState<'a>);
+    const _: [(); 0x30] = [(); core::mem::size_of::<ChannelState<'static>>()];
 
     #[derive(Debug)]
     #[repr(C)]
@@ -68,6 +73,10 @@ pub(crate) struct FwLogChannelState {}
 impl GpuStruct for FwLogChannelState {
     type Raw<'a> = Array<6, raw::ChannelState<'a>>;
 }
+
+// Exact RTKit-2419 G15 FWLog producer uses six adjacent 0x30-byte
+// ChannelState records at wrapper +0x1c8.
+static_assert!(core::mem::size_of::<Array<6, raw::ChannelState<'static>>>() == 0x120);
 
 impl RxChannelState for FwLogChannelState {
     const SUB_CHANNELS: usize = 6;
@@ -126,14 +135,34 @@ pub(crate) enum PipeType {
 #[derive(Debug, Copy, Clone, Default)]
 #[repr(C)]
 pub(crate) struct RunWorkQueueMsg {
+    // RTKit-2419 G15 replaced the inherited pipe-ring payload with a compact
+    // 0x18-byte scheduler entry. Apple AGXArmFirmware::encodeAcceleratorRingCommand()
+    // writes the fields in this exact order.
+    #[ver(G == G15)]
+    pub(crate) g15_timestamp: U64,
+    #[ver(G != G15)]
     pub(crate) pipe_type: PipeType,
+    #[ver(G != G15)]
     pub(crate) work_queue: Option<GpuWeakPointer<super::workqueue::QueueInfo::ver>>,
+    #[ver(G == G15)]
+    pub(crate) g15_work_queue_fwva: U64,
+    #[ver(G != G15)]
     pub(crate) wptr: u32,
+    #[ver(G != G15)]
     pub(crate) event_slot: u32,
+    #[ver(G != G15)]
     pub(crate) is_new: bool,
+    #[ver(G == G15)]
+    pub(crate) g15_pipe_type: PipeType,
+    #[ver(G == G15)]
+    pub(crate) g15_wptr: u16,
+    #[ver(G == G15)]
+    pub(crate) g15_event_slot: u8,
+    #[ver(G == G15)]
+    pub(crate) g15_is_new: bool,
     #[ver(V >= V13_2 && G == G14)]
     pub(crate) __pad: Pad<0x2b>,
-    #[ver(V < V13_2 || G != G14)]
+    #[ver(V < V13_2 || (G != G14 && G != G15))]
     pub(crate) __pad: Pad<0x1b>,
 }
 
@@ -142,13 +171,17 @@ pub(crate) type PipeMsg = RunWorkQueueMsg::ver;
 
 #[versions(AGX)]
 pub(crate) const DEVICECONTROL_SZ: usize = {
-    #[ver(V < V13_2 || G != G14)]
+    #[ver(V < V13_2 || (G != G14 && G != G15))]
     {
         0x2c
     }
     #[ver(V >= V13_2 && G == G14)]
     {
         0x3c
+    }
+    #[ver(G == G15)]
+    {
+        0x34
     }
 };
 
@@ -173,7 +206,9 @@ pub(crate) enum DeviceControlMsg {
     Unk0a(Array<DEVICECONTROL_SZ::ver, u8>),
     Unk0b(Array<DEVICECONTROL_SZ::ver, u8>),
     Unk0c(Array<DEVICECONTROL_SZ::ver, u8>),
-    #[ver(V >= V13_3)]
+    // E060 exact G15 DeviceControl numbering: the legacy V13.3 0x0d
+    // placeholder is absent, otherwise ReleaseResource shifts 0x11 -> 0x12.
+    #[ver(V >= V13_3 && G != G15)]
     Unk0d(Array<DEVICECONTROL_SZ::ver, u8>),
     GrowTVBAck {
         unk_4: u32,
@@ -195,7 +230,21 @@ pub(crate) enum DeviceControlMsg {
         __pad: Pad<{ DEVICECONTROL_SZ::ver - 0x4 }>,
     },
     Unk10(Array<DEVICECONTROL_SZ::ver, u8>),
+    #[ver(G != G15)]
     Unk11(Array<DEVICECONTROL_SZ::ver, u8>),
+    // G15 native scheduler-resource retirement. Exact 23J220 passes a raw
+    // selected resource FWVA at +0x0c; the old GpuContext pointer type was only
+    // a byte-compatible registration-surrogate carrier.
+    #[ver(G == G15)]
+    ReleaseResource {
+        unk_4: u32,
+        ctx_27: u8,
+        ctx_0: u8,
+        ctx_1: u8,
+        ctx_4: u8,
+        resource_fwva: U64,
+        __pad: Pad<{ DEVICECONTROL_SZ::ver - 0x10 }>,
+    },
     Unk12(Array<DEVICECONTROL_SZ::ver, u8>),
     Unk13(Array<DEVICECONTROL_SZ::ver, u8>),
     Unk14(Array<DEVICECONTROL_SZ::ver, u8>), // Init?
@@ -231,6 +280,19 @@ static_assert!(core::mem::size_of::<DeviceControlMsg::ver>() == 4 + DEVICECONTRO
 #[versions(AGX)]
 default_zeroed!(DeviceControlMsg::ver);
 
+// Exact RTKit-2419.140.12 G15 ring-walker element sizes/layouts.
+const _: [(); 0x18] = [(); core::mem::size_of::<RunWorkQueueMsgG15V14_7>()];
+const _: [(); 0x00] = [(); core::mem::offset_of!(RunWorkQueueMsgG15V14_7, g15_timestamp)];
+const _: [(); 0x08] = [(); core::mem::offset_of!(
+    RunWorkQueueMsgG15V14_7,
+    g15_work_queue_fwva
+)];
+const _: [(); 0x10] = [(); core::mem::offset_of!(RunWorkQueueMsgG15V14_7, g15_pipe_type)];
+const _: [(); 0x14] = [(); core::mem::offset_of!(RunWorkQueueMsgG15V14_7, g15_wptr)];
+const _: [(); 0x16] = [(); core::mem::offset_of!(RunWorkQueueMsgG15V14_7, g15_event_slot)];
+const _: [(); 0x17] = [(); core::mem::offset_of!(RunWorkQueueMsgG15V14_7, g15_is_new)];
+const _: [(); 0x38] = [(); core::mem::size_of::<DeviceControlMsgG15V14_7>()];
+
 #[derive(Copy, Clone, Default, Debug)]
 #[repr(C)]
 #[allow(dead_code)]
@@ -241,6 +303,10 @@ pub(crate) struct FwCtlMsg {
     pub(crate) page_count: u16,
     pub(crate) unk_12: u16,
 }
+const _: [(); 0x14] = [(); core::mem::size_of::<FwCtlMsg>()];
+const _: [(); 0x0c] = [(); core::mem::offset_of!(FwCtlMsg, slot)];
+const _: [(); 0x10] = [(); core::mem::offset_of!(FwCtlMsg, page_count)];
+const _: [(); 0x12] = [(); core::mem::offset_of!(FwCtlMsg, unk_12)];
 
 pub(crate) const EVENT_SZ: usize = 0x34;
 
@@ -330,6 +396,13 @@ pub(crate) struct RawKTraceMsg {
     pub(crate) thread: u8,
     pub(crate) unk_flag: U64,
 }
+
+// Exact RTKit-2419 G15 producer strides. U64 is intentionally unaligned,
+// matching firmware's packed message accesses.
+static_assert!(core::mem::size_of::<RawEventMsg>() == 0x38);
+static_assert!(core::mem::size_of::<RawFwLogMsg>() == 0x38);
+static_assert!(core::mem::size_of::<RawFwLogPayloadMsg>() == 0xd8);
+static_assert!(core::mem::size_of::<RawKTraceMsg>() == 0x38);
 
 #[versions(AGX)]
 pub(crate) const STATS_SZ: usize = {
@@ -430,6 +503,11 @@ static_assert!(core::mem::size_of::<StatsMsg::ver>() == 4 + STATS_SZ::ver);
 
 #[versions(AGX)]
 pub(crate) const STATS_MAX: u32 = 0xe;
+
+// RTKit-2419 G15 produces 0x40-byte statistics records. It also has a
+// valid tag 0x0f; keep that tag on the raw/unknown path until its semantic
+// variant is reconstructed instead of widening STATS_MAX unsafely.
+const _: [(); 0x40] = [(); core::mem::size_of::<RawStatsMsgG15V14_7>()];
 
 #[versions(AGX)]
 #[derive(Copy, Clone)]

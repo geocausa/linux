@@ -204,6 +204,83 @@ pub(crate) mod raw {
         pub(crate) isp_zls_pixels: U64,
     }
 
+    // G15 does not use the legacy JobParameters3 semantic layout. Normal
+    // AGX3DChannelSKU::submitBuffer() copies source-oriented slices from the
+    // 3D descriptor into +0x790..+0xa47, with precise unwritten gaps.
+    #[derive(Debug, Default)]
+    #[repr(C)]
+    pub(crate) struct G15JobParameters3 {
+        pub(crate) pad_790: Array<0x10, u8>,
+        pub(crate) desc_380_7a0: U64,
+        pub(crate) pad_7a8: U64,
+        pub(crate) desc_388_7b0: U64,
+        pub(crate) pad_7b8: U64,
+        pub(crate) desc_390_7c0: U64,
+        pub(crate) pad_7c8: U64,
+        pub(crate) desc_3b0_7d0: U64,
+        pub(crate) desc_3b8_4b0_7d8: Array<0x20, U64>,
+        pub(crate) desc_4b8_527_8d8: Array<0x0e, U64>,
+        pub(crate) desc_538_948: U64,
+        pub(crate) desc_598_950: U64,
+        pub(crate) desc_5d0_958: U64,
+        pub(crate) desc_540_548_960: Array<2, U64>,
+        pub(crate) desc_5c8_970: U64,
+        pub(crate) desc_550_978: U64,
+        pub(crate) desc_5a8_980: U64,
+        pub(crate) desc_5f8_988: U64,
+        pub(crate) desc_558_560_990: Array<2, U64>,
+        pub(crate) desc_5f0_9a0: U64,
+        pub(crate) desc_578_9a8: U64,
+        pub(crate) desc_590_9b0: U64,
+        pub(crate) desc_610_9b8: U64,
+        pub(crate) desc_618_620_9c0: Array<2, U64>,
+        pub(crate) desc_628_9d0: U64,
+        pub(crate) pad_9d8: Array<0x10, u8>,
+        pub(crate) desc_650_9e8: U64,
+        pub(crate) desc_658_9f0: u32,
+        pub(crate) desc_630_638_9f4: Array<2, U64>,
+        pub(crate) pad_a04: u32,
+        pub(crate) desc_65c_a08: U64,
+        pub(crate) desc_664_a10: u32,
+        pub(crate) desc_640_648_a14: Array<2, U64>,
+        pub(crate) pad_a24: u32,
+        pub(crate) desc_668_a28: U64,
+        pub(crate) desc_370_a30: u32,
+        pub(crate) pad_a34: Array<0x0c, u8>,
+        pub(crate) desc_670_a40: U64,
+    }
+
+    const _: [(); 0x2b8] = [(); core::mem::size_of::<G15JobParameters3>()];
+    const _: [(); 0x010] = [(); core::mem::offset_of!(G15JobParameters3, desc_380_7a0)];
+    const _: [(); 0x040] = [(); core::mem::offset_of!(G15JobParameters3, desc_3b0_7d0)];
+    const _: [(); 0x048] = [(); core::mem::offset_of!(G15JobParameters3, desc_3b8_4b0_7d8)];
+    const _: [(); 0x148] = [(); core::mem::offset_of!(G15JobParameters3, desc_4b8_527_8d8)];
+    const _: [(); 0x248] = [(); core::mem::offset_of!(G15JobParameters3, pad_9d8)];
+    const _: [(); 0x264] = [(); core::mem::offset_of!(G15JobParameters3, desc_630_638_9f4)];
+    const _: [(); 0x2b0] = [(); core::mem::offset_of!(G15JobParameters3, desc_670_a40)];
+
+    #[derive(Debug)]
+    #[repr(C)]
+    pub(crate) struct G15EncoderState {
+        pub(crate) zero_b6c: u32,
+        pub(crate) zero_b70: u32,
+        pub(crate) zero_b74: u32,
+        pub(crate) zero_b78: u32,
+        pub(crate) raw_render_2dd_b7c: u32,
+        pub(crate) raw_render_1c0_nonzero_b80: u32,
+        pub(crate) raw_render_60c_b84: u32,
+        pub(crate) raw_render_608_610_b88: U64,
+        pub(crate) raw_render_614_b90: u32,
+    }
+
+    const _: [(); 0x28] = [(); core::mem::size_of::<G15EncoderState>()];
+    const _: [(); 0x00] = [(); core::mem::offset_of!(G15EncoderState, zero_b6c)];
+    const _: [(); 0x10] = [(); core::mem::offset_of!(G15EncoderState, raw_render_2dd_b7c)];
+    const _: [(); 0x14] = [(); core::mem::offset_of!(G15EncoderState, raw_render_1c0_nonzero_b80)];
+    const _: [(); 0x18] = [(); core::mem::offset_of!(G15EncoderState, raw_render_60c_b84)];
+    const _: [(); 0x1c] = [(); core::mem::offset_of!(G15EncoderState, raw_render_608_610_b88)];
+    const _: [(); 0x24] = [(); core::mem::offset_of!(G15EncoderState, raw_render_614_b90)];
+
     #[versions(AGX)]
     #[derive(Debug)]
     #[repr(C)]
@@ -213,66 +290,322 @@ pub(crate) mod raw {
         #[ver(V >= V13_0B4)]
         pub(crate) counter: U64,
 
+        #[ver(G != G15)]
         pub(crate) vm_slot: u32,
+        // G15 copies AGX3DCommandDescriptor +0x7b8 here. prepare() fills that
+        // slot from AGXContextIDManager::alloc(); it is not the Linux VM slot.
+        #[ver(G == G15)]
+        pub(crate) g15_context_id_c: u32,
+        #[ver(G != G15)]
         pub(crate) unk_8: u32,
+        #[ver(G != G15)]
         pub(crate) microsequence: GpuPointer<'a, &'a [u8]>,
+        #[ver(G != G15)]
         pub(crate) microsequence_size: u32,
+        // Apple normal G15 submission does not write +0x10..+0x1f.
+        #[ver(G == G15)]
+        pub(crate) g15_pad_10: Array<0x10, u8>,
+        #[ver(G != G15)]
         pub(crate) notifier: GpuPointer<'a, event::Notifier::ver>,
+        #[ver(G != G15)]
         pub(crate) buffer: GpuPointer<'a, fw::buffer::Info::ver>,
+        #[ver(G != G15)]
         pub(crate) scene: GpuPointer<'a, fw::buffer::Scene::ver>,
+        #[ver(G != G15)]
         pub(crate) unk_buffer_buf: GpuWeakPointer<[u8]>,
+        // G15 exports four descriptor values through
+        // AGXArmFirmware::convertGPUVAToFWVA(); for this host build that method
+        // is the identity transform (`mov x0, x1; ret`).
+        // loadCommandBufferData() copies the selected AGXCommandBuffer state
+        // entry qword +0x398 to descriptor +0x148, which submit exports here.
+        #[ver(G == G15)]
+        pub(crate) g15_cmd_buffer_state_398_20: U64,
+        // Normal Render shares the TA-prepared parameter-management state.
+        // AGXTACommandDescriptor::prepare() publishes the G15 0x80-byte
+        // parameter-buffer Info GPUVA at descriptor +0x758, and 3D submit's
+        // identity GPUVA->FWVA conversion exports it at command +0x28.
+        #[ver(G == G15)]
+        pub(crate) g15_buffer_fwva_28: U64,
+        // loadParameterManagementData() selects one of the 80 PM records.
+        // PM +0xa8 is a host array of record GPUVAs, so descriptor +0x760
+        // (and therefore command +0x30) is the selected 0x80-byte record FWVA.
+        #[ver(G == G15)]
+        pub(crate) g15_pm_record_fwva_30: U64,
+        // PM +0xb8 is the GPUVA immediately after the 80 records, i.e. the
+        // trailing 0x40-byte state at record-pool offset 0x2800.
+        #[ver(G == G15)]
+        pub(crate) g15_pm_state_fwva_38: U64,
+        #[ver(G != G15)]
         pub(crate) tvb_tilemap: GpuPointer<'a, &'a [u8]>,
+        #[ver(G != G15)]
         pub(crate) ppp_multisamplectl: U64,
+        #[ver(G != G15)]
         pub(crate) samples: u32,
+        #[ver(G != G15)]
         pub(crate) tiles_per_mtile_y: u16,
+        #[ver(G != G15)]
         pub(crate) tiles_per_mtile_x: u16,
+        #[ver(G != G15)]
         pub(crate) unk_50: U64,
+        #[ver(G != G15)]
         pub(crate) unk_58: U64,
+        #[ver(G != G15)]
         pub(crate) isp_merge_upper_x: F32,
+        #[ver(G != G15)]
         pub(crate) isp_merge_upper_y: F32,
+        #[ver(G != G15)]
         pub(crate) unk_68: U64,
+        #[ver(G != G15)]
         pub(crate) tile_count: U64,
+        // G15 +0x40..+0x7f is RTM-derived state, not the legacy tile and
+        // multisample header. loadRenderTargetMemoryData() sources these from
+        // RTM +0x298/+0xb0/+0xb8/+0xbc/+0x20/+0xc0..+0xd4/+0x118.
+        // Normal submit leaves +0x5c..+0x5f and +0x7c..+0x7f unwritten.
+        #[ver(G == G15)]
+        pub(crate) g15_rtm_298_addr_40: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_rtm_b0_48: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_rtm_b8_50: u32,
+        #[ver(G == G15)]
+        pub(crate) g15_rtm_bc_54: u32,
+        #[ver(G == G15)]
+        pub(crate) g15_rtm_20_low_58: u32,
+        #[ver(G == G15)]
+        pub(crate) g15_pad_5c: u32,
+        #[ver(G == G15)]
+        pub(crate) g15_rtm_c0_cc_60: Array<4, u32>,
+        #[ver(G == G15)]
+        pub(crate) g15_rtm_d0_d4_70: Array<2, u32>,
+        #[ver(G == G15)]
+        pub(crate) g15_rtm_118_78: u32,
+        #[ver(G == G15)]
+        pub(crate) g15_pad_7c: u32,
+        // All G15 command pointers in this header are raw firmware addresses,
+        // so retain the generated type lifetime without consuming ABI space.
+        #[ver(G == G15)]
+        pub(crate) _g15_lifetime: core::marker::PhantomData<&'a ()>,
 
-        #[ver(G < G14X)]
+        #[ver(G < G14X && G != G15)]
         pub(crate) job_params1: JobParameters1::ver<'a>,
-        #[ver(G < G14X)]
+        #[ver(G < G14X && G != G15)]
         pub(crate) job_params2: JobParameters2,
-        #[ver(G >= G14X)]
+        #[ver(G >= G14X || G == G15)]
         pub(crate) registers: job::raw::RegisterArray,
 
+        #[ver(G != G15)]
         pub(crate) job_params3: JobParameters3::ver,
+        #[ver(G == G15)]
+        pub(crate) g15_job_params3: G15JobParameters3,
+        #[ver(G != G15)]
         pub(crate) unk_758_flag: u32,
+        #[ver(G != G15)]
         pub(crate) unk_75c_flag: u32,
+        // G15 3D descriptor init clears +0x680 and normal Render setup never
+        // rewrites it, so submit exports zero at +0xa48. +0xa4c is not written.
+        #[ver(G == G15)]
+        pub(crate) g15_zero_a48: u32,
+        #[ver(G == G15)]
+        pub(crate) g15_pad_a4c: u32,
+        #[ver(G != G15)]
         pub(crate) unk_buf: Array<0x110, u8>,
+        // G15 3D submit copies descriptor +0x530 (= raw Render +0x2d8)
+        // to +0xa50, then explicitly zeroes the remaining +0xa58..+0xb5f.
+        #[ver(G == G15)]
+        pub(crate) g15_raw_render_2d8_a50: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_zero_a58: Array<0x108, u8>,
         pub(crate) busy_flag: u32,
         pub(crate) tvb_overflow_count: u32,
         pub(crate) unk_878: u32,
+        #[ver(G != G15)]
         pub(crate) encoder_params: job::raw::EncoderParams,
+        #[ver(G == G15)]
+        pub(crate) g15_encoder_state: G15EncoderState,
+        #[ver(G != G15)]
         pub(crate) process_empty_tiles: u32,
+        #[ver(G != G15)]
         pub(crate) no_clear_pipeline_textures: u32,
+        #[ver(G != G15)]
         pub(crate) msaa_zs: u32,
+        #[ver(G != G15)]
         pub(crate) unk_pointee: u32,
-        #[ver(V >= V13_3)]
+        // G15 submit loads descriptor bytes +0x6e5..+0x6e8, widens each byte
+        // to its own u32 lane, and stores them at +0xb94..+0xba0.
+        #[ver(G == G15)]
+        pub(crate) g15_raw_render_618_b94: u32,
+        #[ver(G == G15)]
+        pub(crate) g15_raw_render_5d8_b98: u32,
+        #[ver(G == G15)]
+        pub(crate) g15_raw_render_5d9_b9c: u32,
+        #[ver(G == G15)]
+        pub(crate) g15_raw_render_4b6_nonzero_ba0: u32,
+        #[ver(V >= V13_3 && G != G15)]
         pub(crate) unk_v13_3: u32,
+        // copy3DCommonPassthroughData() copies raw Render byte +0x4b8 to
+        // descriptor +0x6ea; G15 3D submission zero-extends it to command +0xba4.
+        #[ver(G == G15)]
+        pub(crate) g15_raw_render_4b8_ba4: U32,
+        #[ver(G != G15)]
         pub(crate) meta: job::raw::JobMeta,
+        #[ver(G == G15)]
+        pub(crate) meta: job::raw::G15JobMeta,
+        #[ver(G != G15)]
         pub(crate) unk_after_meta: u32,
+        // Apple G15 processRenderSetup() copies raw Render byte +0x619 through
+        // wrapper +0x1b8 into the shared TA/3D descriptor +0x7b0;
+        // AGX3DChannelSKU::submitBuffer() writes (descriptor[0x7b0] == 2) here.
+        #[ver(G == G15)]
+        pub(crate) g15_raw_render_619_eq_2_bd4: U32,
+        #[ver(G != G15)]
         pub(crate) unk_buf_0: U64,
+        #[ver(G != G15)]
         pub(crate) unk_buf_8: U64,
+        #[ver(G != G15)]
         pub(crate) unk_buf_10: U64,
+        // G15 3D submit writes +0xbd8 directly as zero. Its vslot +0x220
+        // resolves to generateFrgBarrierRegister(), which returns zero and does
+        // not touch the pre-zeroed output pointer, so +0xbe0/+0xbe8 stay zero.
+        #[ver(G == G15)]
+        pub(crate) g15_zero_bd8: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_zero_be0: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_zero_be8: U64,
+        #[ver(G != G15)]
         pub(crate) command_time: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_zero_bf0: U64,
+        #[ver(G != G15)]
         pub(crate) timestamp_pointers: job::raw::TimestampPointers<'a>,
+        #[ver(G != G15)]
         pub(crate) user_timestamp_pointers: job::raw::TimestampPointers<'a>,
+        // G15 replaces the legacy timestamp-pointer pairs with firmware-facing
+        // render resources. submitBuffer() converts descriptor +0x6d0/+0x6d8
+        // through AGXArmFirmware::convertGPUVAToFWVA() for +0xbf8/+0xc00, then
+        // copies AGXMTLCounterSampler::fwTokenEncode() outputs from descriptor
+        // +0x8f8/+0x900 to +0xc08/+0xc10.
+        #[ver(G == G15)]
+        pub(crate) g15_segment_resource_list_fwva_bf8: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_block_fence_time0_fwva_c00: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_mtl_counter_fw_token_0_c08: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_mtl_counter_fw_token_1_c10: U64,
+
+        #[ver(G != G15)]
         pub(crate) client_sequence: u8,
+        #[ver(G != G15)]
         pub(crate) pad_925: Array<3, u8>,
+        #[ver(G != G15)]
         pub(crate) unk_928: u32,
+        #[ver(G != G15)]
         pub(crate) unk_92c: u8,
 
-        #[ver(V >= V13_0B4)]
+        #[ver(V >= V13_0B4 && G != G15)]
         pub(crate) unk_ts: U64,
 
-        #[ver(V >= V13_0B4)]
+        #[ver(V >= V13_0B4 && G != G15)]
         pub(crate) unk_92d_8: Array<0x1b, u8>,
+
+        // G15 keeps the common command body through the timestamp pointer
+        // triplet at +0xbf0..+0xc17, then replaces the legacy late tail.
+        // These offsets are taken directly from AGX3DChannelSKU::submitBuffer
+        // and the paired RTKit-2419 firmware consumers.
+        // Apple G15 submission leaves +0xc18..+0xc1d unwritten; the first explicit
+        // late-tail store begins at +0xc1e. The same six-byte packed-ABI gap
+        // appears in Compute, TA, and 3D immediately before an unaligned U64.
+        #[ver(G == G15)]
+        pub(crate) g15_pad_c18: Array<0x06, u8>,
+        // Apple AGXUMAPool::prepareLocked() populates the embedded AGXUMAData
+        // record at descriptor +0x960. AGX3DChannelSKU::submitBuffer() then
+        // translates AGXUMAData +0x18 to command +0xc1e. That address is the
+        // 0x70-byte Apple "UMA Page Pool State" allocation at AGXUMAFList
+        // +0x1c0, populated in-place by AGXUMAFList::populateFirmwareState().
+        // Apple then copies the prepared
+        // byte at +0x44 to +0xc26, the minimum/ideal pool sizes at +0x48/+0x50
+        // to +0xc27/+0xc2f, and translates AGXUMAHWMetrics::gpu_base + the
+        // current 0x40-byte ring offset to +0xc37. +0xc3f is the generation
+        // byte returned by AGXContextIDManager::alloc() for the 3D context ID.
+        #[ver(G == G15)]
+        pub(crate) g15_uma_page_pool_state_fwva_c1e: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_uma_prepared_c26: u8,
+        #[ver(G == G15)]
+        pub(crate) g15_uma_min_pool_size_c27: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_uma_ideal_pool_size_c2f: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_uma_metrics_fwva_c37: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_context_id_generation_c3f: u8,
+        // The G15 3D SKU encoder embeds command_fwva +0xc40. RTKit writes
+        // the dispatch/start timestamp at +0xc40; normal fragment completion
+        // requires +0xc40 < +0xc50 and measures that interval. The two
+        // intervening/last qwords remain deliberately unnamed.
+        #[ver(G == G15)]
+        pub(crate) g15_sku_timing_c40: job::raw::G15SkuTimingState,
     }
+
+    const _: [(); 0xc60] = [(); core::mem::size_of::<RunFragmentG15V14_7<'static>>()];
+    const _: [(); 0x0c] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_context_id_c)];
+    const _: [(); 0x10] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_pad_10)];
+    const _: [(); 0x20] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_cmd_buffer_state_398_20)];
+    const _: [(); 0x28] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_buffer_fwva_28)];
+    const _: [(); 0x30] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_pm_record_fwva_30)];
+    const _: [(); 0x38] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_pm_state_fwva_38)];
+    const _: [(); 0x40] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_rtm_298_addr_40)];
+    const _: [(); 0x48] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_rtm_b0_48)];
+    const _: [(); 0x50] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_rtm_b8_50)];
+    const _: [(); 0x54] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_rtm_bc_54)];
+    const _: [(); 0x58] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_rtm_20_low_58)];
+    const _: [(); 0x5c] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_pad_5c)];
+    const _: [(); 0x60] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_rtm_c0_cc_60)];
+    const _: [(); 0x70] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_rtm_d0_d4_70)];
+    const _: [(); 0x78] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_rtm_118_78)];
+    const _: [(); 0x7c] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_pad_7c)];
+    const _: [(); 0x80] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, registers)];
+    const _: [(); 0x790] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_job_params3)];
+    const _: [(); 0xa48] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_zero_a48)];
+    const _: [(); 0xa4c] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_pad_a4c)];
+    const _: [(); 0xa50] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_raw_render_2d8_a50)];
+    const _: [(); 0xa58] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_zero_a58)];
+    const _: [(); 0xb60] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, busy_flag)];
+    const _: [(); 0xb64] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, tvb_overflow_count)];
+    const _: [(); 0xb6c] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_encoder_state)];
+    const _: [(); 0xb94] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_raw_render_618_b94)];
+    const _: [(); 0xb98] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_raw_render_5d8_b98)];
+    const _: [(); 0xb9c] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_raw_render_5d9_b9c)];
+    const _: [(); 0xba0] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_raw_render_4b6_nonzero_ba0)];
+    const _: [(); 0xba4] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_raw_render_4b8_ba4)];
+    const _: [(); 0xba8] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, meta)];
+    // Apple AGX3DChannelSKU::submitBuffer copies the queue-local
+    // monotonically increasing render sequence to command +0xbd0, matching
+    // JobMeta.event_seq at meta +0x28.
+    const _: [(); 0xbd0] = [();
+        core::mem::offset_of!(RunFragmentG15V14_7<'static>, meta)
+            + core::mem::offset_of!(job::raw::G15JobMeta, event_seq)
+    ];
+    const _: [(); 0xbd4] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_raw_render_619_eq_2_bd4)];
+    const _: [(); 0xbd8] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_zero_bd8)];
+    const _: [(); 0xbe0] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_zero_be0)];
+    const _: [(); 0xbe8] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_zero_be8)];
+    const _: [(); 0xbf0] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_zero_bf0)];
+    const _: [(); 0xbf8] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_segment_resource_list_fwva_bf8)];
+    const _: [(); 0xc00] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_block_fence_time0_fwva_c00)];
+    const _: [(); 0xc08] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_mtl_counter_fw_token_0_c08)];
+    const _: [(); 0xc10] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_mtl_counter_fw_token_1_c10)];
+    const _: [(); 0xc18] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_pad_c18)];
+    const _: [(); 0xc1e] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_uma_page_pool_state_fwva_c1e)];
+    const _: [(); 0xc26] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_uma_prepared_c26)];
+    const _: [(); 0xc27] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_uma_min_pool_size_c27)];
+    const _: [(); 0xc2f] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_uma_ideal_pool_size_c2f)];
+    const _: [(); 0xc37] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_uma_metrics_fwva_c37)];
+    const _: [(); 0xc3f] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_context_id_generation_c3f)];
+    const _: [(); 0xc40] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_sku_timing_c40)];
+    const _: [(); 0xc50] = [(); core::mem::offset_of!(RunFragmentG15V14_7<'static>, g15_sku_timing_c40)
+        + core::mem::offset_of!(job::raw::G15SkuTimingState, complete_timestamp)];
 }
 
 #[versions(AGX)]

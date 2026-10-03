@@ -59,10 +59,6 @@ const UAT_LVMSK: u64 = (UAT_LVSZ - 1) as u64;
 
 const UAT_LEVELS: usize = 3;
 
-/// UAT input address space
-pub(crate) const UAT_IAS: usize = 39;
-const UAT_IASMSK: u64 = (1u64 << UAT_IAS) - 1;
-
 const PTE_TYPE_BITS: u64 = 3;
 const PTE_TYPE_LEAF_TABLE: u64 = 3;
 
@@ -155,6 +151,55 @@ pub(crate) mod prot {
     pub(crate) const PROT_FW_PRIV_RW: Prot = PROT_FW_RW.memattr(MEMATTR_CACHED);
     /// Firmware/GPU shared (uncached) RW
     pub(crate) const PROT_GPU_FW_SHARED_RW: Prot = PROT_FW_GPU_RW.memattr(MEMATTR_UNCACHED);
+    /// Exact non-legacy G15 range-5 PTE protection shape used by ordinary
+    /// GTP/TPC and Parameter Scene Allocations.  Do not infer the older
+    /// generation `PROT_FW_GPU_NA` semantic name here: the mechanically
+    /// recovered G15 UAT encoder emits AP=0, memattr=uncached, GPU-access=1,
+    /// PXN=UXN=0 for this resource class.
+    pub(crate) const PROT_G15_RANGE5_UNCACHED: Prot =
+        PROT_FW_GPU_NA.memattr(MEMATTR_UNCACHED);
+    /// Exact production G15 UAT-PPL compact 0x108 protection. E350 recovers
+    /// the private PPL option table and E348 independently proves this leaf at
+    /// the live CDM fetch boundary: AP=2, uncached, GPU-access=1, PXN=UXN=0.
+    pub(crate) const PROT_G15_RANGE5_PPL108: Prot = PROT_GPU_SHARED_RO;
+    /// Exact production G15 UAT-PPL compact 0x308 protection. The PPL table
+    /// differs from 0x108 by high bit 54 (UXN) while retaining AP=2 and the
+    /// uncached memory attribute.
+    pub(crate) const PROT_G15_RANGE5_PPL308: Prot = PROT_GPU_SHARED_RW;
+    /// Exact non-legacy G15 range-5 cached PTE shape used by the PM record
+    /// backing. SecureGart compact 0x300 emits AP=0, cached memory,
+    /// GPU-access=1, PXN=UXN=0. This intentionally does not reuse the older
+    /// `PROT_GPU_FW_PRIV_RW`, which would add PXN/UXN bits not present here.
+    pub(crate) const PROT_G15_RANGE5_CACHED: Prot =
+        PROT_FW_GPU_NA.memattr(MEMATTR_CACHED);
+    /// Dynamically proven M3/G15 code heap class from the 14.8.3 m1n1 path:
+    /// OS=1, AP=GPU-only (2), cached, UXN=1, PXN=0.
+    pub(crate) const PROT_G15_RANGE5_CODE: Prot =
+        PROT_GPU_RW.memattr(MEMATTR_CACHED);
+    /// Exact 23J220 AGXUMAFList Page Pool List / Backup Page List class.
+    /// Both list mappings use eGartRange 5 with caller options 0x20000000003;
+    /// SecureMemoryMap + SecureGart reduce that path to compact UAT option
+    /// 0x300. Keep a semantic FList name even though its PTE bits equal the
+    /// already-modeled cached range-5 class.
+    pub(crate) const PROT_G15_RANGE5_FLIST_LIST: Prot = PROT_G15_RANGE5_CACHED;
+    /// Exact non-legacy G15 eGartRange-7 firmware-shared protection shape.
+    /// Apple uses option word 0x700000007 for the q22 mapping-control state/ring,
+    /// PMPageMetricsBuffer, and Parameter Scene statistics resources. SecureGart
+    /// produces compact 0x007 and the UAT encoder emits AP=1, device memattr,
+    /// UXN=1, GPU-access=1, PXN=0.
+    pub(crate) const PROT_G15_RANGE7_FW: Prot =
+        PROT_FW_RW.memattr(MEMATTR_DEV);
+    /// Exact 23J220 AGXUMAFList FW-Uncached-State range-7 protection.
+    /// This is a separate SecureMemoryMap class from PM/q22 range-7: compact
+    /// option 0x00b encodes AP=1, uncached memory, UXN=1, GPU-access=1, PXN=0.
+    pub(crate) const PROT_G15_RANGE7_FLIST_FW: Prot =
+        PROT_FW_RW.memattr(MEMATTR_UNCACHED);
+    /// Exact non-legacy G15 eGartRange-8 Page-Pool-State protection shape.
+    /// The FList SecureMemoryMap path differs from the PM range-7 resource
+    /// class: exact 23J220 derives compact UAT option 0x003, which encodes
+    /// AP=1, cached memory, UXN=1, GPU-access=1, PXN=0.
+    pub(crate) const PROT_G15_RANGE8_FW: Prot =
+        PROT_FW_RW.memattr(MEMATTR_CACHED);
     /// Firmware/GPU shared (private) RW
     pub(crate) const PROT_GPU_FW_PRIV_RW: Prot = PROT_FW_GPU_RW.memattr(MEMATTR_CACHED);
     /// Firmware-RW/GPU-RO shared (private) RW
@@ -166,6 +211,40 @@ pub(crate) mod prot {
     /// GPU shared/coherent WO
     pub(crate) const PROT_GPU_SHARED_WO: Prot = PROT_GPU_WO.memattr(MEMATTR_UNCACHED);
 }
+
+// Apple non-legacy G15 SecureGart/UAT protection bits, excluding AF/type/
+// non-global bits.  PM scene/TPC compact 0x308 -> high GPU-access + uncached.
+const _: [(); 1] = [(); ((prot::PROT_G15_RANGE5_UNCACHED.as_pte() & UAT_PROT_BITS)
+    == 0x0080_0000_0000_0008) as usize];
+// Production UAT-PPL compact 0x108: AP=2, uncached, GPU-access, executable.
+const _: [(); 1] = [(); ((prot::PROT_G15_RANGE5_PPL108.as_pte() & UAT_PROT_BITS)
+    == 0x0080_0000_0000_0088) as usize];
+// Production UAT-PPL compact 0x308: AP=2, uncached, GPU-access, UXN=1.
+const _: [(); 1] = [(); ((prot::PROT_G15_RANGE5_PPL308.as_pte() & UAT_PROT_BITS)
+    == 0x00c0_0000_0000_0088) as usize];
+// PM-record compact 0x300 -> G15 GPU-access high bit + cached memory,
+// with no PXN/UXN bits.
+const _: [(); 1] = [(); ((prot::PROT_G15_RANGE5_CACHED.as_pte() & UAT_PROT_BITS)
+    == 0x0080_0000_0000_0000) as usize];
+// M3/G15 code heap: cached GPU-only RW, UXN=1, PXN=0.
+const _: [(); 1] = [(); ((prot::PROT_G15_RANGE5_CODE.as_pte() & UAT_PROT_BITS)
+    == 0x00c0_0000_0000_0080) as usize];
+// FList Page/Backup lists: exact compact 0x300, intentionally equal to the
+// cached range-5 protection bits while retaining separate ownership semantics.
+const _: [(); 1] = [(); ((prot::PROT_G15_RANGE5_FLIST_LIST.as_pte() & UAT_PROT_BITS)
+    == 0x0080_0000_0000_0000) as usize];
+// Range-7 FW-shared resources: compact 0x007 -> AP=1, device memattr,
+// UXN + GPU-access high bits.
+const _: [(); 1] = [(); ((prot::PROT_G15_RANGE7_FW.as_pte() & UAT_PROT_BITS)
+    == 0x00c0_0000_0000_0044) as usize];
+// FList FW-Uncached State: compact 0x00b -> AP=1, uncached memattr,
+// UXN + GPU-access high bits.
+const _: [(); 1] = [(); ((prot::PROT_G15_RANGE7_FLIST_FW.as_pte() & UAT_PROT_BITS)
+    == 0x00c0_0000_0000_0048) as usize];
+// FList range-8 Page-Pool State: compact 0x003 -> AP=1, cached memattr,
+// UXN + GPU-access high bits.
+const _: [(); 1] = [(); ((prot::PROT_G15_RANGE8_FW.as_pte() & UAT_PROT_BITS)
+    == 0x00c0_0000_0000_0040) as usize];
 
 impl Prot {
     const fn from_bits(ap: u8, uxn: u16, pxn: u16) -> Self {
@@ -222,7 +301,7 @@ impl Prot {
         Self { memattr, ..*self }
     }
 
-    const fn as_pte(&self) -> u64 {
+    pub(crate) const fn as_pte(&self) -> u64 {
         (self.ap as u64) << UAT_AP_SHIFT
             | (self.high_bits as u64) << UAT_HIGH_BITS_SHIFT
             | (self.memattr as u64) << UAT_MEMATTR_SHIFT
@@ -254,30 +333,67 @@ pub(crate) struct DumpedPage {
 pub(crate) struct UatPageTable {
     ttb: PhysicalAddr,
     ttb_owned: bool,
+    non_global: bool,
     va_range: Range<u64>,
+    ias_mask: u64,
     oas_mask: u64,
 }
 
 impl UatPageTable {
-    pub(crate) fn new(oas: u32) -> Result<Self> {
-        mod_pr_debug!("UATPageTable::new: oas={}\n", oas);
+    fn address_mask(bits: u32) -> Result<u64> {
+        if bits == 0 || bits >= 64 {
+            return Err(EINVAL);
+        }
+        Ok((1u64 << bits) - 1)
+    }
+
+    fn new_owned(ias: u32, oas: u32, non_global: bool) -> Result<Self> {
+        mod_pr_debug!(
+            "UATPageTable::new_owned: ias={} oas={} non_global={}\n",
+            ias,
+            oas,
+            non_global
+        );
+        let ias_mask = Self::address_mask(ias)?;
+        let oas_mask = Self::address_mask(oas)?;
         let ttb_page = Page::alloc_page(GFP_KERNEL | __GFP_ZERO)?;
         let ttb = Page::into_phys(ttb_page);
         Ok(UatPageTable {
             ttb,
             ttb_owned: true,
-            va_range: 0..(1u64 << UAT_IAS),
-            oas_mask: (1u64 << oas) - 1,
+            non_global,
+            va_range: 0..(1u64 << ias),
+            ias_mask,
+            oas_mask,
         })
     }
 
-    pub(crate) fn new_with_ttb(ttb: PhysicalAddr, va_range: Range<u64>, oas: u32) -> Result<Self> {
+    pub(crate) fn new(ias: u32, oas: u32) -> Result<Self> {
+        Self::new_owned(ias, oas, true)
+    }
+
+    /// Allocate a driver-owned root whose leaf mappings are global. G15 uses
+    /// this shape for the accelerator-shared UAT bank 1 imported by every
+    /// client context. Existing user roots remain non-global.
+    pub(crate) fn new_global(ias: u32, oas: u32) -> Result<Self> {
+        Self::new_owned(ias, oas, false)
+    }
+
+    pub(crate) fn new_with_ttb(
+        ttb: PhysicalAddr,
+        va_range: Range<u64>,
+        ias: u32,
+        oas: u32,
+    ) -> Result<Self> {
         mod_pr_debug!(
-            "UATPageTable::new_with_ttb: ttb={:#x} range={:#x?} oas={}\n",
+            "UATPageTable::new_with_ttb: ttb={:#x} range={:#x?} ias={} oas={}\n",
             ttb,
             va_range,
+            ias,
             oas
         );
+        let ias_mask = Self::address_mask(ias)?;
+        let oas_mask = Self::address_mask(oas)?;
         if ttb & (UAT_PGMSK as PhysicalAddr) != 0 {
             return Err(EINVAL);
         }
@@ -296,8 +412,10 @@ impl UatPageTable {
         Ok(UatPageTable {
             ttb,
             ttb_owned: false,
+            non_global: false,
             va_range,
-            oas_mask: (1u64 << oas) - 1,
+            ias_mask,
+            oas_mask,
         })
     }
 
@@ -333,10 +451,10 @@ impl UatPageTable {
             return Ok(());
         }
 
-        let mut iova = iova_range.start & UAT_IASMSK;
+        let mut iova = iova_range.start & self.ias_mask;
         let mut last_iova = iova;
         // Handle the case where iova_range.end is just at the top boundary of the IAS
-        let end = ((iova_range.end - 1) & UAT_IASMSK) + 1;
+        let end = ((iova_range.end - 1) & self.ias_mask) + 1;
 
         let mut pt_addr: [Option<PhysicalAddr>; UAT_LEVELS] = Default::default();
         pt_addr[UAT_LEVELS - 1] = Some(self.ttb);
@@ -474,13 +592,12 @@ impl UatPageTable {
     }
 
     fn pte_bits(&self) -> u64 {
-        if self.ttb_owned {
-            // Owned page tables are userspace, so non-global
-            PTE_TYPE_LEAF_TABLE | UAT_NON_GLOBAL
-        } else {
-            // The sole non-owned page table is kernelspace, so global
-            PTE_TYPE_LEAF_TABLE
-        }
+        PTE_TYPE_LEAF_TABLE
+            | if self.non_global {
+                UAT_NON_GLOBAL
+            } else {
+                0
+            }
     }
 
     pub(crate) fn map_pages(
@@ -565,7 +682,7 @@ impl UatPageTable {
     pub(crate) fn dump_pages(&mut self, iova_range: Range<u64>) -> Result<KVVec<DumpedPage>> {
         let mut pages = KVVec::new();
         let oas_mask = self.oas_mask;
-        let iova_base = self.va_range.start & !UAT_IASMSK;
+        let iova_base = self.va_range.start & !self.ias_mask;
         self.with_pages(iova_range, false, false, |iova, ptes| {
             let iova = iova | iova_base;
             for (idx, ppte) in ptes.iter().enumerate() {

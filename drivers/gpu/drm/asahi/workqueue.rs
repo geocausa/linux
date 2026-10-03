@@ -28,11 +28,12 @@ use crate::{
     event,
     fw,
     gpu,
+    hw,
     regs, //
 };
 use core::any::Any;
 use core::num::NonZeroU64;
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicBool, Ordering};
 use kernel::{
     dma_fence,
     error::code::*,
@@ -62,6 +63,62 @@ impl<T: GpuStruct + Sync + Send> OpaqueCommandObject for GpuObject<T> where T: C
 const DEBUG_CLASS: DebugFlags = DebugFlags::WorkQueue;
 
 const MAX_JOB_SLOTS: u32 = 127;
+
+/// Apple writes mach_absolute_time() into G15 accelerator-ring entries. On
+/// Apple Silicon that is the architectural counter clock domain; the physical
+/// counter used by the existing DRM_ASAHI_GET_TIME path has the same frequency
+/// and differs only by a constant offset from CNTVCT on bare metal.
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
+pub(crate) struct G15WorkQueueTransportState {
+    pub(crate) doneptr: u32,
+    pub(crate) wptr: u32,
+    pub(crate) ring_size: u32,
+}
+
+/// E366 observation-only state sampled after the selected scheduler consumes
+/// RunWorkQueue and before userspace teardown can enter the known RCU-stall
+/// window. No field here is host-mutated by the sampler.
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
+pub(crate) struct G15ExecutionSnapshot {
+    pub(crate) register_count: u16,
+    pub(crate) register_length: u16,
+    pub(crate) context_store_req: u64,
+    pub(crate) context_store_compl: u64,
+    pub(crate) recovery_marker: u32,
+    pub(crate) hardware_buffer_id: u32,
+    pub(crate) lifecycle_state: u32,
+    pub(crate) shared_compute: u32,
+    pub(crate) dispatch_seq: u32,
+}
+
+/// Typed E185 bridge from generic WorkQueue ownership to the selected G15 CL
+/// channel transport. Methods remain unused by commit/submit/run in E185.
+pub(crate) trait G15WorkQueueTransport: Send + Sync {
+    fn queue_info_fwva(&self) -> Result<NonZeroU64>;
+    fn state(&self) -> Result<G15WorkQueueTransportState>;
+    fn execution_snapshot(&self) -> Result<G15ExecutionSnapshot>;
+    fn write_command(&self, command_fwva: NonZeroU64) -> Result<u32>;
+    fn begin_submission(&self) -> Result<bool>;
+    fn finish_submission(&self, first_submission: bool) -> Result;
+    fn fail_submission(&self, first_submission: bool);
+}
+
+#[inline(always)]
+pub(crate) fn g15_submission_timestamp() -> u64 {
+    let raw: u64;
+
+    // SAFETY: this only reads the architectural counter.
+    unsafe {
+        core::arch::asm!(
+            "mrs {x}, CNTPCT_EL0",
+            x = out(reg) raw
+        );
+    }
+
+    raw
+}
 
 /// An enum of possible errors that might cause a piece of work to fail execution.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -98,6 +155,11 @@ impl From<WorkError> for kernel::error::Error {
 pub(crate) struct GpuContext {
     dev: driver::AsahiDevRef,
     data: Option<KBox<GpuObject<fw::workqueue::GpuContextData>>>,
+    /// True from the first possible QueueInfo publication until the native
+    /// firmware ReleaseResource handshake completes. This is intentionally
+    /// conservative: an uncertain pipe-send outcome must never turn into a
+    /// host-only free of a context firmware may have observed.
+    published_to_firmware: AtomicBool,
 }
 no_debug!(GpuContext);
 
@@ -108,12 +170,20 @@ impl GpuContext {
         alloc: &mut gpu::KernelAllocators,
         buffer: Arc<dyn core::any::Any + Send + Sync>,
     ) -> Result<GpuContext> {
+        let is_g15 = dev.gpu.get_cfg().gpu_gen == hw::GpuGen::G15;
         Ok(GpuContext {
             dev: dev.into(),
+            published_to_firmware: AtomicBool::new(false),
             data: Some(KBox::new(
                 alloc.shared.new_object(
                     fw::workqueue::GpuContextData { _buffer: buffer },
-                    |_inner| Default::default(),
+                    move |_inner| {
+                        if is_g15 {
+                            fw::workqueue::raw::GpuContextData::g15()
+                        } else {
+                            Default::default()
+                        }
+                    },
                 )?,
                 GFP_KERNEL,
             )?),
@@ -124,13 +194,19 @@ impl GpuContext {
     pub(crate) fn gpu_pointer(&self) -> GpuPointer<'_, fw::workqueue::GpuContextData> {
         self.data.as_ref().unwrap().gpu_pointer()
     }
+
+    pub(crate) fn is_published_to_firmware(&self) -> bool {
+        self.published_to_firmware.load(Ordering::Acquire)
+    }
 }
 
 impl Drop for GpuContext {
     fn drop(&mut self) {
         mod_dev_dbg!(self.dev, "GpuContext: Freeing GPU context\n");
         let data = self.data.take().unwrap();
-        (*self.dev).gpu.free_context(data);
+        (*self.dev)
+            .gpu
+            .free_context(data, self.is_published_to_firmware());
     }
 }
 
@@ -248,6 +324,13 @@ struct WorkQueueInner {
 #[versions(AGX)]
 #[pin_data]
 pub(crate) struct WorkQueue {
+    // E155 exact CL WorkQueue -> channel strong ownership. The type is opaque
+    // here to keep the generic WorkQueue layer independent of Queue's G15
+    // channel implementation, but the anchor is intentionally the first field:
+    // the final WorkQueue Arc therefore releases the channel lifetime before
+    // any base WorkQueue state is torn down. Every Job/Event WorkQueue Arc clone
+    // implicitly retains this same anchor.
+    _g15_owned_channel_lifetime: Option<Arc<dyn G15WorkQueueTransport>>,
     info_pointer: GpuWeakPointer<QueueInfo::ver>,
     #[pin]
     inner: Mutex<WorkQueueInner::ver>,
@@ -294,6 +377,47 @@ pub(crate) struct JobSubmission<'a> {
     wptr: u32,
     event_count: usize,
     command_count: usize,
+}
+
+/// E187 rollback-safe selected-channel submission token for the exact stock-empty
+/// G15 path. Merely creating this object does not touch firmware-visible channel
+/// memory; selected command placement occurs only in `run()`.
+#[versions(AGX)]
+#[allow(dead_code)]
+pub(crate) struct G15SelectedJobSubmission<'a> {
+    inner: Option<Guard<'a, WorkQueueInner::ver, MutexBackend>>,
+    transport: Arc<dyn G15WorkQueueTransport>,
+    event_count: usize,
+    command_count: usize,
+}
+
+/// E192 handoff between selected RunWorkQueue encoding and the future EP21
+/// doorbell. Dropping an uncompleted first-submit ticket makes scheduler
+/// publication Uncertain, so Queue teardown cannot recycle its selected state.
+pub(crate) struct G15SelectedRunCommit {
+    transport: Arc<dyn G15WorkQueueTransport>,
+    first_submission: bool,
+    completed: bool,
+}
+
+impl G15SelectedRunCommit {
+    pub(crate) fn complete(&mut self) -> Result {
+        self.transport.finish_submission(self.first_submission)?;
+        self.completed = true;
+        Ok(())
+    }
+
+    pub(crate) fn execution_snapshot(&self) -> Result<G15ExecutionSnapshot> {
+        self.transport.execution_snapshot()
+    }
+}
+
+impl Drop for G15SelectedRunCommit {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.transport.fail_submission(self.first_submission);
+        }
+    }
 }
 
 #[versions(AGX)]
@@ -412,6 +536,98 @@ impl Job::ver {
         }
     }
 
+    /// E187 stock-empty selected-channel readiness check. This remains separate
+    /// from the generic WorkQueue path and has no caller in this checkpoint.
+    #[allow(dead_code)]
+    pub(crate) fn can_submit_g15_selected_stock_empty(
+        &self,
+    ) -> Result<Option<dma_fence::Fence>> {
+        #[ver(G != G15)]
+        {
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            if self.pending.len() != 1 {
+                return Err(EINVAL);
+            }
+            let transport = self
+                .wq
+                ._g15_owned_channel_lifetime
+                .as_ref()
+                .ok_or(EINVAL)?;
+            let state = transport.state()?;
+            let next = (state.wptr + 1) % state.ring_size;
+            let inner = self.wq.inner.lock();
+            if inner.free_slots() > self.event_count && next != state.doneptr {
+                return Ok(None);
+            }
+            if let Some(work) = inner.pending.first() {
+                return Ok(Some(work.inner.get_fence()));
+            }
+            Err(EBUSY)
+        }
+    }
+
+    /// Move exactly one finalized stock-empty command into host pending ownership
+    /// while leaving the selected cached/uncached channel memory untouched. If
+    /// this token is dropped before `run()`, the ordinary event/pending rollback
+    /// remains complete because no firmware-visible ring mutation occurred.
+    #[allow(dead_code)]
+    pub(crate) fn submit_g15_selected_stock_empty(
+        &mut self,
+    ) -> Result<G15SelectedJobSubmission::ver<'_>> {
+        #[ver(G != G15)]
+        {
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            if !self.committed || self.submitted || self.pending.len() != 1 {
+                return Err(EINVAL);
+            }
+            let transport = self
+                .wq
+                ._g15_owned_channel_lifetime
+                .as_ref()
+                .ok_or(EINVAL)?
+                .clone();
+            let mut inner = self.wq.inner.lock();
+
+            if inner.submit_seq != self.event_info.cmd_seq
+                || inner.commit_seq < self.event_info.cmd_seq + 1
+            {
+                return Err(EINVAL);
+            }
+            let state = transport.state()?;
+            let next = (state.wptr + 1) % state.ring_size;
+            if next == state.doneptr {
+                return Err(EBUSY);
+            }
+
+            inner.pending.reserve(1, GFP_KERNEL)?;
+            inner.last_submitted = Some(self.event_info.value);
+
+            for mut command in self.pending.drain(..) {
+                command.as_mut().inner_mut().set_wptr(state.wptr);
+                inner
+                    .pending
+                    .push(command, GFP_KERNEL)
+                    .expect("push() failed after reserve()");
+            }
+
+            self.submitted = true;
+            Ok(G15SelectedJobSubmission::ver {
+                inner: Some(inner),
+                transport,
+                event_count: self.event_count,
+                command_count: 1,
+            })
+        }
+    }
+
     pub(crate) fn submit(&mut self) -> Result<JobSubmission::ver<'_>> {
         if !self.committed {
             pr_err!("WorkQueue: Tried to submit uncommitted Job\n");
@@ -516,11 +732,29 @@ impl<'a> JobSubmission::ver<'a> {
         let event_slot = event.0.slot();
 
         let msg = fw::channels::RunWorkQueueMsg::ver {
+            #[ver(G == G15)]
+            g15_timestamp: U64(g15_submission_timestamp()),
+            #[ver(G != G15)]
             pipe_type: inner.pipe_type,
+            #[ver(G != G15)]
             work_queue: Some(inner.info.weak_pointer()),
+            #[ver(G == G15)]
+            g15_work_queue_fwva: U64(inner.info.weak_pointer().into()),
+            #[ver(G != G15)]
             wptr: inner.wptr,
+            #[ver(G != G15)]
             event_slot,
+            #[ver(G != G15)]
             is_new: inner.new,
+            #[ver(G == G15)]
+            g15_pipe_type: inner.pipe_type,
+            #[ver(G == G15)]
+            g15_wptr: inner.wptr as u16,
+            #[ver(G == G15)]
+            g15_event_slot: event_slot as u8,
+            #[ver(G == G15)]
+            g15_is_new: inner.new,
+            #[ver(G != G15)]
             __pad: Default::default(),
         };
         channel.send(&msg);
@@ -535,6 +769,106 @@ impl<'a> JobSubmission::ver<'a> {
 
     pub(crate) fn priority(&self) -> u32 {
         self.inner.as_ref().expect("No inner?").priority
+    }
+}
+
+#[versions(AGX)]
+#[allow(dead_code)]
+impl<'a> G15SelectedJobSubmission::ver<'a> {
+    pub(crate) fn pipe_type(&self) -> Result<PipeType> {
+        self.inner.as_ref().map(|inner| inner.pipe_type).ok_or(EIO)
+    }
+
+    pub(crate) fn priority(&self) -> Result<u32> {
+        self.inner.as_ref().map(|inner| inner.priority).ok_or(EIO)
+    }
+
+    /// Perform the first firmware-visible mutation only after every message input
+    /// has been validated. After `write_command()` succeeds, the remaining path
+    /// is intentionally infallible: enqueue the already-formed RunWorkQueue and
+    /// advance host submission bookkeeping. The EP21 doorbell is still a later
+    /// caller boundary and E187 has no caller for this method.
+    pub(crate) fn run(
+        mut self,
+        channel: &mut channel::PipeChannel::ver,
+    ) -> Result<(G15SelectedRunCommit, u32)> {
+        #[ver(G != G15)]
+        {
+            let _ = channel;
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            if self.command_count != 1 {
+                return Err(EINVAL);
+            }
+            let queue_info_fwva = self.transport.queue_info_fwva()?;
+            let inner = self.inner.as_mut().ok_or(EIO)?;
+            let event = inner.event.as_ref().ok_or(EIO)?;
+            let event_slot: u8 = event.0.slot().try_into()?;
+            let command_index = inner.pending.len().checked_sub(1).ok_or(EIO)?;
+            let command_fwva = inner.pending[command_index].inner.gpu_va();
+            let pipe_type = inner.pipe_type;
+
+            // E188 exact authority: first/new state belongs to the selected
+            // channel, not generic WorkQueueInner.new. The first submission also
+            // starts the E191 scheduler publication transaction before any
+            // selected command-ring mutation can become visible.
+            let first_submission = self.transport.begin_submission()?;
+            // E195 closes only the first selected command. Until selected
+            // doneptr advancement is independently proven, a second command
+            // must fail before any selected ring mutation.
+            if !first_submission {
+                return Err(EBUSY);
+            }
+
+            let wptr = match self.transport.write_command(command_fwva) {
+                Ok(wptr) => wptr,
+                Err(err) => {
+                    self.transport.fail_submission(first_submission);
+                    return Err(err);
+                }
+            };
+
+            let msg = fw::channels::RunWorkQueueMsg::ver {
+                g15_timestamp: U64(g15_submission_timestamp()),
+                g15_work_queue_fwva: U64(queue_info_fwva.get()),
+                g15_pipe_type: pipe_type,
+                g15_wptr: wptr as u16,
+                g15_event_slot: event_slot,
+                g15_is_new: first_submission,
+            };
+            let pipe_token = channel.send(&msg);
+            inner.submit_seq += self.command_count as u64;
+
+            let completion = G15SelectedRunCommit {
+                transport: self.transport.clone(),
+                first_submission,
+                completed: false,
+            };
+            let inner = self.inner.take().expect("selected submission lost inner");
+            core::mem::drop(inner);
+            Ok((completion, pipe_token))
+        }
+    }
+}
+
+#[versions(AGX)]
+impl<'a> Drop for G15SelectedJobSubmission::ver<'a> {
+    fn drop(&mut self) {
+        let Some(inner) = self.inner.as_mut() else {
+            return;
+        };
+        let new_len = inner.pending.len() - self.command_count;
+        inner.pending.truncate(new_len);
+
+        let event = inner.event.as_mut().expect("selected submission lost event");
+        event.1.sub(self.event_count as u32);
+        let val = event.1;
+        inner.commit_seq -= self.command_count as u64;
+        inner.event_seq -= self.event_count as u64;
+        inner.last_submitted = Some(val);
     }
 }
 
@@ -638,6 +972,7 @@ impl WorkQueue::ver {
         event_manager: Arc<event::EventManager>,
         gpu_context: Arc<GpuContext>,
         notifier_list: Arc<GpuObject<fw::event::NotifierList>>,
+        g15_owned_channel_lifetime: Option<Arc<dyn G15WorkQueueTransport>>,
         pipe_type: PipeType,
         id: u64,
         priority: u32,
@@ -703,8 +1038,13 @@ impl WorkQueue::ver {
                         pending: Default::default(),
                         unk_9c: 0,
                         gpu_context: inner.gpu_context.gpu_pointer(),
+                        #[ver(G != G15)]
                         unk_a8: Default::default(),
-                        #[ver(V >= V13_2 && G < G14X)]
+                        #[ver(G == G15)]
+                        cdm_backoff_timeout_ac: 4,
+                        #[ver(G == G15)]
+                        pad_ad: Default::default(),
+                        #[ver(V >= V13_2 && G < G14X && G != G15)]
                         unk_b0: 0,
                     })
                 },
@@ -729,6 +1069,7 @@ impl WorkQueue::ver {
 
         Arc::pin_init(
             pin_init!(Self {
+                _g15_owned_channel_lifetime: g15_owned_channel_lifetime,
                 info_pointer,
                 inner <- match pipe_type {
                     PipeType::Vertex => new_mutex!(inner, "WorkQueue::inner (Vertex)"),
@@ -827,6 +1168,32 @@ impl WorkQueue::ver {
     pub(crate) fn info_pointer(&self) -> GpuWeakPointer<QueueInfo::ver> {
         self.info_pointer
     }
+
+    /// E185 compile-only selected-channel transport view. The normal generic
+    /// QueueInfo remains allocated, but this is the only typed route to the
+    /// exact G15 firmware-facing QueueInfo/ring state.
+    #[allow(dead_code)]
+    pub(crate) fn g15_selected_transport_state(
+        &self,
+    ) -> Result<(NonZeroU64, G15WorkQueueTransportState)> {
+        let transport = self._g15_owned_channel_lifetime.as_ref().ok_or(EINVAL)?;
+        Ok((transport.queue_info_fwva()?, transport.state()?))
+    }
+
+    /// E185 compile-only command-placement route. No submit/run caller uses it
+    /// yet; E184 requires this bridge before any G15 command can be published.
+    #[allow(dead_code)]
+    pub(crate) fn g15_selected_transport_write_command(
+        &self,
+        command_fwva: NonZeroU64,
+    ) -> Result<u32> {
+        self._g15_owned_channel_lifetime
+            .as_ref()
+            .ok_or(EINVAL)?
+            .write_command(command_fwva)
+    }
+
+
 }
 
 /// Trait used to erase the version-specific type of WorkQueues, to avoid leaking

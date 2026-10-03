@@ -16,7 +16,8 @@ use kernel::{
     drm::mm,
     error::Result,
     prelude::*,
-    str::CString, //
+    str::CString,
+    sync::{Arc, Mutex}, //
 };
 
 use crate::debug::*;
@@ -412,6 +413,373 @@ pub(crate) trait Allocator {
 
         let alloc = self.alloc_generic(size, align, None)?;
         GpuOnlyArray::<T, GenericAlloc<T, Self::Raw>>::new(alloc, count)
+    }
+}
+
+/// Raw allocation mapped through G15's accelerator-shared UAT bank 1.
+pub(crate) struct G15SharedBank1Allocation {
+    dev: AsahiDevRef,
+    ptr: Option<NonNull<u8>>,
+    gpu_ptr: u64,
+    _mapping: mmu::G15SharedBank1Mapping,
+    obj: crate::gem::ObjectRef,
+}
+
+unsafe impl Send for G15SharedBank1Allocation {}
+unsafe impl Sync for G15SharedBank1Allocation {}
+
+impl Drop for G15SharedBank1Allocation {
+    fn drop(&mut self) {
+        if debug_enabled(DebugFlags::FillAllocations) {
+            if let Ok(mut vmap) = self.obj.vmap() {
+                vmap.memset(0x42);
+            }
+        }
+    }
+}
+
+impl RawAllocation for G15SharedBank1Allocation {
+    fn ptr(&self) -> Option<NonNull<u8>> { self.ptr }
+    fn gpu_ptr(&self) -> u64 { self.gpu_ptr }
+    fn device(&self) -> &AsahiDevice { &self.dev }
+}
+
+pub(crate) type G15SharedGpuObject<T> =
+    GpuObject<T, GenericAlloc<T, G15SharedBank1Allocation>>;
+pub(crate) type G15SharedGpuArray<T> =
+    GpuArray<T, GenericAlloc<T, G15SharedBank1Allocation>>;
+
+/// Small-object allocator for the firmware-owned/shared G15 bank-1 aperture.
+pub(crate) struct G15SharedBank1Allocator {
+    dev: AsahiDevRef,
+    bank1: mmu::G15SharedBank1,
+    aperture: mmu::G15SharedBank1Aperture,
+    prot: mmu::Prot,
+    min_align: usize,
+    cpu_maps: bool,
+    notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
+    notify_mode: mmu::G15MappingNotifyMode,
+}
+
+impl G15SharedBank1Allocator {
+    /// Allocate one exact Apple-style shared-data array at the mapping page
+    /// base. Unlike the generic allocator helpers this deliberately omits debug
+    /// headers/trailing overflow padding, because either would change the FWVA
+    /// of the ABI object. The complete rounded backing is zeroed, matching
+    /// AGXFirmware::allocateSharedData().
+    #[allow(dead_code)]
+    pub(crate) fn array_empty_shared_data<T: Sized + Default>(
+        &mut self,
+        count: usize,
+    ) -> Result<G15SharedGpuArray<T>> {
+        let size = mem::size_of::<T>() * count;
+        let rounded = (size + mmu::UAT_PGSZ - 1) & !mmu::UAT_PGMSK;
+        let raw = self.alloc(size, mmu::UAT_PGSZ)?;
+
+        if let Some(p) = raw.ptr() {
+            // SAFETY: G15SharedBank1Allocator::alloc() rounds the backing to
+            // `rounded` bytes and page alignment above forces its logical
+            // offset to zero, so the whole mapped backing is writable here.
+            unsafe { p.as_ptr().write_bytes(0, rounded) };
+        } else {
+            return Err(EINVAL);
+        }
+
+        let alloc = GenericAlloc {
+            alloc: raw,
+            alloc_size: size,
+            debug_offset: 0,
+            padding: 0,
+            tag: 0,
+            pad_word: GUARD_MARKER | 0x81818181,
+            _p: PhantomData,
+        };
+        GpuArray::<T, GenericAlloc<T, G15SharedBank1Allocation>>::empty(alloc, count)
+    }
+
+    pub(crate) fn new(
+        dev: &AsahiDevice,
+        bank1: mmu::G15SharedBank1,
+        min_align: usize,
+        prot: mmu::Prot,
+        mut cpu_maps: bool,
+        notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
+    ) -> Self {
+        if debug_enabled(DebugFlags::ForceCPUMaps) { cpu_maps = true; }
+        Self {
+            dev: dev.into(),
+            bank1,
+            aperture: mmu::G15SharedBank1Aperture::Range7,
+            prot,
+            min_align,
+            cpu_maps,
+            notifier,
+            notify_mode: mmu::G15MappingNotifyMode::Immediate,
+        }
+    }
+
+    /// Dedicated normal eGartRange-7 allocator for exact G15 command-buffer
+    /// stamp/shared-event storage. E092 proves this is the compact-0x007 /
+    /// 0x...0447 class, distinct from the FList FW-Uncached 0x...044b class.
+    #[allow(dead_code)]
+    pub(crate) fn new_range7_event(
+        dev: &AsahiDevice,
+        bank1: mmu::G15SharedBank1,
+        min_align: usize,
+        mut cpu_maps: bool,
+        notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
+    ) -> Self {
+        if debug_enabled(DebugFlags::ForceCPUMaps) { cpu_maps = true; }
+        Self {
+            dev: dev.into(),
+            bank1,
+            aperture: mmu::G15SharedBank1Aperture::Range7,
+            prot: mmu::PROT_G15_RANGE7_FW,
+            min_align,
+            cpu_maps,
+            notifier,
+            notify_mode: mmu::G15MappingNotifyMode::Immediate,
+        }
+    }
+
+    /// Dedicated normal eGartRange-7 allocator for exact G15 timestamp-queue
+    /// resource-stack backings. E125 proves outer option 0x700000007, compact
+    /// option 0x007 and the established 0x...0447 firmware leaf class.
+    #[allow(dead_code)]
+    pub(crate) fn new_range7_timestamp_queue(
+        dev: &AsahiDevice,
+        bank1: mmu::G15SharedBank1,
+        min_align: usize,
+        mut cpu_maps: bool,
+        notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
+    ) -> Self {
+        if debug_enabled(DebugFlags::ForceCPUMaps) { cpu_maps = true; }
+        Self {
+            dev: dev.into(),
+            bank1,
+            aperture: mmu::G15SharedBank1Aperture::Range7,
+            prot: mmu::PROT_G15_RANGE7_FW,
+            min_align,
+            cpu_maps,
+            notifier,
+            notify_mode: mmu::G15MappingNotifyMode::Immediate,
+        }
+    }
+
+    /// Dedicated normal eGartRange-7 allocator for exact G15 uncached
+    /// firmware channel-memory resource-stack backings. E122 proves these use
+    /// the same compact-0x007 / 0x...0447 class as ordinary range-7 firmware
+    /// storage; the semantic constructor keeps them distinct from FList/HWMetrics.
+    #[allow(dead_code)]
+    pub(crate) fn new_range7_channel_memory(
+        dev: &AsahiDevice,
+        bank1: mmu::G15SharedBank1,
+        min_align: usize,
+        mut cpu_maps: bool,
+        notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
+    ) -> Self {
+        if debug_enabled(DebugFlags::ForceCPUMaps) { cpu_maps = true; }
+        Self {
+            dev: dev.into(),
+            bank1,
+            aperture: mmu::G15SharedBank1Aperture::Range7,
+            prot: mmu::PROT_G15_RANGE7_FW,
+            min_align,
+            cpu_maps,
+            notifier,
+            notify_mode: mmu::G15MappingNotifyMode::Immediate,
+        }
+    }
+
+    /// Dedicated eGartRange-7 allocator for the exact 8-byte AGXUMAFList
+    /// FW-Uncached-State object. It shares the collision-safe range-7 VA arena
+    /// with PM/q22 but fixes the distinct compact-0x00b protection class.
+    #[allow(dead_code)]
+    pub(crate) fn new_range7_flist(
+        dev: &AsahiDevice,
+        bank1: mmu::G15SharedBank1,
+        min_align: usize,
+        mut cpu_maps: bool,
+        notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
+    ) -> Self {
+        if debug_enabled(DebugFlags::ForceCPUMaps) { cpu_maps = true; }
+        Self {
+            dev: dev.into(),
+            bank1,
+            aperture: mmu::G15SharedBank1Aperture::Range7FList,
+            prot: mmu::PROT_G15_RANGE7_FLIST_FW,
+            min_align,
+            cpu_maps,
+            notifier,
+            notify_mode: mmu::G15MappingNotifyMode::Immediate,
+        }
+    }
+
+    /// Dedicated eGartRange-7 allocator for exact G15 UMA HWMetrics. E097
+    /// proves compact SecureGart option 0x30b and leaf 0x...040b, bit-identical
+    /// to the existing firmware/GPU shared uncached R/W protection shape.
+    #[allow(dead_code)]
+    pub(crate) fn new_range7_hwmetrics(
+        dev: &AsahiDevice,
+        bank1: mmu::G15SharedBank1,
+        min_align: usize,
+        mut cpu_maps: bool,
+        notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
+    ) -> Self {
+        if debug_enabled(DebugFlags::ForceCPUMaps) { cpu_maps = true; }
+        Self {
+            dev: dev.into(),
+            bank1,
+            aperture: mmu::G15SharedBank1Aperture::Range7HWMetrics,
+            prot: mmu::PROT_GPU_FW_SHARED_RW,
+            min_align,
+            cpu_maps,
+            notifier,
+            notify_mode: mmu::G15MappingNotifyMode::Immediate,
+        }
+    }
+
+    /// Dedicated special eGartRange-8 allocator for exact G15
+    /// `_AGFIChannelState` resource-stack backings. E116 proves compact option
+    /// 0x003 / leaf 0x...0443, with a distinct semantic ownership boundary
+    /// from FList Page-Pool-State despite the bit-identical protection shape.
+    #[allow(dead_code)]
+    pub(crate) fn new_range8_channel_state(
+        dev: &AsahiDevice,
+        bank1: mmu::G15SharedBank1,
+        min_align: usize,
+        mut cpu_maps: bool,
+        notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
+    ) -> Self {
+        if debug_enabled(DebugFlags::ForceCPUMaps) { cpu_maps = true; }
+        Self {
+            dev: dev.into(),
+            bank1,
+            aperture: mmu::G15SharedBank1Aperture::Range8,
+            prot: mmu::PROT_G15_RANGE8_FW,
+            min_align,
+            cpu_maps,
+            notifier,
+            notify_mode: mmu::G15MappingNotifyMode::Immediate,
+        }
+    }
+
+    /// Dedicated special eGartRange-8 allocator for exact G15 cached
+    /// firmware channel-memory resource-stack backings. E122 proves compact
+    /// option 0x003 / leaf 0x...0443, identical to the established range-8
+    /// protection shape but with a separate semantic ownership boundary.
+    #[allow(dead_code)]
+    pub(crate) fn new_range8_channel_memory(
+        dev: &AsahiDevice,
+        bank1: mmu::G15SharedBank1,
+        min_align: usize,
+        mut cpu_maps: bool,
+        notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
+    ) -> Self {
+        if debug_enabled(DebugFlags::ForceCPUMaps) { cpu_maps = true; }
+        Self {
+            dev: dev.into(),
+            bank1,
+            aperture: mmu::G15SharedBank1Aperture::Range8,
+            prot: mmu::PROT_G15_RANGE8_FW,
+            min_align,
+            cpu_maps,
+            notifier,
+            notify_mode: mmu::G15MappingNotifyMode::Immediate,
+        }
+    }
+
+    /// Dedicated exact G15 `_AGFISchedulerState` range-8 allocator. E126
+    /// proves the command-queue scheduler-state resource stack uses ordinary
+    /// special range 8: compact option 0x003 / leaf 0x...0443. Keeping this
+    /// semantic constructor separate prevents accidental use of range 7.
+    #[allow(dead_code)]
+    pub(crate) fn new_range8_scheduler_state(
+        dev: &AsahiDevice,
+        bank1: mmu::G15SharedBank1,
+        min_align: usize,
+        mut cpu_maps: bool,
+        notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
+    ) -> Self {
+        if debug_enabled(DebugFlags::ForceCPUMaps) { cpu_maps = true; }
+        Self {
+            dev: dev.into(),
+            bank1,
+            aperture: mmu::G15SharedBank1Aperture::Range8,
+            prot: mmu::PROT_G15_RANGE8_FW,
+            min_align,
+            cpu_maps,
+            notifier,
+            notify_mode: mmu::G15MappingNotifyMode::Immediate,
+        }
+    }
+
+    /// Dedicated eGartRange-8 allocator for G15 FList Page-Pool State objects.
+    /// The protection class is fixed by the exact E075 leaf proof rather than
+    /// supplied by callers, keeping PM/range-7 attributes impossible here.
+    #[allow(dead_code)]
+    pub(crate) fn new_range8(
+        dev: &AsahiDevice,
+        bank1: mmu::G15SharedBank1,
+        min_align: usize,
+        mut cpu_maps: bool,
+        notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
+    ) -> Self {
+        if debug_enabled(DebugFlags::ForceCPUMaps) { cpu_maps = true; }
+        Self {
+            dev: dev.into(),
+            bank1,
+            aperture: mmu::G15SharedBank1Aperture::Range8,
+            prot: mmu::PROT_G15_RANGE8_FW,
+            min_align,
+            cpu_maps,
+            notifier,
+            notify_mode: mmu::G15MappingNotifyMode::Immediate,
+        }
+    }
+
+    /// Exact 23J220 bootstrap resource policy: the PTE exists before the q22
+    /// producer gate is enabled, so the initial map is intentionally silent.
+    /// Once the shared notifier is activated, later growth and eventual
+    /// teardown use ordinary q22 map/unmap publication.
+    #[allow(dead_code)]
+    pub(crate) fn after_q22_activation(mut self) -> Self {
+        self.notify_mode = mmu::G15MappingNotifyMode::AfterActivation;
+        self
+    }
+}
+
+impl Allocator for G15SharedBank1Allocator {
+    type Raw = G15SharedBank1Allocation;
+    fn cpu_maps(&self) -> bool { self.cpu_maps }
+    fn min_align(&self) -> usize { self.min_align }
+
+    fn alloc(&mut self, size: usize, align: usize) -> Result<Self::Raw> {
+        let size_aligned = (size + mmu::UAT_PGSZ - 1) & !mmu::UAT_PGMSK;
+        let align = self.min_align.max(align);
+        let offset = (size_aligned - size) & !(align - 1);
+        let mut obj = crate::gem::new_kernel_object(&self.dev, size_aligned)?;
+        let p = obj.vmap()?.as_mut_ptr() as *mut u8;
+        if debug_enabled(DebugFlags::FillAllocations) { obj.vmap()?.memset(0xde); }
+        let mapping = self.bank1.map(
+            self.aperture,
+            &obj.gem,
+            size_aligned,
+            self.min_align.max(mmu::UAT_PGSZ) as u64,
+            self.prot,
+            true,
+            self.notifier.clone(),
+            self.notify_mode,
+        )?;
+        let iova = mapping.iova();
+        let ptr = unsafe { p.add(offset) };
+        Ok(G15SharedBank1Allocation {
+            dev: self.dev.clone(),
+            ptr: NonNull::new(ptr),
+            gpu_ptr: iova + offset as u64,
+            _mapping: mapping,
+            obj,
+        })
     }
 }
 

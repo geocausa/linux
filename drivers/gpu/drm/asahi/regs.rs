@@ -46,6 +46,79 @@ const CORE_MASKS_G14X: usize = 0xe01500;
 const FAULT_INFO_G14X: usize = 0xd8c0;
 const FAULT_ADDR_G14X: usize = 0xd8c8;
 
+// Apple G15 readChipInfo() derives its normal topology count from the same
+// ID_COUNTS_1 fields used for the G14X clusters-per-die * dies calculation.
+// Apple exposes this G15 value as AGXGPUCoreConfig +0x30 and labels it MGPUs.
+// Keep this compile-only until the rest of generation-7 GPU-ID/core-mask
+// decoding is independently closed; the live get_gpu_id() match still rejects 7.
+const fn g15_mgpu_count_from_id_counts_1(id_counts_1: u32) -> u32 {
+    ((id_counts_1 >> 8) & 0xff) * ((id_counts_1 >> 16) & 0xf)
+}
+
+// Apple G15 readChipInfo() has an explicit generation-7 core-ID switch.
+// Core IDs are independently named by Apple's kAGXGPUCoreName[] table.
+// Variant 1 deliberately remains unresolved here: the G15 subclass leaves
+// the pre-existing CoreConfig value untouched for that case. Variant 4 is
+// assigned G15C only when ID_COUNTS_1[19:16] == 1, exactly as Apple gates it.
+const fn g15_core_from_ids(id_version: u32, id_counts_1: u32) -> Option<hw::GpuCore> {
+    if (id_version >> 24) != 7 {
+        return None;
+    }
+
+    match (id_version >> 16) & 0xff {
+        0 => Some(hw::GpuCore::G15P),
+        2 => Some(hw::GpuCore::G15G),
+        3 => Some(hw::GpuCore::G15S),
+        4 if ((id_counts_1 >> 16) & 0xf) == 1 => Some(hw::GpuCore::G15C),
+        _ => None,
+    }
+}
+
+const fn g15_core_id_or_zero(id_version: u32, id_counts_1: u32) -> u32 {
+    match g15_core_from_ids(id_version, id_counts_1) {
+        Some(core) => core as u32,
+        None => 0,
+    }
+}
+
+// CoreConfig +0x44 is the width of one MGPU's entry in Apple's exported
+// `core_mask_list`. G15 normally takes ID_COUNTS_1[7:0]; the G15S case
+// explicitly forces that width to 10 before publishing the topology.
+const fn g15_cores_per_mgpu_from_ids(id_version: u32, id_counts_1: u32) -> u32 {
+    if (id_version >> 24) == 7 && ((id_version >> 16) & 0xff) == 3 {
+        10
+    } else {
+        id_counts_1 & 0xff
+    }
+}
+
+// Exact J615 identification registers captured by the guarded E009 read-only
+// probe. The gfx domain was restored fully off before the probe returned.
+const J615_G15_ID_VERSION: u32 = 0x0702_2000;
+const J615_G15_ID_COUNTS_1: u32 = 0x0011_010a;
+const J615_G15_ID_COUNTS_2: u32 = 0x0004_0404;
+const J615_G15_CORE_MASK_0: u32 = 0x0000_03ff;
+
+const _: [(); 7] = [(); (J615_G15_ID_VERSION >> 24) as usize];
+const _: [(); 2] = [(); ((J615_G15_ID_VERSION >> 16) & 0xff) as usize];
+const _: [(); 0x20] = [(); ((J615_G15_ID_VERSION >> 8) & 0xff) as usize];
+const _: [(); 1] = [(); g15_mgpu_count_from_id_counts_1(J615_G15_ID_COUNTS_1) as usize];
+const _: [(); 10] = [(); g15_cores_per_mgpu_from_ids(J615_G15_ID_VERSION, J615_G15_ID_COUNTS_1) as usize];
+const _: [(); 4] = [(); ((J615_G15_ID_COUNTS_2 >> 16) & 0xff) as usize];
+const _: [(); 10] = [(); J615_G15_CORE_MASK_0.count_ones() as usize];
+const _: [(); 0x3ff] = [(); (J615_G15_CORE_MASK_0 & ((1u32 << 10) - 1)) as usize];
+// Pin Apple's G15S override independently of the low byte supplied here.
+const _: [(); 10] = [(); g15_cores_per_mgpu_from_ids(0x0703_0000, 0x0011_0114) as usize];
+// Pin Apple's generation-7 switch and exact kAGXGPUCoreName[] IDs without
+// making get_gpu_id() accept generation 7 yet. The low 16 revision bits are
+// immaterial to this decoder, hence zero in these compile-time probes.
+const _: [(); 21] = [(); g15_core_id_or_zero(0x0700_0000, 0x0011_010a) as usize];
+const _: [(); 22] = [(); g15_core_id_or_zero(J615_G15_ID_VERSION, J615_G15_ID_COUNTS_1) as usize];
+const _: [(); 23] = [(); g15_core_id_or_zero(0x0703_0000, 0x0011_010a) as usize];
+const _: [(); 24] = [(); g15_core_id_or_zero(0x0704_0000, 0x0011_010a) as usize];
+const _: [(); 0] = [(); g15_core_id_or_zero(0x0701_0000, 0x0011_010a) as usize];
+const _: [(); 0] = [(); g15_core_id_or_zero(0x0704_0000, 0x0012_010a) as usize];
+
 /// Enum representing the unit that caused an MMU fault.
 #[allow(non_camel_case_types)]
 #[allow(clippy::upper_case_acronyms)]
@@ -157,6 +230,28 @@ pub(crate) struct Resources {
     sgx: Pin<KBox<Devres<IoMem<SGX_SIZE>>>>,
 }
 
+/// E370 read-only snapshot of the exact RGX register window consumed by the
+/// G15 RTKit scheduler path after RegisterArray construction.
+///
+/// Retained firmware proves HwDataB I/O mapping slot 3 is RGXRegs with physical
+/// base 0x290000000. DAT_fffffc000010e268 is loaded from that mapping's FWVA,
+/// so the offsets below are the same scheduler/control registers used by
+/// FUN_fffffc0000027c00() and FUN_fffffc000002bdd0().
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct G15SchedulerMmioSnapshot {
+    pub(crate) c020: u64,
+    pub(crate) c040: u64,
+    pub(crate) c048: u64,
+    pub(crate) c050: u64,
+    pub(crate) c058: u64,
+    pub(crate) c068: u64,
+    pub(crate) c140: u64,
+    pub(crate) c148: u64,
+    pub(crate) d800: u64,
+    pub(crate) d8f0: u64,
+    pub(crate) slot_10398: u32,
+}
+
 impl Resources {
     /// Map the required resources given our platform device.
     pub(crate) fn new(pdev: &platform::Device<Core>) -> Result<Resources> {
@@ -194,6 +289,22 @@ impl Resources {
         }
     }
 
+    pub(crate) fn g15_scheduler_mmio_snapshot(&self) -> G15SchedulerMmioSnapshot {
+        G15SchedulerMmioSnapshot {
+            c020: self.sgx_read64::<0xc020>(),
+            c040: self.sgx_read64::<0xc040>(),
+            c048: self.sgx_read64::<0xc048>(),
+            c050: self.sgx_read64::<0xc050>(),
+            c058: self.sgx_read64::<0xc058>(),
+            c068: self.sgx_read64::<0xc068>(),
+            c140: self.sgx_read64::<0xc140>(),
+            c148: self.sgx_read64::<0xc148>(),
+            d800: self.sgx_read64::<0xd800>(),
+            d8f0: self.sgx_read64::<0xd8f0>(),
+            slot_10398: self.sgx_read32::<0x10398>(),
+        }
+    }
+
     /* Not yet used
     fn sgx_write64<OFF: usize>(&self, val: u64) {
         if let Some(sgx) = self.sgx.try_access() {
@@ -217,6 +328,21 @@ impl Resources {
 
         let val = res.read32(CPU_CONTROL);
         res.write32(val | CPU_RUN, CPU_CONTROL);
+        Ok(())
+    }
+
+    /// Stop the ASC coprocessor CPU.
+    ///
+    /// Used by the fail-closed T8122 UAT-handoff preflight so the preloaded
+    /// firmware is explicitly stopped before platform genpd detaches/powers
+    /// the GPU domain off. This is the exact inverse of `start_cpu()`.
+    pub(crate) fn stop_cpu(pdev: &platform::Device<Core>) -> Result {
+        let asc_req = pdev.io_request_by_name(c_str!("asc")).ok_or(EINVAL)?;
+        let asc_iomem = KBox::pin_init(asc_req.iomap_sized::<ASC_CTL_SIZE>(), GFP_KERNEL)?;
+        let res = asc_iomem.access(pdev.as_ref())?.relaxed();
+
+        let val = res.read32(CPU_CONTROL);
+        res.write32(val & !CPU_RUN, CPU_CONTROL);
         Ok(())
     }
 
@@ -260,6 +386,13 @@ impl Resources {
                 core_mask_regs.push(self.sgx_read32::<{ CORE_MASKS_G14X + 8 }>(), GFP_KERNEL)?;
                 // Clusters per die * num dies
                 ((id_counts_1 >> 8) & 0xff) * ((id_counts_1 >> 16) & 0xf)
+            }
+            7 => {
+                // G15: E007 static reconstruction + guarded E009 powered probe
+                // prove the packed core mask begins at SGX +0xe01500 and the
+                // exported topology count is the MGPU count from ID_COUNTS_1.
+                core_mask_regs.push(self.sgx_read32::<CORE_MASKS_G14X>(), GFP_KERNEL)?;
+                g15_mgpu_count_from_id_counts_1(id_counts_1)
             }
             a => {
                 dev_err!(self.dev.as_ref(), "Unknown GPU generation {}\n", a);
@@ -337,6 +470,7 @@ impl Resources {
                 4 => hw::GpuGen::G13,
                 5 => hw::GpuGen::G14,
                 6 => hw::GpuGen::G14, // G14X has a separate ID
+                7 => hw::GpuGen::G15,
                 a => {
                     dev_err!(self.dev.as_ref(), "Unknown GPU generation {}\n", a);
                     return Err(ENODEV);

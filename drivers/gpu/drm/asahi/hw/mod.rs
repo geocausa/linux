@@ -15,6 +15,7 @@ pub(crate) mod t600x;
 pub(crate) mod t602x;
 pub(crate) mod t8103;
 pub(crate) mod t8112;
+pub(crate) mod t8122;
 
 /// GPU generation enumeration. Note: Part of the UABI.
 #[derive(Debug, PartialEq, Copy, Clone)]
@@ -22,6 +23,9 @@ pub(crate) mod t8112;
 pub(crate) enum GpuGen {
     G13 = 13,
     G14 = 14,
+    // Generation-7 identity is exposed only for the T8122 preflight path.
+    // The driver refuses before firmware start / DRM registration.
+    G15 = 15,
 }
 
 /// GPU variant enumeration. Note: Part of the UABI.
@@ -70,6 +74,17 @@ pub(crate) enum GpuCore {
     G14S = 16,
     G14C = 17,
     G14D = 18, // Split out, unlike G13D
+    // Exact Apple kAGXGPUCoreName[] indices from the G15 host driver.
+    // These are firmware/core ABI IDs only; adding them does not enable
+    // generation-7 runtime matching or extend the public GpuGen UABI.
+    #[allow(dead_code)]
+    G15M = 19,
+    #[allow(dead_code)]
+    G15PAgx2 = 20, // Apple string: G15P_AGX2
+    G15P = 21,
+    G15G = 22,
+    G15S = 23,
+    G15C = 24,
 }
 
 /// GPU revision ID. Note: Part of the firmware ABI.
@@ -209,7 +224,9 @@ pub(crate) struct HwConfig {
 
     /// Base clock used used for timekeeping.
     pub(crate) base_clock_hz: u32,
-    /// Output address space for the UAT on this SoC.
+    /// Input (GPU virtual) address space for the UAT on this SoC.
+    pub(crate) uat_ias: u32,
+    /// Output (physical) address space for the UAT on this SoC.
     pub(crate) uat_oas: u32,
     /// Number of dies on this SoC.
     pub(crate) num_dies: u32,

@@ -9,6 +9,7 @@ use kernel::dma_fence::*;
 use kernel::prelude::*;
 use kernel::{
     c_str,
+    new_mutex,
     dma_fence,
     drm::sched,
     macros::versions,
@@ -46,7 +47,9 @@ use crate::{
     workqueue, //
 };
 
+use core::num::NonZeroU64;
 use core::sync::atomic::{
+    AtomicU8,
     AtomicU64,
     Ordering, //
 };
@@ -69,10 +72,22 @@ pub(crate) trait Queue: Send + Sync {
         cmdbuf_raw: &[u8],
         objects: Pin<&xarray::XArray<KBox<file::Object>>>,
     ) -> Result;
+
+    /// E368 lab-only, observation-only snapshot. This does not publish a
+    /// command, ring a firmware doorbell, or mutate GPU-visible state.
+    fn g15_debug_execution_snapshot(&self) -> Result;
 }
 
 #[versions(AGX)]
 struct SubQueue {
+    // E155 exact AGXCLWorkQueue lifetime anchor. The concrete slot is also
+    // retained opaquely by the WorkQueue itself, so WorkQueue::Job/Event Arc
+    // clones cannot outlive an activated channel. Keep this host-side clone
+    // physically before `wq`; if this is the last external slot reference it
+    // is dropped before the WorkQueue Arc, while the WorkQueue's own anchor
+    // still preserves exact channel-before-base-WorkQueue destruction.
+    #[ver(G == G15)]
+    _g15_compute_channel: Option<Arc<Mutex<Option<G15UnpublishedComputeChannel::ver>>>>,
     wq: Arc<workqueue::WorkQueue::ver>,
 }
 
@@ -117,6 +132,650 @@ impl SubQueueJob::ver {
     }
 }
 
+/// Compile-only owner for exact 23J220 G15 UMA HWMetrics.
+///
+/// E097 proves one page-base 0x4000-byte range-7 mapping using compact UAT
+/// option 0x30b / leaf 0x00e000000000040b. The backing is zeroed once at
+/// channel construction and contains 0x100 records of 0x40 bytes. Apple keeps
+/// this mapping prepared for the channel lifetime. This owner remains
+/// unreachable and exposes no FWVA to RunCompute.
+#[allow(dead_code)]
+struct G15HWMetricsBacking {
+    _page: alloc::G15SharedGpuArray<u8>,
+    record_offset: u32,
+}
+
+#[allow(dead_code)]
+impl G15HWMetricsBacking {
+    const PAGE_BYTES: usize = 0x4000;
+    const RECORD_BYTES: u32 = 0x40;
+    const RECORD_COUNT: usize = Self::PAGE_BYTES / Self::RECORD_BYTES as usize;
+
+    fn new(
+        dev: &AsahiDevice,
+        bank1: mmu::G15SharedBank1,
+        mapping_notifier: Arc<Mutex<mmu::G15MappingNotifier>>,
+    ) -> Result<Self> {
+        let mut metrics_alloc = alloc::G15SharedBank1Allocator::new_range7_hwmetrics(
+            dev,
+            bank1,
+            mmu::UAT_PGSZ,
+            true,
+            Some(mapping_notifier),
+        );
+        let page = metrics_alloc.array_empty_shared_data::<u8>(Self::PAGE_BYTES)?;
+        if page.len() != Self::PAGE_BYTES
+            || Self::PAGE_BYTES != mmu::UAT_PGSZ
+            || Self::RECORD_COUNT != 0x100
+        {
+            return Err(EIO);
+        }
+        Ok(Self {
+            _page: page,
+            record_offset: 0,
+        })
+    }
+
+    /// Exact host ring update from AGXUMAFList::updateSubmitInfo(): return the
+    /// current record offset, then advance by 0x40 modulo one 0x4000 page.
+    fn take_record_offset(&mut self) -> u32 {
+        let current = self.record_offset;
+        self.record_offset = (self.record_offset + Self::RECORD_BYTES) % Self::PAGE_BYTES as u32;
+        current
+    }
+
+    fn take_record_fwva(&mut self) -> Result<u64> {
+        let base: u64 = self._page.weak_pointer().into();
+        let offset = self.take_record_offset() as u64;
+        base.checked_add(offset).ok_or(EOVERFLOW)
+    }
+}
+
+const _: [(); 0x100] = [(); G15HWMetricsBacking::RECORD_COUNT];
+
+/// E153 retires the E125-E127 duplicate local timestamp/scheduler/channel
+/// backing objects. Their exact reset byte images now execute through the real
+/// mapped accelerator-global resource leases in `buffer.rs`, at Queue/channel
+/// construction lifetime rather than command preparation.
+
+/// Persistent exact 23J220 CL-channel command-resource backing used by the
+/// stock-empty Compute SKU stream. E114 proves J615 owns one normal option-3
+/// eGartRange-5 resource of logical size 0x1f400. The already-proven range-5
+/// option-3 class is Linux's dedicated uncached range-5 allocator.
+///
+/// This owner is reachable only through the definition-only stock-empty owner
+/// graph below. It does not publish its FWVA to a live command.
+#[derive(Debug)]
+#[allow(dead_code)]
+struct G15ClCommandResourceBacking {
+    backing: GpuArray<u8>,
+}
+
+#[allow(dead_code)]
+impl G15ClCommandResourceBacking {
+    fn new(range5_uncached_alloc: &mut alloc::DefaultAllocator) -> Result<Self> {
+        let backing = range5_uncached_alloc.array_empty_tagged::<u8>(
+            fw::compute::G15_J615_CL_COMMAND_RESOURCE_BYTES,
+            b"CLCR",
+        )?;
+        let base: u64 = backing.weak_pointer().into();
+        if backing.len() != fw::compute::G15_J615_CL_COMMAND_RESOURCE_BYTES
+            || base == 0
+            || base & 0x3ff != 0
+        {
+            return Err(EIO);
+        }
+        Ok(Self { backing })
+    }
+
+    fn base_fwva(&self) -> Result<u64> {
+        let base: u64 = self.backing.weak_pointer().into();
+        if base == 0 || base & 0x3ff != 0 {
+            return Err(EIO);
+        }
+        Ok(base)
+    }
+}
+
+/// First phase of the E112 two-phase transaction. The rotating slots and
+/// command-independent UMA/HWMetrics assets are known, but the SKU bytes have
+/// not been serialized or written because the RunCompute FWVA is not known yet.
+#[derive(Debug)]
+#[allow(dead_code)]
+struct G15UnpublishedStockEmptyPrepare {
+    event_index: usize,
+    event_control_fwva: u64,
+    sku: fw::compute::G15ReservedSkuSlot,
+    channel_state_fwva: u64,
+    page_pool_state_fwva: u64,
+    hwmetrics_fwva: u64,
+    hardware_buffer_id: u32,
+    state_sequence: u32,
+}
+
+/// E131 closes the remaining command-local stock-empty SKU sources at the
+/// dormant finalize boundary. Exact 23J220 encodeCLCommandSKUStream() reads
+/// these values back from the already-initialized RunCompute image: counter
+/// +0x04, context ID +0x10, JobMeta fw-stamp/value/UUID/event-sequence at
+/// +0x7f0/+0x7f8/+0x808/+0x80c, plus user-timestamp presence at +0x828/+0x830.
+/// The finalizer therefore takes that typed command image instead of a parallel
+/// bag of raw values that could drift from the command being serialized.
+
+/// Fully materialized stock-empty command assets that are still deliberately
+/// unpublished. This token is not a firmware structure and has no RunCompute
+/// conversion/consumer. It exists only to prove the exact owner graph can
+/// produce one coherent set of addresses after callers have separately proved
+/// event-control and SKU slots retired.
+#[derive(Debug)]
+#[allow(dead_code)]
+struct G15UnpublishedStockEmptyCommandAssets {
+    event_control_fwva: u64,
+    sku_fwva: u64,
+    sku_size: u32,
+    page_pool_state_fwva: u64,
+    hwmetrics_fwva: u64,
+    hardware_buffer_id: u32,
+}
+
+/// Host-only staging image for the exact stock-empty RunCompute pointer/UMA
+/// fields closed by E071/E072/E088/E102. This is intentionally not a firmware
+/// structure and there is no method that writes it into `fw::compute::RunCompute`.
+/// Keeping the underlying non-Copy asset token inside preserves HardwareBuffer
+/// completion ownership until this staging object is consumed.
+#[derive(Debug)]
+#[allow(dead_code)]
+struct G15UnpublishedRunComputeFieldStage {
+    assets: G15UnpublishedStockEmptyCommandAssets,
+    event_control_fwva_14: u64,
+    sku_fwva_760: u64,
+    sku_size_768: u32,
+    page_pool_state_fwva_83e: u64,
+    uma_prepared_846: u8,
+    uma_min_pool_size_847: u64,
+    uma_ideal_pool_size_84f: u64,
+    hwmetrics_fwva_857: u64,
+}
+
+#[allow(dead_code)]
+impl G15UnpublishedRunComputeFieldStage {
+    /// Apply only the E111/E176 command-facing fields after phase-2 SKU
+    /// finalization. The destination must still be the exact fail-closed
+    /// phase-0 stock-empty image; rejecting any pre-existing pointer prevents
+    /// accidental double-application or mutation of a non-stock command.
+    fn apply_stock_empty_runcompute_fields(
+        &self,
+        command: &mut fw::compute::raw::RunComputeG15V14_7<'_>,
+    ) -> Result {
+        if self.event_control_fwva_14 == 0
+            || self.sku_fwva_760 == 0
+            || self.sku_size_768 as usize != fw::compute::G15_STOCK_EMPTY_SKU_STREAM_SIZE
+            || self.page_pool_state_fwva_83e == 0
+            || self.uma_prepared_846 != 1
+            || self.uma_min_pool_size_847 != 0
+            || self.uma_ideal_pool_size_84f != 0
+            || self.hwmetrics_fwva_857 == 0
+        {
+            return Err(EINVAL);
+        }
+
+        if command.g15_event_control_fwva_14.0 != 0
+            || command.g15_sku_stream_fwva_760.0 != 0
+            || command.g15_sku_stream_size_768 != 0
+            || command.g15_uma_page_pool_state_fwva_83e.0 != 0
+            || command.g15_uma_metrics_fwva_857.0 != 0
+            || command.g15_uma_prepared_846 != 1
+            || command.g15_uma_min_pool_size_847.0 != 0
+            || command.g15_uma_ideal_pool_size_84f.0 != 0
+        {
+            return Err(EBUSY);
+        }
+
+        command.g15_event_control_fwva_14 = U64(self.event_control_fwva_14);
+        command.g15_sku_stream_fwva_760 = U64(self.sku_fwva_760);
+        command.g15_sku_stream_size_768 = self.sku_size_768;
+        command.g15_uma_page_pool_state_fwva_83e = U64(self.page_pool_state_fwva_83e);
+        command.g15_uma_metrics_fwva_857 = U64(self.hwmetrics_fwva_857);
+        Ok(())
+    }
+
+    fn from_assets(assets: G15UnpublishedStockEmptyCommandAssets) -> Self {
+        Self {
+            event_control_fwva_14: assets.event_control_fwva,
+            sku_fwva_760: assets.sku_fwva,
+            sku_size_768: assets.sku_size,
+            page_pool_state_fwva_83e: assets.page_pool_state_fwva,
+            // Exact stock-empty prepared/min/ideal values from E071/E072.
+            uma_prepared_846: 1,
+            uma_min_pool_size_847: 0,
+            uma_ideal_pool_size_84f: 0,
+            hwmetrics_fwva_857: assets.hwmetrics_fwva,
+            assets,
+        }
+    }
+}
+
+/// Unreachable channel/command-side ownership for exact stock-empty G15
+/// Compute prerequisites.
+///
+/// E135 removes the FList/UMAPool from this lifetime: normal CL channels retain
+/// a reusable shared Compute pool selected by priority class, while the 0x100
+/// HardwareBuffer-ID namespace and pool-ID sequence are accelerator-global.
+/// This owner therefore keeps only channel/command resources. Every phase that
+/// needs Page-Pool State must receive a separate `G15SharedComputeUmaPoolOwner`.
+/// There is still no Queue call site and no RunCompute writer.
+#[allow(dead_code)]
+struct G15StockEmptyComputeChannelOwners {
+    // E130: exact Apple AGXFirmware +0x268 source is the 0xe10-byte Compute
+    // statistics slice. Linux already owns the equivalent object under the
+    // manager-global RuntimePointers lifetime; keep a typed weak FW pointer.
+    _compute_stats: GpuWeakPointer<fw::initdata::G15StatsComp>,
+    _event_control: G15EventControlBacking,
+    _hwmetrics: G15HWMetricsBacking,
+    _channel_resources: buffer::G15InitializedFirmwareChannelResources,
+    _cl_command_resource: G15ClCommandResourceBacking,
+    _sku: fw::compute::G15SkuBacking,
+}
+
+#[allow(dead_code)]
+impl G15StockEmptyComputeChannelOwners {
+    #[allow(clippy::too_many_arguments)]
+    fn new_unpublished(
+        dev: &AsahiDevice,
+        compute_stats: GpuWeakPointer<fw::initdata::G15StatsComp>,
+        channel_resources: buffer::G15InitializedFirmwareChannelResources,
+        range5_uncached_alloc: &mut alloc::DefaultAllocator,
+        bank1: mmu::G15SharedBank1,
+        mapping_notifier: Arc<Mutex<mmu::G15MappingNotifier>>,
+    ) -> Result<Self> {
+        // E130 keeps this boundary typed instead of accepting an arbitrary raw
+        // FWVA. The proven future producer is the manager-owned
+        // InitData/RuntimePointers g15_stats_comp weak pointer.
+        // Keep one shared bank-1/q22 lifetime for every exact shared resource.
+        let event_control = G15EventControlBacking::new(
+            dev,
+            bank1.clone(),
+            mapping_notifier.clone(),
+        )?;
+        let hwmetrics = G15HWMetricsBacking::new(
+            dev,
+            bank1.clone(),
+            mapping_notifier.clone(),
+        )?;
+        let cl_command_resource = G15ClCommandResourceBacking::new(range5_uncached_alloc)?;
+        let sku = fw::compute::G15SkuBacking::new(dev, bank1, mapping_notifier)?;
+
+        Ok(Self {
+            _compute_stats: compute_stats,
+            _event_control: event_control,
+            _hwmetrics: hwmetrics,
+            _channel_resources: channel_resources,
+            _cl_command_resource: cl_command_resource,
+            _sku: sku,
+        })
+    }
+
+    /// Phase 1: after the caller has bound both retirement guards, seed the
+    /// selected event-control state, reserve (but do not write) the SKU slot,
+    /// activate the exact stock-empty FList epoch and reserve the HWMetrics
+    /// record. No RunCompute address is required or published here.
+    fn prepare_unpublished_phase1(
+        &mut self,
+        uma_pool: &mut buffer::G15SharedComputeUmaPoolOwner,
+        event_index: usize,
+        state_sequence: u32,
+        sku_index: usize,
+        priority: u32,
+    ) -> Result<G15UnpublishedStockEmptyPrepare> {
+        let channel_state_fwva = self._channel_resources.channel_state_fwva();
+        if channel_state_fwva == 0 {
+            return Err(EIO);
+        }
+
+        self._event_control
+            .seed_selected_after_event_finish(event_index, state_sequence)?;
+        let event_control_fwva = self._event_control.control_fwva(event_index)?;
+        let sku = self._sku.reserve_retired_slot(sku_index)?;
+        if event_control_fwva == 0 || sku.fwva() == 0 {
+            return Err(EIO);
+        }
+
+        let lease = uma_pool.prepare_stock_empty_reference(priority)?;
+        let page_pool_state_fwva = match uma_pool.initialized_page_pool_state_fwva() {
+            Ok(fwva) => fwva,
+            Err(err) => {
+                let _ = uma_pool.complete_reference(lease.hardware_buffer_id);
+                return Err(err);
+            }
+        };
+        let hwmetrics_fwva = match self._hwmetrics.take_record_fwva() {
+            Ok(fwva) => fwva,
+            Err(err) => {
+                let _ = uma_pool.complete_reference(lease.hardware_buffer_id);
+                return Err(err);
+            }
+        };
+        if page_pool_state_fwva == 0 || hwmetrics_fwva == 0 {
+            let _ = uma_pool.complete_reference(lease.hardware_buffer_id);
+            return Err(EIO);
+        }
+
+        Ok(G15UnpublishedStockEmptyPrepare {
+            event_index,
+            event_control_fwva,
+            sku,
+            channel_state_fwva,
+            page_pool_state_fwva,
+            hwmetrics_fwva,
+            hardware_buffer_id: lease.hardware_buffer_id,
+            state_sequence,
+        })
+    }
+
+    /// Phase 2: after a future caller has initialized the RunCompute backing
+    /// and therefore knows both its typed image and FWVA, serialize E102 from
+    /// that exact command plus the already-owned persistent resources, then
+    /// write only the already-retired SKU slot. The result remains host-only.
+    fn finalize_unpublished(
+        &mut self,
+        uma_pool: &buffer::G15SharedComputeUmaPoolOwner,
+        prepared: G15UnpublishedStockEmptyPrepare,
+        command_fwva: u64,
+        command: &fw::compute::raw::RunComputeG15V14_7<'_>,
+    ) -> Result<G15UnpublishedRunComputeFieldStage> {
+        if command_fwva == 0 {
+            let _ = uma_pool.complete_reference(prepared.hardware_buffer_id);
+            return Err(EINVAL);
+        }
+
+        let channel_command_region_base_fwva = match self._cl_command_resource.base_fwva() {
+            Ok(fwva) => fwva,
+            Err(err) => {
+                let _ = uma_pool.complete_reference(prepared.hardware_buffer_id);
+                return Err(err);
+            }
+        };
+        let sku_input = fw::compute::G15StockEmptySkuInputs {
+            command_fwva,
+            stream_fwva: prepared.sku.fwva(),
+            // E130: manager-owned G15StatsComp is the exact Linux counterpart
+            // of Apple AGXFirmware +0x268 used by the stock-empty SKU stream.
+            firmware_state_fwva: self._compute_stats.into(),
+            channel_state_fwva: prepared.channel_state_fwva,
+            channel_command_region_base_fwva,
+            event_control_fwva: prepared.event_control_fwva,
+            page_pool_state_fwva: prepared.page_pool_state_fwva,
+            hwmetrics_fwva: prepared.hwmetrics_fwva,
+            // E131 exact command-local sources. Apple reads these from the
+            // same already-initialized RunCompute image immediately before
+            // serializing the SKU stream, so do not accept duplicate values.
+            fw_stamp_fwva: command.meta.fw_stamp.into(),
+            user_timestamps_present: command.user_timestamp_pointers.start_addr.is_some()
+                || command.user_timestamp_pointers.end_addr.is_some(),
+            command_counter: command.counter.0,
+            context_id: command.g15_context_id_10,
+            state_sequence: prepared.state_sequence,
+            queue_event_sequence: command.meta.event_seq,
+            // E119/E128: this dormant graph models the first normal J615 CL
+            // channel, whose AGXChannel +0x38 / G15JobMeta evctl_index is 0.
+            evctl_index: fw::workqueue::G15_J615_FIRST_CL_EVCTL_INDEX,
+            uuid: command.meta.uuid,
+            stamp_value: command.meta.stamp_value.raw(),
+            // E129 exact ordinary IOGPU device chain: userspace passes options=0,
+            // so IOServiceOpen type 5 propagates zero through IOGPUDeviceUserClient,
+            // IOGPU::createDevice(), AGXShared and AGXSecureGart. Together with the
+            // normal J615 accelerator soft-fault feature byte staying zero,
+            // AGXGart::isHWSoftFaultEnabled() is false for this target.
+            gart_soft_fault_enabled: false,
+            // E128 exact 23J220 configure chain: the base configure mask
+            // 0xf4840fffffff7f clears packed feature bit 39 (halfword +0x654
+            // bit 7); G15 and G15G preserve that bit. Stock J615 is false.
+            accelerator_654_bit7: false,
+        };
+        let stream = match fw::compute::G15StockEmptySkuStream::new(sku_input) {
+            Ok(stream) => stream,
+            Err(err) => {
+                let _ = uma_pool.complete_reference(prepared.hardware_buffer_id);
+                return Err(err);
+            }
+        };
+        let sku = match self
+            ._sku
+            .write_reserved_stock_empty_slot(prepared.sku, &stream)
+        {
+            Ok(sku) => sku,
+            Err(err) => {
+                let _ = uma_pool.complete_reference(prepared.hardware_buffer_id);
+                return Err(err);
+            }
+        };
+        if sku.fwva() == 0
+            || sku.size() as usize != fw::compute::G15_STOCK_EMPTY_SKU_STREAM_SIZE
+        {
+            let _ = uma_pool.complete_reference(prepared.hardware_buffer_id);
+            return Err(EIO);
+        }
+
+        Ok(G15UnpublishedRunComputeFieldStage::from_assets(
+            G15UnpublishedStockEmptyCommandAssets {
+                event_control_fwva: prepared.event_control_fwva,
+                sku_fwva: sku.fwva(),
+                sku_size: sku.size(),
+                page_pool_state_fwva: prepared.page_pool_state_fwva,
+                hwmetrics_fwva: prepared.hwmetrics_fwva,
+                hardware_buffer_id: prepared.hardware_buffer_id,
+            },
+        ))
+    }
+
+    fn abort_unpublished(
+        &self,
+        uma_pool: &buffer::G15SharedComputeUmaPoolOwner,
+        prepared: G15UnpublishedStockEmptyPrepare,
+    ) -> Result<bool> {
+        uma_pool.complete_reference(prepared.hardware_buffer_id)
+    }
+
+    fn complete_unpublished(
+        &self,
+        uma_pool: &buffer::G15SharedComputeUmaPoolOwner,
+        assets: G15UnpublishedStockEmptyCommandAssets,
+    ) -> Result<bool> {
+        uma_pool.complete_reference(assets.hardware_buffer_id)
+    }
+
+    fn complete_staged(
+        &self,
+        uma_pool: &buffer::G15SharedComputeUmaPoolOwner,
+        stage: G15UnpublishedRunComputeFieldStage,
+    ) -> Result<bool> {
+        self.complete_unpublished(uma_pool, stage.assets)
+    }
+}
+
+/// Compile-only owner for the exact 23J220 G15 command-buffer stamp and
+/// event-control shared-data backings.
+///
+/// E092 proves two page-based mappings with logical data at page offset zero:
+/// 36 four-byte stamps in normal range 7 and 36 0xc0-byte controls in range 8.
+/// This owner remains unreachable and exposes no selected event-control FWVA.
+/// E094 can seed the exact selected-state image only after its prior event has
+/// been retired; the event-machine reuse/selection lifecycle remains gated.
+#[allow(dead_code)]
+struct G15EventControlBacking {
+    _stamps: alloc::G15SharedGpuArray<Stamp>,
+    _controls: alloc::G15SharedGpuArray<fw::event::raw::G15EventControlBlock>,
+    _selector: fw::event::G15EventControlSelector,
+}
+
+#[allow(dead_code)]
+impl G15EventControlBacking {
+    fn new(
+        dev: &AsahiDevice,
+        bank1: mmu::G15SharedBank1,
+        mapping_notifier: Arc<Mutex<mmu::G15MappingNotifier>>,
+    ) -> Result<Self> {
+        // Apple shared-data logical addresses are page-base addresses. A page
+        // minimum alignment forces G15SharedBank1Allocator's sub-page offset to
+        // zero instead of packing these small objects at the end of a page.
+        let mut stamp_alloc = alloc::G15SharedBank1Allocator::new_range7_event(
+            dev,
+            bank1.clone(),
+            mmu::UAT_PGSZ,
+            true,
+            Some(mapping_notifier.clone()),
+        );
+        let stamps = stamp_alloc.array_empty_shared_data::<Stamp>(
+            fw::event::G15_EVENT_CONTROL_STATE_COUNT,
+        )?;
+
+        let mut control_alloc = alloc::G15SharedBank1Allocator::new_range8(
+            dev,
+            bank1,
+            mmu::UAT_PGSZ,
+            true,
+            Some(mapping_notifier),
+        );
+        let mut controls = control_alloc
+            .array_empty_shared_data::<fw::event::raw::G15EventControlBlock>(
+                fw::event::G15_EVENT_CONTROL_STATE_COUNT,
+            )?;
+
+        // Exact AGXCommandBuffer::init() construction boundary: all controls
+        // are zero except +0x00, which points at the corresponding stamp FWVA.
+        // G15 GPUVA->FWVA conversion is identity on the exact target.
+        for index in 0..fw::event::G15_EVENT_CONTROL_STATE_COUNT {
+            controls[index].stamp_fwva = U64(stamps.weak_item_pointer(index).into());
+        }
+
+        Ok(Self {
+            _stamps: stamps,
+            _controls: controls,
+            _selector: Default::default(),
+        })
+    }
+
+    /// Seed one already-selected state after the previous event occupying that
+    /// slot has been retired. This is deliberately not a complete
+    /// `nextCommandBufferState()` implementation: the exact IOGPU finish-event
+    /// operation must happen before this reset and is not modeled here yet.
+    fn seed_selected_after_event_finish(
+        &mut self,
+        index: usize,
+        state_sequence: u32,
+    ) -> Result {
+        if index >= fw::event::G15_EVENT_CONTROL_STATE_COUNT {
+            return Err(EINVAL);
+        }
+
+        // Exact 23J220 rotation boundary: clear the selected 0xc0 control and
+        // matching four-byte stamp, then restore the per-state fields.
+        self._stamps[index].0.store(0, Ordering::Relaxed);
+        let stamp_fwva: u64 = self._stamps.weak_item_pointer(index).into();
+        self._controls[index] = Default::default();
+        self._controls[index].stamp_fwva = U64(stamp_fwva);
+        self._controls[index].state_sequence_08 = state_sequence;
+        self._controls[index].effective_record_count_10 =
+            fw::event::G15_EVENT_CONTROL_J615_EFFECTIVE_RECORD_COUNT;
+        self._controls[index].sentinel_a8 = U64(u64::MAX);
+
+        Ok(())
+    }
+
+    fn control_fwva(&self, index: usize) -> Result<u64> {
+        if index >= fw::event::G15_EVENT_CONTROL_STATE_COUNT {
+            return Err(EINVAL);
+        }
+        Ok(self._controls.weak_item_pointer(index).into())
+    }
+
+    fn next_index(&self) -> usize {
+        (self._selector.current() + 1) % fw::event::G15_EVENT_CONTROL_STATE_COUNT
+    }
+
+    fn advance_index(&mut self) -> usize {
+        self._selector.advance()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+enum G15SchedulerPublicationState {
+    Unpublished = 0,
+    Publishing = 1,
+    Published = 2,
+    Released = 3,
+    Uncertain = 4,
+}
+
+/// Command-queue-lifetime ownership state for the selected G15 scheduler
+/// resource. E191 makes teardown fail-closed before any selected submit caller
+/// is enabled; later transport work may only advance this state monotonically.
+struct G15SchedulerPublication {
+    state: AtomicU8,
+}
+
+impl G15SchedulerPublication {
+    fn new() -> Self {
+        Self {
+            state: AtomicU8::new(G15SchedulerPublicationState::Unpublished as u8),
+        }
+    }
+
+    fn state(&self) -> G15SchedulerPublicationState {
+        match self.state.load(Ordering::Acquire) {
+            0 => G15SchedulerPublicationState::Unpublished,
+            1 => G15SchedulerPublicationState::Publishing,
+            2 => G15SchedulerPublicationState::Published,
+            3 => G15SchedulerPublicationState::Released,
+            _ => G15SchedulerPublicationState::Uncertain,
+        }
+    }
+
+    #[allow(dead_code)]
+    fn begin_publication(&self) -> Result {
+        self.state
+            .compare_exchange(
+                G15SchedulerPublicationState::Unpublished as u8,
+                G15SchedulerPublicationState::Publishing as u8,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .map(|_| ())
+            .map_err(|_| EBUSY)
+    }
+
+    #[allow(dead_code)]
+    fn mark_published(&self) -> Result {
+        self.state
+            .compare_exchange(
+                G15SchedulerPublicationState::Publishing as u8,
+                G15SchedulerPublicationState::Published as u8,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .map(|_| ())
+            .map_err(|_| EIO)
+    }
+
+    #[allow(dead_code)]
+    fn mark_uncertain(&self) {
+        self.state
+            .store(G15SchedulerPublicationState::Uncertain as u8, Ordering::Release);
+    }
+
+    fn mark_released(&self) -> Result {
+        self.state
+            .compare_exchange(
+                G15SchedulerPublicationState::Published as u8,
+                G15SchedulerPublicationState::Released as u8,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .map(|_| ())
+            .map_err(|_| EIO)
+    }
+}
+
 #[versions(AGX)]
 pub(crate) struct Queue {
     dev: AsahiDevRef,
@@ -140,8 +799,67 @@ pub(crate) struct QueueInner {
     notifier: Arc<GpuObject<fw::event::Notifier::ver>>,
     usc_exec_base: u64,
     id: u64,
+    // Apple G15 stores this sequence per AGXCommandQueue (+0x5c8) and every
+    // submitted channel command consumes one value from it across engines.
     #[ver(V >= V13_0B4)]
     counter: AtomicU64,
+    // G15 AGXParameterManagement +0x2c equivalent. Apple scopes the PM to
+    // AGX3DWorkQueue and advances this 80-record ring before each applicable
+    // render setup. The selector is independent from the range-5 backing below.
+    #[ver(G == G15)]
+    g15_pm_record_index: AtomicU32,
+    // Exact 0x6f0 Parameter Scene Allocations backing. Apple scopes this to
+    // AGXShared/eGartRange 5 and PM/work-queue lifetime. Register emission is
+    // still disabled; this only establishes the correct hidden-VA resource.
+    #[ver(G == G15)]
+    g15_pm_scene_alloc: GpuArray<u8>,
+    // Exact G15 TA-channel object-payload backing. Apple allocates one normal
+    // option-0x3 eGartRange-5 resource at channel initialization. J615's
+    // topology fixes its size at 0x80000 bytes. Register emission remains
+    // disabled; retaining the allocation here only reconstructs channel state.
+    #[ver(G == G15)]
+    g15_ta_object_payload: GpuArray<u8>,
+    // Exact E139-E143 AGXShared/client address-space bridge plus the allocator
+    // and bank-1/q22 handles required by the future lazy CL-channel transaction.
+    // E144 only retains these handles; no owner constructor or pool selector is
+    // called and no device-global pool ID is consumed.
+    #[ver(G == G15)]
+    _g15_uma_shared_pools: Option<Arc<Mutex<buffer::G15ClientUmaPoolContainerState>>>,
+    #[ver(G == G15)]
+    _g15_range5_ppl108: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
+    #[ver(G == G15)]
+    _g15_range5_uncached: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
+    #[ver(G == G15)]
+    _g15_range5_ppl308: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
+    #[ver(G == G15)]
+    _g15_range5_cached: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
+    #[ver(G == G15)]
+    _g15_shared_bank1: Option<mmu::G15SharedBank1>,
+    #[ver(G == G15)]
+    _g15_mapping_notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
+    // E154 exact per-client process identity captured at DRM File open. Apple
+    // copies IOGPUDevice +0x60 (proc_pid of the owning task) through command
+    // queue +0x490 into AGXChannel +0x4c / selected QueueInfo +0x50.
+    #[ver(G == G15)]
+    _g15_owner_pid: u32,
+    // E153 exact AGXCommandQueue-lifetime mapped selections from the global
+    // timestamp/scheduler stacks, initialized once during Queue construction.
+    #[ver(G == G15)]
+    _g15_fw_queue_resources: Option<buffer::G15FirmwareCommandQueueResourceLeases>,
+    #[ver(G == G15)]
+    _g15_scheduler_publication: Arc<G15SchedulerPublication>,
+    // Exact 0x2800 GPU-facing PM record backing. Apple uses range 5 with
+    // compact PTE class 0x300; the separate 0x40 tail is intentionally absent.
+    #[ver(G == G15)]
+    g15_pm_records: GpuArray<buffer::G15PmRecord>,
+    // Exact range-7 resources referenced by every PM record. Apple obtains the
+    // 0x140 metrics element from a firmware-owned resource stack and allocates
+    // the 0x80 page-list/statistics object separately; both map through shared
+    // UAT bank 1 with option word 0x700000007.
+    #[ver(G == G15)]
+    _g15_pm_page_metrics: alloc::G15SharedGpuArray<u8>,
+    #[ver(G == G15)]
+    _g15_pm_scene_stats: alloc::G15SharedGpuArray<u8>,
 }
 
 #[versions(AGX)]
@@ -171,6 +889,360 @@ impl JobFence::ver {
     }
 }
 
+/// Definition-only RAII command reference for the dormant G15 two-phase
+/// transaction. E112 requires the submission fence to be armed before rotating
+/// event/SKU state is reserved, but every constructor/finalizer failure must
+/// release that reference. Keeping the decrement in Drop makes those rollback
+/// paths structural rather than caller-convention dependent.
+#[versions(AGX)]
+#[allow(dead_code)]
+struct G15CommandFenceArm {
+    fence: UserFence<JobFence::ver>,
+}
+
+#[versions(AGX)]
+#[allow(dead_code)]
+impl G15CommandFenceArm::ver {
+    fn new(fence: &UserFence<JobFence::ver>) -> Self {
+        let fence = fence.clone();
+        fence.add_command();
+        Self { fence }
+    }
+
+    fn fence(&self) -> &UserFence<JobFence::ver> {
+        &self.fence
+    }
+}
+
+#[versions(AGX)]
+impl Drop for G15CommandFenceArm::ver {
+    fn drop(&mut self) {
+        self.fence.command_complete();
+    }
+}
+
+/// E134 pairs phase-1 ownership with the command fence reference that made the
+/// rotating-slot bindings legitimately in-flight. The arm survives every
+/// successful intermediate stage and rolls itself back automatically if any
+/// later construction path returns an error.
+#[versions(AGX)]
+#[allow(dead_code)]
+struct G15ArmedUnpublishedStockEmptyPrepare {
+    arm: G15CommandFenceArm::ver,
+    prepared: G15UnpublishedStockEmptyPrepare,
+}
+
+/// Final host-only E134 transaction token. The command reference remains armed
+/// until this token is consumed at the future completion boundary; dropping it
+/// on any unpublished/error path decrements the pending count automatically.
+#[versions(AGX)]
+#[allow(dead_code)]
+struct G15ArmedUnpublishedRunComputeFieldStage {
+    arm: G15CommandFenceArm::ver,
+    stage: G15UnpublishedRunComputeFieldStage,
+}
+
+/// GPU-VA-only WorkQueue command handle used after E182 transfers the actual
+/// typed allocation into the completion payload stored beside this handle in
+/// one SubmittedWork container. The proxy owns no GPU memory by itself.
+#[derive(Copy, Clone)]
+struct G15StockEmptyCommandRef {
+    gpu_va: core::num::NonZeroU64,
+}
+
+impl crate::object::OpaqueGpuObject for G15StockEmptyCommandRef {
+    fn gpu_va(&self) -> core::num::NonZeroU64 {
+        self.gpu_va
+    }
+}
+
+impl workqueue::OpaqueCommandObject for G15StockEmptyCommandRef {}
+
+/// E182 WorkQueue callback payload. The callback owns both the finalized armed
+/// assets and the real typed RunCompute allocation. Drop completes assets first
+/// while `command` is still alive; normal field destruction releases the command
+/// only after this destructor returns. If the channel disappeared impossibly,
+/// both are retained fail-closed.
+#[versions(AGX)]
+struct G15StockEmptyWorkQueuePayload {
+    channel: Arc<Mutex<Option<G15UnpublishedComputeChannel::ver>>>,
+    finalized: Option<G15ArmedUnpublishedRunComputeFieldStage::ver>,
+    command: Option<Arc<GpuObject<fw::compute::RunCompute::ver>>>,
+}
+
+#[versions(AGX)]
+impl G15StockEmptyWorkQueuePayload::ver {
+    /// Snapshot the real selected uncached channel cursors after firmware stamp
+    /// completion and before host resource cleanup. The bounded path uses this to observe
+    /// whether the first command advances the selected done pointer.
+    fn transport_state(&self) -> Result<buffer::G15ChannelTransportState> {
+        let slot = self.channel.lock();
+        let channel = (&*slot).as_ref().ok_or(EINVAL)?;
+        channel.transport_state()
+    }
+
+    #[ver(G == G15)]
+    fn fixed_shader_result(&self) -> Result<u32> {
+        const RESULT_OFF: usize = 0x300;
+        let command = self.command.as_ref().ok_or(EINVAL)?;
+        let bytes = command.g15_cdm_root.as_slice();
+        if bytes.len() < RESULT_OFF + 4 {
+            return Err(EIO);
+        }
+        Ok(u32::from_le_bytes([
+            bytes[RESULT_OFF],
+            bytes[RESULT_OFF + 1],
+            bytes[RESULT_OFF + 2],
+            bytes[RESULT_OFF + 3],
+        ]))
+    }
+
+    #[ver(G == G15)]
+    /// E251 observes whether firmware appends the G15-only register tail that
+    /// Alyssa's independently working M3 path sees after the host list. This is
+    /// deliberately read-only completion telemetry: the command and register
+    /// array have already been submitted and no field is mutated here.
+    fn log_register_snapshot(&self, dev: &kernel::device::Device) -> Result {
+        const HOST_REGISTER_COUNT: usize = 20;
+        const SNAPSHOT_END: usize = 40;
+        let command = self.command.as_ref().ok_or(EINVAL)?;
+
+        command.with(|raw, _inner| {
+            let regs = &raw.registers;
+            let count = regs.count;
+            let length = regs.length;
+            let addr: u64 = regs.addr.into();
+            dev_info!(
+                dev,
+                "T8122 G15 E251 RegisterArray post count={} length={:#x} addr={:#x}\n",
+                count,
+                length,
+                addr
+            );
+
+            for index in HOST_REGISTER_COUNT..SNAPSHOT_END {
+                let reg = &regs.registers[index];
+                let number = reg.number;
+                let value = reg.value.0;
+                if number != 0 || value != 0 || index < count as usize {
+                    dev_info!(
+                        dev,
+                        "T8122 G15 E251 RegisterArray[{}] number={:#x} value={:#x}\n",
+                        index,
+                        number,
+                        value
+                    );
+                }
+            }
+        });
+
+        Ok(())
+    }
+}
+
+#[versions(AGX)]
+impl Drop for G15StockEmptyWorkQueuePayload::ver {
+    fn drop(&mut self) {
+        let mut slot = self.channel.lock();
+        let Some(channel) = (&mut *slot).as_mut() else {
+            if let Some(finalized) = self.finalized.take() {
+                core::mem::forget(finalized);
+            }
+            if let Some(command) = self.command.take() {
+                core::mem::forget(command);
+            }
+            pr_err!(
+                "G15 WorkQueue payload lost Compute channel; retaining assets and command fail-closed\n"
+            );
+            return;
+        };
+
+        if let Some(finalized) = self.finalized.take() {
+            match channel.complete_stock_empty(finalized) {
+                Ok(_) => {
+                    channel.scrub_completed_stock_empty_slots();
+                    channel.inflight_command = None;
+                }
+                Err(err) => pr_err!(
+                    "G15 WorkQueue stock-empty completion cleanup failed: {:?}\n",
+                    err
+                ),
+            }
+        }
+        // `command` intentionally remains owned until after this Drop returns.
+    }
+}
+
+/// QueueJob-owned two-phase stock-empty transaction state. The prepared and
+/// finalized tokens are mutually exclusive; both retain the E134 fence arm.
+/// Keeping the channel-slot Arc here makes rollback/completion independent of
+/// the parent Queue lifetime once a job has acquired command assets.
+#[versions(AGX)]
+#[allow(dead_code)]
+struct G15QueueJobStockEmptyAssets {
+    channel: Arc<Mutex<Option<G15UnpublishedComputeChannel::ver>>>,
+    prepared: Option<G15ArmedUnpublishedStockEmptyPrepare::ver>,
+    finalized: Option<G15ArmedUnpublishedRunComputeFieldStage::ver>,
+    // E179 makes the typed RunCompute allocation part of the same per-job
+    // owner as the armed assets. No accessor exists, so an unpublished command
+    // cannot outlive or diverge from the transaction that finalized its SKU.
+    command: Option<GpuObject<fw::compute::RunCompute::ver>>,
+}
+
+#[versions(AGX)]
+#[allow(dead_code)]
+impl G15QueueJobStockEmptyAssets::ver {
+    fn new_prepared(
+        channel: Arc<Mutex<Option<G15UnpublishedComputeChannel::ver>>>,
+        prepared: G15ArmedUnpublishedStockEmptyPrepare::ver,
+    ) -> Self {
+        Self {
+            channel,
+            prepared: Some(prepared),
+            finalized: None,
+            command: None,
+        }
+    }
+
+    /// Consume phase 1 together with the exact typed RunCompute allocation.
+    /// The FWVA is derived from that object, the SKU finalizer reads the same
+    /// raw image, and E177 mutates that image in place. The command is retained
+    /// only after the finalized armed token is safely stored beside it.
+    fn finalize_owned_command(
+        &mut self,
+        command: GpuObject<fw::compute::RunCompute::ver>,
+    ) -> Result {
+        #[ver(G != G15)]
+        {
+            let _ = command;
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            let mut command = command;
+            if self.finalized.is_some() || self.command.is_some() {
+                return Err(EBUSY);
+            }
+            let prepared = self.prepared.take().ok_or(EINVAL)?;
+            let command_fwva = command.gpu_va().get();
+            let mut slot = self.channel.lock();
+            let Some(channel) = (&mut *slot).as_mut() else {
+                pr_err!(
+                    "G15 phase-2 lost channel; retaining token and command fail-closed\n"
+                );
+                core::mem::forget(prepared);
+                core::mem::forget(command);
+                return Err(ENODEV);
+            };
+
+            let finalized = command.with_mut(|raw, _inner| {
+                let finalized = channel.finalize_stock_empty(prepared, command_fwva, raw)?;
+                if let Err(apply_err) = finalized.stage.apply_stock_empty_runcompute_fields(raw) {
+                    match channel.complete_stock_empty(finalized) {
+                        Ok(_) => {
+                            channel.scrub_completed_stock_empty_slots();
+                            return Err(apply_err);
+                        }
+                        Err(err) => {
+                            pr_err!(
+                                "G15 phase-2 field apply cleanup failed: {:?}\n",
+                                err
+                            );
+                            return Err(err);
+                        }
+                    }
+                }
+                Ok(finalized)
+            })?;
+
+            self.finalized = Some(finalized);
+            self.command = Some(command);
+            Ok(())
+        }
+    }
+
+    /// Consume the finalized command state into one WorkQueue transfer pair.
+    /// The proxy supplies only the GPU VA; the callback payload keeps the real
+    /// allocation and armed assets inseparable until completion/drop.
+    fn take_workqueue_transfer(
+        &mut self,
+    ) -> Result<(G15StockEmptyCommandRef, G15StockEmptyWorkQueuePayload::ver)> {
+        if self.prepared.is_some() || self.finalized.is_none() || self.command.is_none() {
+            return Err(EINVAL);
+        }
+
+        let gpu_va = self.command.as_ref().ok_or(EINVAL)?.gpu_va();
+        let command = Arc::new(self.command.take().ok_or(EINVAL)?, GFP_KERNEL)?;
+        let finalized = self.finalized.take().ok_or(EINVAL)?;
+
+        {
+            let mut slot = self.channel.lock();
+            let Some(channel) = (&mut *slot).as_mut() else {
+                core::mem::forget(finalized);
+                core::mem::forget(command);
+                return Err(ENODEV);
+            };
+            if channel.inflight_command.is_some() {
+                core::mem::forget(finalized);
+                core::mem::forget(command);
+                return Err(EBUSY);
+            }
+            channel.inflight_command = Some(command.clone());
+        }
+
+        Ok((
+            G15StockEmptyCommandRef { gpu_va },
+            G15StockEmptyWorkQueuePayload::ver {
+                channel: self.channel.clone(),
+                finalized: Some(finalized),
+                command: Some(command),
+            },
+        ))
+    }
+}
+
+#[versions(AGX)]
+impl Drop for G15QueueJobStockEmptyAssets::ver {
+    fn drop(&mut self) {
+        let mut slot = self.channel.lock();
+        let Some(channel) = (&mut *slot).as_mut() else {
+            if let Some(prepared) = self.prepared.take() {
+                core::mem::forget(prepared);
+            }
+            if let Some(finalized) = self.finalized.take() {
+                core::mem::forget(finalized);
+            }
+            if let Some(command) = self.command.take() {
+                core::mem::forget(command);
+            }
+            pr_err!(
+                "G15 QueueJob lost Compute channel; retaining assets and command fail-closed\n"
+            );
+            return;
+        };
+
+        if let Some(prepared) = self.prepared.take() {
+            if let Err(err) = channel.abort_stock_empty(prepared) {
+                pr_err!(
+                    "G15 stock-empty phase-1 abort failed during QueueJob teardown: {:?}\n",
+                    err
+                );
+            }
+        }
+
+        if let Some(finalized) = self.finalized.take() {
+            match channel.complete_stock_empty(finalized) {
+                Ok(_) => channel.scrub_completed_stock_empty_slots(),
+                Err(err) => pr_err!(
+                    "G15 stock-empty finalized cleanup failed during QueueJob teardown: {:?}\n",
+                    err
+                ),
+            }
+        }
+    }
+}
+
 #[versions(AGX)]
 #[vtable]
 impl dma_fence::FenceOps for JobFence::ver {
@@ -182,11 +1254,717 @@ impl dma_fence::FenceOps for JobFence::ver {
     }
 }
 
+/// Host-only reuse guards for the 36 exact G15 command-buffer states.
+///
+/// E095 proves Apple finishes the selected host event before resetting the
+/// corresponding GPU-visible stamp/control state. Linux does not need to copy
+/// that IOGPUEvent layout: retaining the submission fence expresses the same
+/// lifetime. Reuse is fail-closed while any command covered by the fence is
+/// still pending.
+#[versions(AGX)]
+#[allow(dead_code)]
+struct G15EventControlRetirementGuards {
+    slots: KVec<Option<UserFence<JobFence::ver>>>,
+}
+
+#[versions(AGX)]
+#[allow(dead_code)]
+impl G15EventControlRetirementGuards::ver {
+    fn new() -> Result<Self> {
+        let mut slots = KVec::with_capacity(
+            fw::event::G15_EVENT_CONTROL_STATE_COUNT,
+            GFP_KERNEL,
+        )?;
+        for _ in 0..fw::event::G15_EVENT_CONTROL_STATE_COUNT {
+            slots.push(None, GFP_KERNEL)?;
+        }
+        Ok(Self { slots })
+    }
+
+    /// Bind a selected state only after the submission has acquired at least
+    /// one command reference. This prevents a not-yet-armed fence from being
+    /// mistaken for an already-retired slot.
+    fn bind_inflight(
+        &mut self,
+        index: usize,
+        fence: &UserFence<JobFence::ver>,
+    ) -> Result {
+        if index >= fw::event::G15_EVENT_CONTROL_STATE_COUNT {
+            return Err(EINVAL);
+        }
+        if self.slots[index].is_some() {
+            return Err(EBUSY);
+        }
+        if fence.pending.load(Ordering::Acquire) == 0 {
+            return Err(EINVAL);
+        }
+        self.slots[index] = Some(fence.clone());
+        Ok(())
+    }
+
+    /// Nonblocking Linux equivalent of the E095 reuse barrier. A caller may
+    /// clear/reseed the GPU-visible state only after this returns true.
+    fn try_finish(&mut self, index: usize) -> Result<bool> {
+        if index >= fw::event::G15_EVENT_CONTROL_STATE_COUNT {
+            return Err(EINVAL);
+        }
+        let done = match self.slots[index].as_ref() {
+            Some(fence) => fence.pending.load(Ordering::Acquire) == 0,
+            None => true,
+        };
+        if done {
+            self.slots[index] = None;
+        }
+        Ok(done)
+    }
+
+    fn rollback_bound(&mut self, index: usize) {
+        if index < fw::event::G15_EVENT_CONTROL_STATE_COUNT {
+            self.slots[index] = None;
+        }
+    }
+}
+
+/// Conservative Linux retirement guards for the exact 0xf0 G15 Compute SKU
+/// slots. E105 proves Apple scans from the next slot, tests the per-slot host
+/// event, and copies the new command event into the selected guard before
+/// writing the slot. A whole-submission JobFence is stronger than Apple's
+/// per-command event but cannot permit premature slot overwrite.
+#[versions(AGX)]
+#[allow(dead_code)]
+struct G15SkuRetirementGuards {
+    slots: KVec<Option<UserFence<JobFence::ver>>>,
+    current: u32,
+}
+
+#[versions(AGX)]
+#[allow(dead_code)]
+impl G15SkuRetirementGuards::ver {
+    fn new() -> Result<Self> {
+        let mut slots = KVec::with_capacity(fw::compute::G15_SKU_SLOT_COUNT, GFP_KERNEL)?;
+        for _ in 0..fw::compute::G15_SKU_SLOT_COUNT {
+            slots.push(None, GFP_KERNEL)?;
+        }
+        Ok(Self {
+            slots,
+            // Exact encoder initialization uses -1 so the first candidate is 0.
+            current: u32::MAX,
+        })
+    }
+
+    /// Exact selection order with a conservative Linux completion predicate:
+    /// `(current + 1) % 0xf0`, then scan at most 0xf0 candidates. The selected
+    /// slot is bound to the new fence before being returned to a future writer.
+    fn select_and_bind(&mut self, fence: &UserFence<JobFence::ver>) -> Result<usize> {
+        if fence.pending.load(Ordering::Acquire) == 0 {
+            return Err(EINVAL);
+        }
+
+        let count = fw::compute::G15_SKU_SLOT_COUNT as u32;
+        let mut candidate = self.current.wrapping_add(1) % count;
+        for _ in 0..fw::compute::G15_SKU_SLOT_COUNT {
+            let index = candidate as usize;
+            let reusable = match self.slots[index].as_ref() {
+                Some(prior) => prior.pending.load(Ordering::Acquire) == 0,
+                None => true,
+            };
+            if reusable {
+                self.slots[index] = Some(fence.clone());
+                self.current = candidate;
+                return Ok(index);
+            }
+            candidate = (candidate + 1) % count;
+        }
+        Err(ENOSPC)
+    }
+
+    /// Host-only analogue of AGXSKUEncoder::scrubEvents(): discard completed
+    /// retirement guards without changing the next-slot rotation point.
+    fn scrub_completed(&mut self) {
+        for slot in self.slots.iter_mut() {
+            let complete = slot
+                .as_ref()
+                .map(|fence| fence.pending.load(Ordering::Acquire) == 0)
+                .unwrap_or(false);
+            if complete {
+                *slot = None;
+            }
+        }
+    }
+
+    fn rollback_bound(&mut self, index: usize) {
+        if index < fw::compute::G15_SKU_SLOT_COUNT {
+            self.slots[index] = None;
+        }
+    }
+}
+
+/// Definition-only guard integration for one stock-empty Compute asset set.
+/// The versioned wrapper is required only because the existing submission fence
+/// and E096/E106 guard types are firmware-versioned. It has no Queue call site.
+#[versions(AGX)]
+#[allow(dead_code)]
+struct G15StockEmptyAssetGuards {
+    event: G15EventControlRetirementGuards::ver,
+    sku: G15SkuRetirementGuards::ver,
+}
+
+#[versions(AGX)]
+#[allow(dead_code)]
+impl G15StockEmptyAssetGuards::ver {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            event: G15EventControlRetirementGuards::ver::new()?,
+            sku: G15SkuRetirementGuards::ver::new()?,
+        })
+    }
+
+    /// Phase 1: acquire the command fence reference first, then bind both exact
+    /// rotating lifetimes and reserve command-independent assets without
+    /// serializing or writing SKU bytes. The returned token owns the fence arm;
+    /// every error path drops it after fresh slot/shared-pool rollback.
+    fn prepare_unpublished_phase1(
+        &mut self,
+        owners: &mut G15StockEmptyComputeChannelOwners,
+        uma_pool: &mut buffer::G15SharedComputeUmaPoolOwner,
+        fence: &UserFence<JobFence::ver>,
+        state_sequence: u32,
+        priority: u32,
+    ) -> Result<G15ArmedUnpublishedStockEmptyPrepare::ver> {
+        let arm = G15CommandFenceArm::ver::new(fence);
+
+        // Apple selects exactly the next command-buffer state and waits for
+        // that state to finish; it does not skip a busy event-control slot.
+        let event_index = owners._event_control.next_index();
+        if !self.event.try_finish(event_index)? {
+            return Err(EBUSY);
+        }
+        if owners._event_control.advance_index() != event_index {
+            return Err(EIO);
+        }
+        self.event.bind_inflight(event_index, arm.fence())?;
+
+        let sku_index = match self.sku.select_and_bind(arm.fence()) {
+            Ok(index) => index,
+            Err(err) => {
+                self.event.rollback_bound(event_index);
+                return Err(err);
+            }
+        };
+
+        match owners.prepare_unpublished_phase1(
+            uma_pool,
+            event_index,
+            state_sequence,
+            sku_index,
+            priority,
+        ) {
+            Ok(prepared) => Ok(G15ArmedUnpublishedStockEmptyPrepare::ver { arm, prepared }),
+            Err(err) => {
+                self.event.rollback_bound(event_index);
+                self.sku.rollback_bound(sku_index);
+                Err(err)
+            }
+        }
+    }
+
+    /// Phase 2: once a future caller has an initialized RunCompute image and
+    /// its FWVA, finalize the reserved slot from that same command while keeping
+    /// the command reference armed. This still has no firmware-command writer.
+    fn finalize_unpublished(
+        &mut self,
+        owners: &mut G15StockEmptyComputeChannelOwners,
+        uma_pool: &buffer::G15SharedComputeUmaPoolOwner,
+        armed: G15ArmedUnpublishedStockEmptyPrepare::ver,
+        command_fwva: u64,
+        command: &fw::compute::raw::RunComputeG15V14_7<'_>,
+    ) -> Result<G15ArmedUnpublishedRunComputeFieldStage::ver> {
+        let G15ArmedUnpublishedStockEmptyPrepare::ver { arm, prepared } = armed;
+        let event_index = prepared.event_index;
+        let sku_index = prepared.sku.index();
+        match owners.finalize_unpublished(uma_pool, prepared, command_fwva, command) {
+            Ok(stage) => Ok(G15ArmedUnpublishedRunComputeFieldStage::ver { arm, stage }),
+            Err(err) => {
+                self.event.rollback_bound(event_index);
+                self.sku.rollback_bound(sku_index);
+                Err(err)
+            }
+        }
+    }
+
+    fn abort_unpublished(
+        &mut self,
+        owners: &G15StockEmptyComputeChannelOwners,
+        uma_pool: &buffer::G15SharedComputeUmaPoolOwner,
+        armed: G15ArmedUnpublishedStockEmptyPrepare::ver,
+    ) -> Result<bool> {
+        let G15ArmedUnpublishedStockEmptyPrepare::ver { arm, prepared } = armed;
+        let event_index = prepared.event_index;
+        let sku_index = prepared.sku.index();
+        self.event.rollback_bound(event_index);
+        self.sku.rollback_bound(sku_index);
+        let result = owners.abort_unpublished(uma_pool, prepared);
+        core::mem::drop(arm);
+        result
+    }
+
+    /// Future completion boundary: release the FList HardwareBuffer epoch and
+    /// then let the armed token's Drop decrement the submission-fence command
+    /// reference. There is still no live caller in E136.
+    fn complete_staged(
+        &mut self,
+        owners: &G15StockEmptyComputeChannelOwners,
+        uma_pool: &buffer::G15SharedComputeUmaPoolOwner,
+        armed: G15ArmedUnpublishedRunComputeFieldStage::ver,
+    ) -> Result<bool> {
+        let G15ArmedUnpublishedRunComputeFieldStage::ver { arm, stage } = armed;
+        let result = owners.complete_staged(uma_pool, stage);
+        core::mem::drop(arm);
+        result
+    }
+
+    fn scrub_completed(&mut self) {
+        self.sku.scrub_completed();
+    }
+}
+
+/// One fully assembled but unpublished J615 Compute-channel host lifetime.
+///
+/// E153 couples the E142 shared-pool channel reference to the real mapped
+/// global channel-resource selections, command owners, and E110 retirement
+/// guards. The pool itself remains owned by
+/// the client-VM selection container and is reached only through the identity-
+/// checked channel reference. Dropping this object therefore tears down channel
+/// resources and then releases the modeled direct/active pool references without
+/// any RunCompute publication.
+#[versions(AGX)]
+#[allow(dead_code)]
+struct G15UnpublishedComputeChannel {
+    // Keep channel-local resources/guards and the exact global resource-stack
+    // leases physically ahead of the pool reference so normal Rust field-drop
+    // order tears them down before the modeled direct pool lifetime.
+    owners: G15StockEmptyComputeChannelOwners,
+    guards: G15StockEmptyAssetGuards::ver,
+    _fw_channel_resources: buffer::G15FirmwareChannelResourceLeases,
+    _scheduler_publication: Arc<G15SchedulerPublication>,
+    // E364 keeps E363's second host reference to the already-submitted command so
+    // Queue teardown can inspect firmware-appended RegisterArray/timing state and
+    // the shared UMA Page-Pool dispatch sequence without changing the command or
+    // relying on its completion callback.
+    inflight_command: Option<Arc<GpuObject<fw::compute::RunCompute::ver>>>,
+    commands_submitted: bool,
+    pool: buffer::G15ClientUmaComputeChannelRef,
+}
+
+#[versions(AGX)]
+#[allow(dead_code)]
+impl G15UnpublishedComputeChannel::ver {
+    fn pool_id(&self) -> u64 {
+        self.pool.pool_id()
+    }
+
+    #[ver(G == G15)]
+    fn log_inflight_execution_snapshot(&self, dev: &kernel::device::Device) -> Result {
+        const HOST_REGISTER_COUNT: usize = 20;
+        const SNAPSHOT_END: usize = 40;
+        let command = self.inflight_command.as_ref().ok_or(EINVAL)?;
+
+        command.with(|raw, _inner| {
+            let regs = &raw.registers;
+            // Firmware owns the appended tail and timing state while this command is in
+            // flight. Volatile/unaligned reads keep E364 observation-only and avoid
+            // treating DMA-updated words as ordinary CPU-stable state.
+            let count = unsafe { core::ptr::read_volatile(&regs.count) };
+            let length = unsafe { core::ptr::read_volatile(&regs.length) };
+            let addr: u64 = regs.addr.into();
+            dev_info!(
+                dev,
+                "T8122 G15 E364 RegisterArray inflight count={} length={:#x} addr={:#x}\n",
+                count,
+                length,
+                addr
+            );
+
+            for index in HOST_REGISTER_COUNT..SNAPSHOT_END {
+                let reg = &regs.registers[index];
+                let number = unsafe { core::ptr::read_volatile(&reg.number) };
+                let value = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(reg.value.0)) };
+                if number != 0 || value != 0 || index < count as usize {
+                    dev_info!(
+                        dev,
+                        "T8122 G15 E364 RegisterArray[{}] number={:#x} value={:#x}\n",
+                        index,
+                        number,
+                        value
+                    );
+                }
+            }
+
+            let dispatch = unsafe {
+                core::ptr::read_unaligned(core::ptr::addr_of!(raw.context_store_req.0))
+            };
+            let completion = unsafe {
+                core::ptr::read_unaligned(core::ptr::addr_of!(raw.context_store_compl.0))
+            };
+            let recovery = unsafe {
+                core::ptr::read_unaligned(core::ptr::addr_of!(raw.g15_recovery_marker_878.0))
+            };
+            dev_info!(
+                dev,
+                "T8122 G15 E364 CDM timing dispatch={:#x} completion={:#x} recovery={:#x}\n",
+                dispatch,
+                completion,
+                recovery
+            );
+        });
+
+        let (hardware_buffer_id, lifecycle, shared_compute, dispatch_seq) =
+            self.pool.dispatch_state_snapshot()?;
+        dev_info!(
+            dev,
+            "T8122 G15 E364 PagePool dispatch hwid={} lifecycle={} shared_compute={} seq={:#x}\n",
+            hardware_buffer_id,
+            lifecycle,
+            shared_compute,
+            dispatch_seq
+        );
+
+        Ok(())
+    }
+
+    /// E366 takes the same firmware-owned state as E364 without logging from
+    /// Queue Drop. This lets the scheduler path sample before teardown blocks.
+    fn early_execution_snapshot(&self) -> Result<workqueue::G15ExecutionSnapshot> {
+        #[ver(G != G15)]
+        {
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            let command = self.inflight_command.as_ref().ok_or(EINVAL)?;
+
+            let (
+                register_count,
+                register_length,
+                context_store_req,
+                context_store_compl,
+                recovery_marker,
+            ) = command.with(|raw, _inner| {
+                let regs = &raw.registers;
+                let register_count = unsafe { core::ptr::read_volatile(&regs.count) };
+                let register_length = unsafe { core::ptr::read_volatile(&regs.length) };
+                let context_store_req = unsafe {
+                    core::ptr::read_unaligned(core::ptr::addr_of!(raw.context_store_req.0))
+                };
+                let context_store_compl = unsafe {
+                    core::ptr::read_unaligned(core::ptr::addr_of!(raw.context_store_compl.0))
+                };
+                let recovery_marker = unsafe {
+                    core::ptr::read_unaligned(core::ptr::addr_of!(raw.g15_recovery_marker_878.0))
+                };
+                (
+                    register_count,
+                    register_length,
+                    context_store_req,
+                    context_store_compl,
+                    recovery_marker,
+                )
+            });
+
+            let (hardware_buffer_id, lifecycle_state, shared_compute, dispatch_seq) =
+                self.pool.dispatch_state_snapshot()?;
+
+            Ok(workqueue::G15ExecutionSnapshot {
+                register_count,
+                register_length,
+                context_store_req,
+                context_store_compl,
+                recovery_marker,
+                hardware_buffer_id,
+                lifecycle_state,
+                shared_compute,
+                dispatch_seq,
+            })
+        }
+    }
+
+    /// E172 gives the dormant E134 transaction its exact persistent lifetime
+    /// home without making it reachable from Queue submission. All command-
+    /// local rotating state stays under this CL channel, while shared UMA/FList
+    /// state is reached only through the channel's identity-checked pool ref.
+    fn prepare_stock_empty_phase1(
+        &mut self,
+        fence: &UserFence<JobFence::ver>,
+    ) -> Result<G15ArmedUnpublishedStockEmptyPrepare::ver> {
+        // E173 closes the last external scalar at this dormant boundary. Apple
+        // sources event-control +0x08 from AGXShared +0x160 before incrementing
+        // it. The channel's retained client-container reference now supplies
+        // the corresponding unmasked shared sequence directly.
+        let state_sequence = self.pool.next_stock_empty_state_sequence()?;
+        let owners = &mut self.owners;
+        let guards = &mut self.guards;
+        self.pool.with_pool(|uma_pool| {
+            guards.prepare_unpublished_phase1(
+                owners,
+                uma_pool,
+                fence,
+                state_sequence,
+                buffer::G15_J615_NORMAL_COMPUTE_POOL_PRIORITY_CLASS,
+            )
+        })
+    }
+
+    fn finalize_stock_empty(
+        &mut self,
+        armed: G15ArmedUnpublishedStockEmptyPrepare::ver,
+        command_fwva: u64,
+        command: &fw::compute::raw::RunComputeG15V14_7<'_>,
+    ) -> Result<G15ArmedUnpublishedRunComputeFieldStage::ver> {
+        let owners = &mut self.owners;
+        let guards = &mut self.guards;
+        self.pool.with_pool(|uma_pool| {
+            guards.finalize_unpublished(owners, uma_pool, armed, command_fwva, command)
+        })
+    }
+
+    fn abort_stock_empty(
+        &mut self,
+        armed: G15ArmedUnpublishedStockEmptyPrepare::ver,
+    ) -> Result<bool> {
+        let owners = &self.owners;
+        let guards = &mut self.guards;
+        self.pool
+            .with_pool(|uma_pool| guards.abort_unpublished(owners, uma_pool, armed))
+    }
+
+    fn complete_stock_empty(
+        &mut self,
+        armed: G15ArmedUnpublishedRunComputeFieldStage::ver,
+    ) -> Result<bool> {
+        let owners = &self.owners;
+        let guards = &mut self.guards;
+        self.pool
+            .with_pool(|uma_pool| guards.complete_staged(owners, uma_pool, armed))
+    }
+
+    fn scrub_completed_stock_empty_slots(&mut self) {
+        self.guards.scrub_completed();
+    }
+
+    fn transport_queue_info_fwva(&self) -> Result<u64> {
+        self._fw_channel_resources.transport_queue_info_fwva()
+    }
+
+    fn transport_state(&self) -> Result<buffer::G15ChannelTransportState> {
+        self._fw_channel_resources.transport_state()
+    }
+
+    fn transport_write_command(&self, command_fwva: u64) -> Result<u32> {
+        self._fw_channel_resources
+            .transport_write_command(command_fwva)
+    }
+
+    /// Exact channel +0x3c first-submit ownership from E188. Publication starts
+    /// before the first selected command-ring mutation, while the channel stays
+    /// logically unsubmitted until the future EP21 transaction succeeds.
+    fn begin_transport_submission(&mut self) -> Result<bool> {
+        if self.commands_submitted {
+            if self._scheduler_publication.state() != G15SchedulerPublicationState::Published {
+                return Err(EIO);
+            }
+            return Ok(false);
+        }
+        self._scheduler_publication.begin_publication()?;
+        Ok(true)
+    }
+
+    fn finish_transport_submission(&mut self, first_submission: bool) -> Result {
+        if first_submission {
+            if self.commands_submitted {
+                return Err(EIO);
+            }
+            self._scheduler_publication.mark_published()?;
+            self.commands_submitted = true;
+            return Ok(());
+        }
+        if !self.commands_submitted
+            || self._scheduler_publication.state() != G15SchedulerPublicationState::Published
+        {
+            return Err(EIO);
+        }
+        Ok(())
+    }
+
+    fn fail_transport_submission(&mut self, first_submission: bool) {
+        if first_submission {
+            self._scheduler_publication.mark_uncertain();
+        }
+    }
+}
+
+#[versions(AGX)]
+impl workqueue::G15WorkQueueTransport
+    for Mutex<Option<G15UnpublishedComputeChannel::ver>>
+{
+    fn queue_info_fwva(&self) -> Result<NonZeroU64> {
+        let slot = self.lock();
+        let channel = (&*slot).as_ref().ok_or(EINVAL)?;
+        NonZeroU64::new(channel.transport_queue_info_fwva()?).ok_or(EIO)
+    }
+
+    fn state(&self) -> Result<workqueue::G15WorkQueueTransportState> {
+        let slot = self.lock();
+        let channel = (&*slot).as_ref().ok_or(EINVAL)?;
+        let state = channel.transport_state()?;
+        Ok(workqueue::G15WorkQueueTransportState {
+            doneptr: state.doneptr,
+            wptr: state.wptr,
+            ring_size: state.ring_size,
+        })
+    }
+
+    fn execution_snapshot(&self) -> Result<workqueue::G15ExecutionSnapshot> {
+        let slot = self.lock();
+        let channel = (&*slot).as_ref().ok_or(EINVAL)?;
+        channel.early_execution_snapshot()
+    }
+
+    fn write_command(&self, command_fwva: NonZeroU64) -> Result<u32> {
+        let slot = self.lock();
+        let channel = (&*slot).as_ref().ok_or(EINVAL)?;
+        channel.transport_write_command(command_fwva.get())
+    }
+
+    fn begin_submission(&self) -> Result<bool> {
+        let mut slot = self.lock();
+        let channel = (&mut *slot).as_mut().ok_or(EINVAL)?;
+        channel.begin_transport_submission()
+    }
+
+    fn finish_submission(&self, first_submission: bool) -> Result {
+        let mut slot = self.lock();
+        let channel = (&mut *slot).as_mut().ok_or(EINVAL)?;
+        channel.finish_transport_submission(first_submission)
+    }
+
+    fn fail_submission(&self, first_submission: bool) {
+        let mut slot = self.lock();
+        if let Some(channel) = (&mut *slot).as_mut() {
+            channel.fail_transport_submission(first_submission);
+        }
+    }
+}
+
+#[versions(AGX)]
+#[allow(dead_code)]
+impl QueueInner::ver {
+    /// Assemble the exact owner tiers for the future first normal
+    /// non-foreground J615 CL/Compute channel, but return only a private host
+    /// object with no WorkQueue/submit attachment and no firmware-command
+    /// writer. Foreground-priority policy remains a separate future bridge.
+    fn g15_assemble_unpublished_nonforeground_compute_channel(
+        &self,
+        gpu: &gpu::GpuManager::ver,
+    ) -> Result<G15UnpublishedComputeChannel::ver> {
+        #[ver(G != G15)]
+        {
+            let _ = gpu;
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            let container = self._g15_uma_shared_pools.as_ref().ok_or(EINVAL)?;
+            let range5_cached = self._g15_range5_cached.as_ref().ok_or(EINVAL)?;
+            let range5_uncached = self._g15_range5_uncached.as_ref().ok_or(EINVAL)?;
+            let bank1 = self._g15_shared_bank1.as_ref().ok_or(EINVAL)?.clone();
+            let mapping_notifier = self
+                ._g15_mapping_notifier
+                .as_ref()
+                .ok_or(EINVAL)?
+                .clone();
+
+            // Pool selection/replacement is one client-container transaction.
+            // A reused pool consumes no new identity; a replacement consumes the
+            // next device-global identity before FList construction, as Apple.
+            let pool = gpu.g15_select_or_create_compute_pool(
+                container,
+                range5_cached,
+                bank1.clone(),
+                mapping_notifier.clone(),
+            )?;
+
+            // Exact AGXChannel::init() releases the shared-container selection
+            // lock before continuing with channel-local resources. `pool` now
+            // owns the modeled direct/active reference while this allocation
+            // proceeds independently. E153 acquires and initializes the three
+            // real accelerator-global selected resources here, at channel
+            // lifetime, using the already-initialized Queue timestamp/scheduler
+            // leases. Any later failure drops all three selections.
+            let fw_channel_resources = gpu.g15_select_channel_resources()?;
+            // E154 closes the final E127-era scalar inputs. Apple sources
+            // QueueInfo +0x50 from the owning process PID. Its normal
+            // non-foreground updatePriority() branch selects effective type 2,
+            // and chooseCLWorkQueue() then supplies literal QoS 2. Linux has no
+            // IOGPU foreground entitlement model yet, so keep the dormant path
+            // fail-closed to that exact non-foreground profile rather than
+            // inventing a foreground mapping.
+            let queue_resources = self._g15_fw_queue_resources.as_ref().ok_or(EIO)?;
+            let initialized_channel_resources = fw_channel_resources.initialize_j615_cl(
+                queue_resources,
+                self._g15_owner_pid,
+                fw::workqueue::G15_J615_NONFOREGROUND_EFFECTIVE_PRIORITY,
+                fw::workqueue::G15_J615_NONFOREGROUND_CL_QOS_ARGUMENT,
+            )?;
+            let owners = {
+                let mut range5_uncached = range5_uncached.lock();
+                G15StockEmptyComputeChannelOwners::new_unpublished(
+                    &self.dev,
+                    gpu.initdata.runtime_pointers.g15_stats_comp.weak_pointer(),
+                    initialized_channel_resources,
+                    &mut range5_uncached,
+                    bank1,
+                    mapping_notifier,
+                )?
+            };
+            let guards = G15StockEmptyAssetGuards::ver::new()?;
+
+            Ok(G15UnpublishedComputeChannel::ver {
+                pool,
+                owners,
+                guards,
+                _fw_channel_resources: fw_channel_resources,
+                _scheduler_publication: self._g15_scheduler_publication.clone(),
+                inflight_command: None,
+                commands_submitted: false,
+            })
+        }
+    }
+}
+
 #[versions(AGX)]
 pub(crate) struct QueueJob {
     dev: AsahiDevRef,
     vm_bind: mmu::VmBind,
     op_guard: Option<gpu::OpGuard>,
+    // E174 typed per-job retain of the exact E155 Compute WorkQueue channel
+    // slot. This is a clone of the same Arc stored by `SubQueue` and retained
+    // opaquely by `WorkQueue`; it creates no channel and performs no lock or
+    // command preparation. Keeping it in QueueJob gives a future E134 token a
+    // single per-submission lifetime home without inventing a second owner.
+    #[ver(G == G15)]
+    _g15_compute_channel: Option<Arc<Mutex<Option<G15UnpublishedComputeChannel::ver>>>>,
+    // E175 stores a future phase-1 token only in this per-job RAII owner. The
+    // acquisition method remains zero-caller; None is the only live value.
+    #[ver(G == G15)]
+    _g15_stock_empty_assets: Option<G15QueueJobStockEmptyAssets::ver>,
+    // E196 marks the one-command stock-empty selected scheduler route. The
+    // public G15 file::submit gate still prevents userspace from reaching it.
+    #[ver(G == G15)]
+    g15_stock_empty_selected: bool,
+    #[ver(G == G15)]
+    g15_selected_prepare_failed: bool,
     sj_vtx: Option<SubQueueJob::ver>,
     sj_frag: Option<SubQueueJob::ver>,
     sj_comp: Option<SubQueueJob::ver>,
@@ -199,6 +1977,153 @@ pub(crate) struct QueueJob {
 
 #[versions(AGX)]
 impl QueueJob::ver {
+    /// Dormant E175 entry point for the exact E134 phase-1 transaction. It
+    /// requires the E168 lazy channel to already exist, acquires assets through
+    /// that exact slot, and immediately moves the armed token into the RAII
+    /// owner above. There are deliberately no callers in E175.
+    fn prepare_g15_stock_empty_phase1(&mut self) -> Result {
+        #[ver(G != G15)]
+        {
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            if self._g15_stock_empty_assets.is_some() {
+                return Err(EBUSY);
+            }
+            let channel_slot = self._g15_compute_channel.as_ref().ok_or(EINVAL)?.clone();
+            let armed = {
+                let mut slot = channel_slot.lock();
+                (&mut *slot)
+                    .as_mut()
+                    .ok_or(EINVAL)?
+                    .prepare_stock_empty_phase1(&self.fence)?
+            };
+            self._g15_stock_empty_assets =
+                Some(G15QueueJobStockEmptyAssets::ver::new_prepared(channel_slot, armed));
+            Ok(())
+        }
+    }
+
+    /// Dormant E179 phase-2 transition. Ownership of the already-initialized
+    /// typed RunCompute object moves into the same QueueJob RAII state as the
+    /// phase-1 token. Its FWVA is derived internally and no command reference is
+    /// returned or exposed for WorkQueue publication.
+    fn finalize_g15_stock_empty_phase2(
+        &mut self,
+        command: GpuObject<fw::compute::RunCompute::ver>,
+    ) -> Result {
+        #[ver(G != G15)]
+        {
+            let _ = command;
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            self._g15_stock_empty_assets
+                .as_mut()
+                .ok_or(EINVAL)?
+                .finalize_owned_command(command)
+        }
+    }
+
+    /// Stock-empty transaction wrapper. Phase 1 installs the armed RAII owner
+    /// before `build_command` can run, so command allocation can never precede
+    /// the E134 fence reference / rotating-slot bindings through this API. Any
+    /// builder or phase-2 error drops the owner immediately and therefore runs
+    /// the existing explicit abort/completion rollback before returning.
+    fn construct_g15_stock_empty_unpublished(
+        &mut self,
+        build_command: impl FnOnce() -> Result<GpuObject<fw::compute::RunCompute::ver>>,
+    ) -> Result {
+        #[ver(G != G15)]
+        {
+            let _ = build_command;
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            self.prepare_g15_stock_empty_phase1()?;
+
+            let command = match build_command() {
+                Ok(command) => command,
+                Err(err) => {
+                    core::mem::drop(self._g15_stock_empty_assets.take());
+                    return Err(err);
+                }
+            };
+
+            if let Err(err) = self.finalize_g15_stock_empty_phase2(command) {
+                core::mem::drop(self._g15_stock_empty_assets.take());
+                return Err(err);
+            }
+
+            Ok(())
+        }
+    }
+
+    /// Stock-empty one-way transfer into the existing Compute WorkQueue job.
+    /// Phase 1 already armed exactly one command reference, so this path must
+    /// not call `add_command()` again. The callback payload owns the finalized
+    /// token and actual command allocation; `add_cb()` receives only its GPU VA
+    /// proxy and stores both values in the same SubmittedWork container.
+    fn transfer_g15_stock_empty_to_workqueue(&mut self) -> Result {
+        #[ver(G != G15)]
+        {
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            if self.fence.pending.load(Ordering::Acquire) == 0 {
+                return Err(EINVAL);
+            }
+
+            let vm_slot = self.vm_bind.slot();
+            let fence = self.fence.clone();
+            let dev = self.dev.clone();
+            let job_id = self.id;
+            let (command_ref, payload) = self
+                ._g15_stock_empty_assets
+                .as_mut()
+                .ok_or(EINVAL)?
+                .take_workqueue_transfer()?;
+
+            // The per-job owner is empty after extraction. Drop it now so there
+            // is exactly one owner for the command/finalized token: `payload`.
+            core::mem::drop(self._g15_stock_empty_assets.take());
+
+            let comp_job = self.get_comp()?;
+            comp_job.add_cb(command_ref, vm_slot, move |error| {
+                let selected_state = payload.transport_state();
+                let fixed_result = payload.fixed_shader_result();
+                let register_snapshot = payload.log_register_snapshot(dev.as_ref());
+                dev_info!(
+                    dev.as_ref(),
+                    "T8122 G15 E251 WorkQueue completion job={} error={:?} selected_state={:?} result={:?} register_snapshot={:?}\n",
+                    job_id,
+                    error,
+                    selected_state,
+                    fixed_result,
+                    register_snapshot
+                );
+                if let Some(err) = error {
+                    fence.set_error(err.into());
+                } else if fixed_result != Ok(0xffff_ffff) {
+                    // E321 STOP-only shader deliberately performs no store.
+                    // Successful engine retirement must preserve the sentinel.
+                    fence.set_error(EIO);
+                }
+                core::mem::drop(payload);
+            })?;
+            comp_job.next_seq();
+            Ok(())
+        }
+    }
+
     fn get_vtx(&mut self) -> Result<&mut workqueue::Job::ver> {
         self.sj_vtx
             .as_mut()
@@ -244,6 +2169,33 @@ impl sched::JobImpl for QueueJob::ver {
     fn prepare(job: &mut sched::Job<Self>) -> Option<Fence> {
         mod_dev_dbg!(job.dev, "QueueJob {}: Checking runnability\n", job.id);
 
+        #[ver(G == G15)]
+        if job.g15_stock_empty_selected {
+            if job.g15_selected_prepare_failed
+                || job.sj_vtx.as_ref().and_then(|sj| sj.job.as_ref()).is_some()
+                || job.sj_frag.as_ref().and_then(|sj| sj.job.as_ref()).is_some()
+            {
+                job.g15_selected_prepare_failed = true;
+                return None;
+            }
+            let Some(comp_job) = job.sj_comp.as_ref().and_then(|sj| sj.job.as_ref()) else {
+                job.g15_selected_prepare_failed = true;
+                return None;
+            };
+            return match comp_job.can_submit_g15_selected_stock_empty() {
+                Ok(wait) => wait,
+                Err(err) => {
+                    pr_err!(
+                        "G15 selected stock-empty readiness failed for QueueJob {}: {:?}\n",
+                        job.id,
+                        err
+                    );
+                    job.g15_selected_prepare_failed = true;
+                    None
+                }
+            };
+        }
+
         if let Some(sj) = job.sj_vtx.as_ref() {
             if let Some(fence) = sj.can_submit() {
                 mod_dev_dbg!(
@@ -280,6 +2232,15 @@ impl sched::JobImpl for QueueJob::ver {
     #[allow(unused_assignments)]
     fn run(job: &mut sched::Job<Self>) -> Result<Option<dma_fence::Fence>> {
         mod_dev_dbg!(job.dev, "QueueJob {}: Running Job\n", job.id);
+
+        #[ver(G == G15)]
+        if job.g15_stock_empty_selected
+            && (job.g15_selected_prepare_failed || job.notification_count != 1)
+        {
+            // Do not mutate the notifier threshold when selected readiness
+            // already failed. The one-command route owns exactly one event.
+            return Err(EIO);
+        }
 
         // We can only increase the notifier threshold here, now that we are
         // actually running the job. We cannot increase it while queueing the
@@ -341,6 +2302,28 @@ impl sched::JobImpl for QueueJob::ver {
                 return Err(EIO);
             }
         };
+
+        #[ver(G == G15)]
+        if job.g15_stock_empty_selected {
+            if job.op_guard.is_some()
+                || job.notification_count != 1
+                || job.sj_vtx.as_ref().and_then(|sj| sj.job.as_ref()).is_some()
+                || job.sj_frag.as_ref().and_then(|sj| sj.job.as_ref()).is_some()
+            {
+                return Err(EIO);
+            }
+
+            let mut comp_job = job
+                .sj_comp
+                .as_mut()
+                .and_then(|sj| sj.job.take())
+                .ok_or(EIO)?;
+            let selected = comp_job.submit_g15_selected_stock_empty()?;
+            gpu.run_g15_selected_job(selected)?;
+            core::mem::drop(comp_job);
+            job.did_run = true;
+            return Ok(Some(Fence::from_fence(&job.fence)));
+        }
 
         if job.op_guard.is_none() {
             job.op_guard = Some(gpu.start_op()?);
@@ -439,6 +2422,15 @@ impl Queue::ver {
         alloc: &mut gpu::KernelAllocators,
         ualloc: Arc<Mutex<alloc::DefaultAllocator>>,
         ualloc_priv: Arc<Mutex<alloc::DefaultAllocator>>,
+        _g15_ualloc_range5_ppl108: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
+        _g15_ualloc_range5_uncached: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
+        _g15_ualloc_range5_ppl308: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
+        _g15_ualloc_range5_cached: Option<Arc<Mutex<alloc::DefaultAllocator>>>,
+        _g15_uma_shared_pools: Option<Arc<Mutex<buffer::G15ClientUmaPoolContainerState>>>,
+        _owner_pid: u32,
+        _g15_shared_bank1: Option<mmu::G15SharedBank1>,
+        _g15_mapping_notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
+        _g15_fw_queue_resources: Option<buffer::G15FirmwareCommandQueueResourceLeases>,
         event_manager: Arc<event::EventManager>,
         mgr: &buffer::BufferManager::ver,
         id: u64,
@@ -482,6 +2474,82 @@ impl Queue::ver {
         let buffer =
             buffer::Buffer::ver::new(&*(*dev).gpu, alloc, ualloc.clone(), ualloc_priv, mgr)?;
 
+        #[ver(G == G15)]
+        let g15_lazy_range5_ppl108 = _g15_ualloc_range5_ppl108.clone();
+        #[ver(G == G15)]
+        let g15_lazy_range5_uncached = _g15_ualloc_range5_uncached.clone();
+        #[ver(G == G15)]
+        let g15_lazy_range5_ppl308 = _g15_ualloc_range5_ppl308.clone();
+        #[ver(G == G15)]
+        let g15_lazy_range5_cached = _g15_ualloc_range5_cached.clone();
+        #[ver(G == G15)]
+        let g15_lazy_shared_bank1 = _g15_shared_bank1.clone();
+        #[ver(G == G15)]
+        let g15_lazy_mapping_notifier = _g15_mapping_notifier.clone();
+
+        #[ver(G == G15)]
+        let g15_fw_queue_resources = _g15_fw_queue_resources.ok_or(EINVAL)?;
+        #[ver(G == G15)]
+        g15_fw_queue_resources.initialize_j615_stock()?;
+        #[ver(G == G15)]
+        let g15_scheduler_publication = Arc::new(G15SchedulerPublication::new(), GFP_KERNEL)?;
+
+        #[ver(G == G15)]
+        let g15_pm_scene_alloc = _g15_ualloc_range5_uncached
+            .as_ref()
+            .ok_or(EINVAL)?
+            .lock()
+            .array_empty_tagged(buffer::G15_J615_PM_SCENE_ALLOC_BYTES, b"PMSC")?;
+        #[ver(G == G15)]
+        let g15_ta_object_payload = _g15_ualloc_range5_uncached
+            .as_ref()
+            .ok_or(EINVAL)?
+            .lock()
+            .array_empty_tagged(buffer::G15_J615_TA_OBJECT_PAYLOAD_BYTES, b"TAOP")?;
+        #[ver(G == G15)]
+        let mut g15_bank1_alloc = alloc::G15SharedBank1Allocator::new(
+            dev,
+            _g15_shared_bank1.ok_or(EINVAL)?,
+            buffer::PAGE_SIZE,
+            mmu::PROT_G15_RANGE7_FW,
+            true,
+            _g15_mapping_notifier,
+        );
+        #[ver(G == G15)]
+        let g15_pm_page_metrics = g15_bank1_alloc.array_empty_tagged(
+            buffer::G15_J615_PM_PAGE_METRICS_BYTES,
+            b"PMET",
+        )?;
+        #[ver(G == G15)]
+        let g15_pm_scene_stats = g15_bank1_alloc.array_empty_tagged(
+            buffer::G15_PM_PAGE_LIST_STATS_BYTES,
+            b"PSTS",
+        )?;
+        #[ver(G == G15)]
+        let mut g15_pm_records = _g15_ualloc_range5_cached
+            .as_ref()
+            .ok_or(EINVAL)?
+            .lock()
+            .array_empty_tagged(buffer::G15_J615_PM_RECORD_COUNT, b"PMRC")?;
+        #[ver(G == G15)]
+        {
+            let scene_base: u64 = g15_pm_scene_alloc.gpu_pointer().into();
+            let shared_scene =
+                scene_base + buffer::g15_j615_pm_shared_scene_slice_offset() as u64;
+            let metrics_base: u64 = g15_pm_page_metrics.gpu_pointer().into();
+            let scene_stats_fwva: u64 = g15_pm_scene_stats.gpu_offset_pointer(0x40).into();
+            for (i, record) in g15_pm_records.as_mut_slice().iter_mut().enumerate() {
+                let scene = scene_base + buffer::g15_j615_pm_scene_slice_offset(i as u32) as u64;
+                let metrics_slot = metrics_base + (i * 4) as u64;
+                *record = buffer::G15PmRecord::new_with_resources(
+                    scene,
+                    shared_scene,
+                    metrics_slot,
+                    scene_stats_fwva,
+                );
+            }
+        }
+
         let mut ret = Queue::ver {
             dev: dev.into(),
             _sched: sched,
@@ -506,6 +2574,38 @@ impl Queue::ver {
                 id,
                 #[ver(V >= V13_0B4)]
                 counter: AtomicU64::new(0),
+                #[ver(G == G15)]
+                g15_pm_record_index: AtomicU32::new(0),
+                #[ver(G == G15)]
+                g15_pm_scene_alloc,
+                #[ver(G == G15)]
+                g15_ta_object_payload,
+                #[ver(G == G15)]
+                _g15_uma_shared_pools,
+                #[ver(G == G15)]
+                _g15_range5_ppl108: g15_lazy_range5_ppl108,
+                #[ver(G == G15)]
+                _g15_range5_uncached: g15_lazy_range5_uncached,
+                #[ver(G == G15)]
+                _g15_range5_ppl308: g15_lazy_range5_ppl308,
+                #[ver(G == G15)]
+                _g15_range5_cached: g15_lazy_range5_cached,
+                #[ver(G == G15)]
+                _g15_shared_bank1: g15_lazy_shared_bank1,
+                #[ver(G == G15)]
+                _g15_mapping_notifier: g15_lazy_mapping_notifier,
+                #[ver(G == G15)]
+                _g15_owner_pid: _owner_pid,
+                #[ver(G == G15)]
+                _g15_fw_queue_resources: Some(g15_fw_queue_resources),
+                #[ver(G == G15)]
+                _g15_scheduler_publication: g15_scheduler_publication,
+                #[ver(G == G15)]
+                g15_pm_records,
+                #[ver(G == G15)]
+                _g15_pm_page_metrics: g15_pm_page_metrics,
+                #[ver(G == G15)]
+                _g15_pm_scene_stats: g15_pm_scene_stats,
             },
         };
 
@@ -515,12 +2615,15 @@ impl Queue::ver {
         ret.inner.buffer.ensure_blocks(tvb_blocks)?;
 
         ret.q_vtx = Some(SubQueue::ver {
+            #[ver(G == G15)]
+            _g15_compute_channel: None,
             wq: workqueue::WorkQueue::ver::new(
                 dev,
                 alloc,
                 event_manager.clone(),
                 ret.inner.gpu_context.clone(),
                 ret.inner.notifier_list.clone(),
+                None,
                 channel::PipeType::Vertex,
                 id,
                 priority,
@@ -529,12 +2632,15 @@ impl Queue::ver {
         });
 
         ret.q_frag = Some(SubQueue::ver {
+            #[ver(G == G15)]
+            _g15_compute_channel: None,
             wq: workqueue::WorkQueue::ver::new(
                 dev,
                 alloc,
                 event_manager.clone(),
                 ret.inner.gpu_context.clone(),
                 ret.inner.notifier_list.clone(),
+                None,
                 channel::PipeType::Fragment,
                 id,
                 priority,
@@ -542,14 +2648,31 @@ impl Queue::ver {
             )?,
         });
 
-        // Compute structures
+        // Compute structures. Exact 23J220 AGXCLWorkQueue owns its channel;
+        // create only an empty lifetime slot here. E155 deliberately provides
+        // no setter and makes no call to the unpublished channel assembler.
+        #[ver(G == G15)]
+        let g15_compute_channel = Arc::pin_init(
+            new_mutex!(None, "g15_compute_channel_lifetime"),
+            GFP_KERNEL,
+        )?;
+        #[ver(G == G15)]
+        let g15_compute_wq_lifetime = Some(
+            g15_compute_channel.clone() as Arc<dyn workqueue::G15WorkQueueTransport>
+        );
+        #[ver(G != G15)]
+        let g15_compute_wq_lifetime = None;
+
         ret.q_comp = Some(SubQueue::ver {
+            #[ver(G == G15)]
+            _g15_compute_channel: Some(g15_compute_channel),
             wq: workqueue::WorkQueue::ver::new(
                 dev,
                 alloc,
                 event_manager,
                 ret.inner.gpu_context.clone(),
                 ret.inner.notifier_list.clone(),
+                g15_compute_wq_lifetime,
                 channel::PipeType::Compute,
                 id,
                 priority,
@@ -559,6 +2682,82 @@ impl Queue::ver {
 
         mod_dev_dbg!(dev, "[Queue {}] Queue created\n", id);
         Ok(ret)
+    }
+
+    #[ver(G == G15)]
+    fn g15_log_inflight_execution_snapshot(&self) -> Result {
+        let subqueue = self.q_comp.as_ref().ok_or(EINVAL)?;
+        let channel_slot = subqueue._g15_compute_channel.as_ref().ok_or(EINVAL)?;
+        let slot = channel_slot.lock();
+        let channel = (&*slot).as_ref().ok_or(EINVAL)?;
+        channel.log_inflight_execution_snapshot(self.dev.as_ref())
+    }
+
+    /// E190 exact command-queue teardown primitive. This remains zero-caller:
+    /// a later lifecycle state must prove the selected scheduler resource was
+    /// firmware-published before Queue Drop is allowed to invoke it.
+    #[allow(dead_code)]
+    fn g15_release_selected_scheduler_resource(
+        &self,
+        gpu: &gpu::GpuManager::ver,
+    ) -> Result {
+        #[ver(G != G15)]
+        {
+            let _ = gpu;
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            let resources = self.inner._g15_fw_queue_resources.as_ref().ok_or(EIO)?;
+            let info = resources.scheduler_release_info()?;
+            gpu.g15_release_resource_fwva_now(
+                info.fwva,
+                info.ctx_27,
+                info.ctx_0,
+                info.ctx_1,
+                info.ctx_4,
+            )
+        }
+    }
+
+    /// E156 definition-only lazy first-CL transaction. Exact 23J220 constructs
+    /// the WorkQueue/channel pair privately and publishes the new CL WorkQueue
+    /// in the command-queue array only after channel init/priority succeeds.
+    /// Linux already owns the inherited Compute WorkQueue, so serialize on its
+    /// E155 child slot, construct the complete channel into a local RAII value,
+    /// and publish `Some` only after every constructor step succeeds.
+    #[allow(dead_code)]
+    fn g15_ensure_unpublished_nonforeground_compute_channel(
+        &self,
+        gpu: &gpu::GpuManager::ver,
+    ) -> Result<u64> {
+        #[ver(G != G15)]
+        {
+            let _ = gpu;
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            let subqueue = self.q_comp.as_ref().ok_or(EINVAL)?;
+            let slot = subqueue._g15_compute_channel.as_ref().ok_or(EINVAL)?;
+            let mut channel = slot.lock();
+            if let Some(channel) = channel.as_ref() {
+                return Ok(channel.pool_id());
+            }
+
+            // Keep the slot lock across construction. This prevents duplicate
+            // pool/resource/channel acquisition if a later activation boundary
+            // permits concurrent first-use attempts. No existing lock path can
+            // reach this private slot in reverse; E156 adds no caller.
+            let new_channel = self
+                .inner
+                .g15_assemble_unpublished_nonforeground_compute_channel(gpu)?;
+            let pool_id = new_channel.pool_id();
+            *channel = Some(new_channel);
+            Ok(pool_id)
+        }
     }
 }
 
@@ -608,6 +2807,18 @@ fn build_attachments(reader: &mut Reader<'_>, size: usize) -> Result<microseq::A
 
 #[versions(AGX)]
 impl Queue for Queue::ver {
+    fn g15_debug_execution_snapshot(&self) -> Result {
+        #[ver(G != G15)]
+        {
+            return Err(ENODEV);
+        }
+
+        #[ver(G == G15)]
+        {
+            self.g15_log_inflight_execution_snapshot()
+        }
+    }
+
     fn submit(
         &mut self,
         id: u64,
@@ -640,6 +2851,50 @@ impl Queue for Queue::ver {
             return Err(ENODEV);
         }
 
+        #[ver(G == G15)]
+        {
+            // E196 is intentionally stricter than the future production UAPI:
+            // exactly one full-size no-launch Compute command, no barriers,
+            // timestamps, attachments/synthetic commands, or sync objects.
+            if in_sync_count != 0 || !syncs.is_empty() {
+                return Err(ENODEV);
+            }
+            let mut shape = Reader::new(cmdbuf_raw);
+            let header: uapi::drm_asahi_cmd_header = shape.read()?;
+            if header.cmd_type as u32 != uapi::drm_asahi_cmd_type_DRM_ASAHI_CMD_COMPUTE
+                || header.vdm_barrier != uapi::DRM_ASAHI_BARRIER_NONE as u16
+                || header.cdm_barrier != uapi::DRM_ASAHI_BARRIER_NONE as u16
+                || header.size as usize != core::mem::size_of::<uapi::drm_asahi_cmd_compute>()
+            {
+                return Err(ENODEV);
+            }
+            let compute: uapi::drm_asahi_cmd_compute =
+                shape.read_up_to(header.size as usize)?;
+            if !shape.is_empty()
+                || compute.flags != 0
+                || compute.sampler_count != 0
+                || compute.cdm_ctrl_stream_base != 0
+                || compute.cdm_ctrl_stream_end != 0
+                || compute.sampler_heap != 0
+                || compute.helper.binary != 0
+                || compute.helper.cfg != 0
+                || compute.helper.data != 0
+                || compute.ts.start.handle != 0
+                || compute.ts.start.offset != 0
+                || compute.ts.end.handle != 0
+                || compute.ts.end.offset != 0
+            {
+                return Err(ENODEV);
+            }
+
+            // Match the proven E169/E181 ownership order: construct the lazy
+            // CL channel before publishing this VM context.
+            self.g15_ensure_unpublished_nonforeground_compute_channel(&gpu)?;
+        }
+
+        #[ver(G == G15)]
+        let op_guard = None;
+        #[ver(G != G15)]
         let op_guard = if in_sync_count > 0 {
             Some(gpu.start_op()?)
         } else {
@@ -713,12 +2968,28 @@ impl Queue for Queue::ver {
             }
         }
 
+        #[ver(G == G15)]
+        if nr_commands != 1 || nr_compute != 1 || nr_render != 0 {
+            return Err(ENODEV);
+        }
+
         let mut job = self.entity.new_job(
             1,
             QueueJob::ver {
                 dev: self.dev.clone(),
                 vm_bind,
                 op_guard,
+                #[ver(G == G15)]
+                _g15_compute_channel: self
+                    .q_comp
+                    .as_ref()
+                    .and_then(|subqueue| subqueue._g15_compute_channel.clone()),
+                #[ver(G == G15)]
+                _g15_stock_empty_assets: None,
+                #[ver(G == G15)]
+                g15_stock_empty_selected: true,
+                #[ver(G == G15)]
+                g15_selected_prepare_failed: false,
                 sj_vtx: self
                     .q_vtx
                     .as_mut()
@@ -800,12 +3071,14 @@ impl Queue for Queue::ver {
                     };
                     mod_dev_dbg!(self.dev, "[Submission {}] Create Explicit Barrier\n", id);
                     let barrier = alloc.private.new_init(
-                        pin_init::zeroed::<fw::workqueue::Barrier>(),
+                        pin_init::zeroed::<fw::workqueue::Barrier::ver>(),
                         |_inner, _p| {
                             let queue_job = &queue_job;
-                            try_init!(fw::workqueue::raw::Barrier {
+                            try_init!(fw::workqueue::raw::Barrier::ver {
                                 tag: fw::workqueue::CommandType::Barrier,
                                 wait_stamp: event.fw_stamp_pointer,
+                                #[ver(G == G15)]
+                                wait_stamp_2: event.fw_stamp_pointer,
                                 wait_value: event.value,
                                 wait_slot: event.slot,
                                 stamp_self: queue_job.event_info().value.next(),
@@ -852,6 +3125,21 @@ impl Queue for Queue::ver {
                 uapi::drm_asahi_cmd_type_DRM_ASAHI_CMD_COMPUTE => {
                     let compute: uapi::drm_asahi_cmd_compute = cmdbuf.read_up_to(header_size)?;
 
+                    #[ver(G == G15)]
+                    {
+                        if compute_attachments.count != 0 {
+                            return Err(EINVAL);
+                        }
+                        self.inner.prepare_g15_stock_empty_workqueue_unpublished(
+                            &mut job,
+                            &compute,
+                            &compute_attachments,
+                            objects,
+                            id,
+                            false,
+                        )?;
+                    }
+                    #[ver(G != G15)]
                     self.inner.submit_compute(
                         &mut job,
                         &compute,
@@ -931,5 +3219,71 @@ impl Queue for Queue::ver {
 impl Drop for Queue::ver {
     fn drop(&mut self) {
         mod_dev_dbg!(self.dev, "[Queue {}] Dropping queue\n", self.inner.id);
+
+        #[ver(G == G15)]
+        {
+            let mut retain_selected = false;
+            match self.inner._g15_scheduler_publication.state() {
+                G15SchedulerPublicationState::Unpublished
+                | G15SchedulerPublicationState::Released => {}
+                G15SchedulerPublicationState::Published => {
+                    let snapshot = self.g15_log_inflight_execution_snapshot();
+                    dev_info!(
+                        self.dev.as_ref(),
+                        "T8122 G15 E363 pre-release execution snapshot={:?}\n",
+                        snapshot
+                    );
+
+                    let gpu = (*self.dev)
+                        .gpu
+                        .clone()
+                        .arc_as_any()
+                        .downcast::<gpu::GpuManager::ver>();
+                    let release = gpu
+                        .map_err(|_| EIO)
+                        .and_then(|gpu| self.g15_release_selected_scheduler_resource(&gpu));
+                    match release {
+                        Ok(()) => {
+                            if self.inner._g15_scheduler_publication.mark_released().is_err() {
+                                self.inner._g15_scheduler_publication.mark_uncertain();
+                                retain_selected = true;
+                            }
+                        }
+                        Err(err) => {
+                            self.inner._g15_scheduler_publication.mark_uncertain();
+                            retain_selected = true;
+                            dev_err!(
+                                self.dev.as_ref(),
+                                "G15 queue {} selected scheduler release failed: {:?}; retaining firmware-visible resources\n",
+                                self.inner.id,
+                                err
+                            );
+                        }
+                    }
+                }
+                G15SchedulerPublicationState::Publishing
+                | G15SchedulerPublicationState::Uncertain => {
+                    retain_selected = true;
+                }
+            }
+
+            if self.inner.gpu_context.is_published_to_firmware() {
+                // Legacy E170/E171 registration-surrogate uncertainty remains
+                // independent from the real selected scheduler-resource state.
+                retain_selected = true;
+            }
+
+            if retain_selected {
+                dev_err!(
+                    self.dev.as_ref(),
+                    "G15 queue {} has uncertain firmware publication; retaining selected queue resources\n",
+                    self.inner.id
+                );
+                core::mem::forget(self.q_comp.take());
+                if let Some(resources) = self.inner._g15_fw_queue_resources.take() {
+                    core::mem::forget(resources);
+                }
+            }
+        }
     }
 }

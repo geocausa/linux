@@ -9,6 +9,27 @@ use crate::{
 };
 use core::sync::atomic::Ordering;
 
+/// Exact 23J220 AGXCommandBuffer stamp/event-control geometry for G15.
+///
+/// E092 closes two contiguous shared-data backings: 36 four-byte stamps in
+/// normal eGartRange 7 and 36 0xc0-byte event-control states in eGartRange 8.
+pub(crate) const G15_EVENT_CONTROL_STATE_COUNT: usize = 36;
+pub(crate) const G15_EVENT_CONTROL_STAMP_SIZE: usize = core::mem::size_of::<Stamp>();
+pub(crate) const G15_EVENT_CONTROL_STAMP_POOL_SIZE: usize =
+    G15_EVENT_CONTROL_STATE_COUNT * G15_EVENT_CONTROL_STAMP_SIZE;
+pub(crate) const G15_EVENT_CONTROL_BLOCK_SIZE: usize = 0xc0;
+/// Exact normal-J615 value written at selected event-control +0x10.
+///
+/// 23J220 computes this as `record_count` when accelerator +0x2428 is zero,
+/// otherwise `min(record_count, +0x2428)`. The exact target leaves +0x2428
+/// zero and uses the G15 record-count fallback +0x678 = 0x50.
+pub(crate) const G15_EVENT_CONTROL_J615_EFFECTIVE_RECORD_COUNT: u32 = 0x50;
+pub(crate) const G15_EVENT_CONTROL_POOL_SIZE: usize =
+    G15_EVENT_CONTROL_STATE_COUNT * G15_EVENT_CONTROL_BLOCK_SIZE;
+
+const _: [(); 0x90] = [(); G15_EVENT_CONTROL_STAMP_POOL_SIZE];
+const _: [(); 0x1b00] = [(); G15_EVENT_CONTROL_POOL_SIZE];
+
 pub(crate) mod raw {
     use super::*;
 
@@ -26,6 +47,53 @@ pub(crate) mod raw {
         pub(crate) unkptr_10: U64,
     }
     default_zeroed!(NotifierList);
+
+    /// Partial exact 23J220 G15 command-buffer event-control state.
+    ///
+    /// E092 closes the construction/rotation writes below while leaving all
+    /// still-unnamed bytes as padding. E094 closes `+0x10` by its exact host
+    /// producer: an effective record-count value, 0x50 on normal J615. This
+    /// must not be confused with the legacy Notifier layout.
+    #[allow(dead_code)]
+    #[derive(Debug, Clone, Copy)]
+    #[repr(C)]
+    pub(crate) struct G15EventControlBlock {
+        pub(crate) stamp_fwva: U64,
+        pub(crate) state_sequence_08: u32,
+        zero_0c: u32,
+        pub(crate) effective_record_count_10: u32,
+        zero_14: u32,
+        zero_18: U64,
+        __pad_20: Pad<0x88>,
+        pub(crate) sentinel_a8: U64,
+        __pad_b0: Pad<0x10>,
+    }
+    default_zeroed!(G15EventControlBlock);
+
+    /// Exact contiguous 36-state command-buffer event-control pool layout.
+    /// E092 proves the pool maps through shared eGartRange 8, but the compile-
+    /// only E093 owner uses `GpuArray<G15EventControlBlock>` directly rather
+    /// than imposing an unrelated inherited Notifier `GpuStruct`.
+    #[allow(dead_code)]
+    #[derive(Debug, Clone, Copy)]
+    #[repr(C)]
+    pub(crate) struct G15EventControlPool {
+        blocks: Array<G15_EVENT_CONTROL_STATE_COUNT, G15EventControlBlock>,
+    }
+    default_zeroed!(G15EventControlPool);
+
+    const _: [(); G15_EVENT_CONTROL_BLOCK_SIZE] =
+        [(); core::mem::size_of::<G15EventControlBlock>()];
+    const _: [(); G15_EVENT_CONTROL_POOL_SIZE] =
+        [(); core::mem::size_of::<G15EventControlPool>()];
+    const _: [(); 0x00] = [(); core::mem::offset_of!(G15EventControlBlock, stamp_fwva)];
+    const _: [(); 0x08] = [(); core::mem::offset_of!(G15EventControlBlock, state_sequence_08)];
+    const _: [(); 0x0c] = [(); core::mem::offset_of!(G15EventControlBlock, zero_0c)];
+    const _: [(); 0x10] =
+        [(); core::mem::offset_of!(G15EventControlBlock, effective_record_count_10)];
+    const _: [(); 0x14] = [(); core::mem::offset_of!(G15EventControlBlock, zero_14)];
+    const _: [(); 0x18] = [(); core::mem::offset_of!(G15EventControlBlock, zero_18)];
+    const _: [(); 0xa8] = [(); core::mem::offset_of!(G15EventControlBlock, sentinel_a8)];
 
     #[versions(AGX)]
     #[derive(Debug, Clone, Copy)]
@@ -91,6 +159,37 @@ pub(crate) mod raw {
 
 trivial_gpustruct!(Threshold);
 trivial_gpustruct!(NotifierList);
+
+/// Host-side selector for the exact G15 command-buffer event-control ring.
+///
+/// `AGXCommandBuffer::init()` initializes the selected state to zero and
+/// `nextCommandBufferState()` increments before selecting modulo 36. This type
+/// intentionally owns no GPU memory; it only pins that rotation contract.
+#[allow(dead_code)]
+#[derive(Debug, Default)]
+pub(crate) struct G15EventControlSelector {
+    current: u32,
+}
+
+#[allow(dead_code)]
+impl G15EventControlSelector {
+    pub(crate) fn advance(&mut self) -> usize {
+        self.current = (self.current + 1) % G15_EVENT_CONTROL_STATE_COUNT as u32;
+        self.current as usize
+    }
+
+    pub(crate) fn current(&self) -> usize {
+        self.current as usize
+    }
+
+    pub(crate) const fn state_offset(index: usize) -> Option<usize> {
+        if index < G15_EVENT_CONTROL_STATE_COUNT {
+            Some(index * G15_EVENT_CONTROL_BLOCK_SIZE)
+        } else {
+            None
+        }
+    }
+}
 
 #[versions(AGX)]
 #[derive(Debug)]

@@ -34,28 +34,21 @@ const DEBUG_CLASS: DebugFlags = DebugFlags::Compute;
 
 #[versions(AGX)]
 impl super::QueueInner::ver {
-    /// Submit work to a compute queue.
-    pub(super) fn submit_compute(
+    /// Build one typed Compute command without adding it to a WorkQueue.
+    /// E181 extracts this byte-for-byte construction body so the dormant G15
+    /// stock-empty transaction and the existing submit path cannot drift into
+    /// separate command/inner-allocation implementations.
+    fn build_compute_command(
         &self,
-        job: &mut Job<super::QueueJob::ver>,
+        gpu: &gpu::GpuManager::ver,
         cmdbuf: &uapi::drm_asahi_cmd_compute,
         attachments: &microseq::Attachments,
         objects: Pin<&xarray::XArray<KBox<file::Object>>>,
         id: u64,
         flush_stamps: bool,
-    ) -> Result {
-        let gpu = match (*self.dev)
-            .gpu
-            .as_any()
-            .downcast_ref::<gpu::GpuManager::ver>()
-        {
-            Some(gpu) => gpu,
-            None => {
-                dev_crit!(self.dev.as_ref(), "GpuManager mismatched with Queue!\n");
-                return Err(EIO);
-            }
-        };
-
+        vm_bind: crate::mmu::VmBind,
+        ev_comp: crate::workqueue::QueueEventInfo::ver,
+    ) -> Result<GpuObject<fw::compute::RunCompute::ver>> {
         let mut alloc = gpu.alloc();
         let kalloc = &mut *alloc;
 
@@ -72,8 +65,8 @@ impl super::QueueInner::ver {
         // This sequence number increases per new client/VM? assigned to some slot,
         // but it's unclear *which* slot...
         let slot_client_seq: u8 = (self.id & 0xff) as u8;
-
-        let vm_bind = job.vm_bind.clone();
+        #[ver(G == G15)]
+        let _ = slot_client_seq; // G15 +0x85f is a context-ID generation, not this queue sequence
 
         mod_dev_dbg!(
             self.dev,
@@ -84,20 +77,282 @@ impl super::QueueInner::ver {
 
         let notifier = self.notifier.clone();
 
-        let fence = job.fence.clone();
-        let comp_job = job.get_comp()?;
-        let ev_comp = comp_job.event_info();
-
         let preempt2_off = gpu.get_cfg().compute_preempt1_size;
         let preempt3_off = preempt2_off + 8;
         let preempt4_off = preempt3_off + 8;
         let preempt5_off = preempt4_off + 8;
         let preempt_size = preempt5_off + 8;
 
+        #[ver(G == G15)]
+        if preempt2_off != 0x1480 || preempt_size != 0x14a0 {
+            return Err(EIO);
+        }
+
         let preempt_buf = self
             .ualloc
             .lock()
             .array_empty_tagged(preempt_size, b"CPMT")?;
+
+        // E351 exact production-PPL application-output class. The Shared
+        // parent follows default range-5 compact 0x308, which UAT-PPL encodes
+        // as 0x00c0_0000_0000_0088 protection bits.
+        #[ver(G == G15)]
+        let mut g15_result = self
+            ._g15_range5_ppl308
+            .as_ref()
+            .ok_or(EINVAL)?
+            .lock()
+            .array_empty_tagged::<u8>(0x100, b"CDR1")?;
+        #[ver(G == G15)]
+        for byte in g15_result.as_mut_slice().iter_mut() {
+            *byte = 0xff;
+        }
+        #[ver(G == G15)]
+        let g15_result_addr = g15_result.gpu_va().get();
+        // E351 exact production-PPL UserBuffer argument table: pool 3
+        // preserves the default range-5 low control and maps as compact 0x308.
+        // Keep the 35-entry table a distinct allocation.
+        #[ver(G == G15)]
+        let mut g15_argument_table = self
+            ._g15_range5_ppl308
+            .as_ref()
+            .ok_or(EINVAL)?
+            .lock()
+            .array_empty_tagged::<u8>(0x118, b"AT03")?;
+        #[ver(G == G15)]
+        let g15_args_addr = g15_argument_table.gpu_va().get();
+        #[ver(G == G15)]
+        if g15_args_addr & 7 != 0 {
+            return Err(EIO);
+        }
+        #[ver(G == G15)]
+        {
+            let entries = g15_argument_table.as_mut_slice();
+            entries.fill(0);
+            entries[..8].copy_from_slice(&g15_result_addr.to_le_bytes());
+        }
+
+        // E351 reclassifies exact pool-0x0a Statics through production
+        // UAT-PPL: selector 1 preserves low control 3, yielding compact 0x308.
+        #[ver(G == G15)]
+        let mut g15_statics = self
+            ._g15_range5_ppl308
+            .as_ref()
+            .ok_or(EINVAL)?
+            .lock()
+            .array_empty_tagged::<u8>(8, b"ST0A")?;
+        #[ver(G == G15)]
+        let g15_statics_addr = g15_statics.gpu_va().get();
+        #[ver(G == G15)]
+        if g15_statics_addr & 0x1f != 0 {
+            return Err(EIO);
+        }
+        #[ver(G == G15)]
+        g15_statics.as_mut_slice().fill(0);
+
+        // E351 reclassifies the finalized pool-5 ESL through production
+        // UAT-PPL: selector 1 yields compact 0x308.
+        #[ver(G == G15)]
+        let mut g15_entry = self
+            ._g15_range5_ppl308
+            .as_ref()
+            .ok_or(EINVAL)?
+            .lock()
+            .array_empty_tagged::<u8>(0x100, b"ESL5")?;
+        #[ver(G == G15)]
+        let g15_entry_addr = g15_entry.gpu_va().get();
+        #[ver(G == G15)]
+        if g15_entry_addr & 0x3f != 0 {
+            return Err(EIO);
+        }
+
+        // E350/E351 exact pool-0x16 production UAT-PPL class: selector 0
+        // yields compact 0x108 / protection 0x0080_0000_0000_0088.
+        #[ver(G == G15)]
+        let mut g15_cdm_root = self
+            ._g15_range5_ppl108
+            .as_ref()
+            .ok_or(EINVAL)?
+            .lock()
+            .array_empty_tagged::<u8>(0x100, b"CD16")?;
+        #[ver(G == G15)]
+        let g15_cdm_addr = g15_cdm_root.gpu_va().get();
+
+        #[ver(G == G15)]
+        let (g15_body, g15_profile_helper) = {
+            const CDM_LEN: usize = 0x30;
+            const BODY_OFF: usize = 0x200;
+            const BLOB_LEN: usize = 0x400;
+
+            // E357 deliberately replaces only the executed entry program with
+            // the independently known-working M3 G15 entry-state sequence. The
+            // exact E325 allocations remain unchanged for a clean activation
+            // discriminator.
+
+            // E351 closes CodeHeap body and profile-helper mapping through
+            // production UAT-PPL as compact 0x108, distinct from data-like
+            // compact 0x308 resources.
+            let mut blob = self
+                ._g15_range5_ppl108
+                .as_ref()
+                .ok_or(EINVAL)?
+                .lock()
+                .array_empty_tagged::<u8>(BLOB_LEN, b"CDM1")?;
+            let mut profile_helper = self
+                ._g15_range5_ppl108
+                .as_ref()
+                .ok_or(EINVAL)?
+                .lock()
+                .array_empty_tagged::<u8>(0x10, b"PRFL")?;
+            let body_base = blob.gpu_va().get();
+            let entry_addr = g15_entry_addr;
+            let profile_helper_addr = profile_helper.gpu_va().get();
+
+            // Exact USCProfileControlStateLoaderGen1<G15> helper: two CNDRET_0
+            // entry points at offsets 0 and 8, each instruction stored at +4.
+            const CNDRET: [u8; 4] = [0x8f, 0x02, 0x54, 0x01];
+            let helper = profile_helper.as_mut_slice();
+            helper[4..8].copy_from_slice(&CNDRET);
+            helper[12..16].copy_from_slice(&CNDRET);
+
+            let body_addr = body_base.checked_add(BODY_OFF as u64).ok_or(EOVERFLOW)?;
+            let result_addr = g15_result_addr;
+            let body_bytes = blob.as_mut_slice();
+            let entry_bytes = g15_entry.as_mut_slice();
+
+            // E359 restores the body paired with the independently working
+            // M3 G15 entry used by E357.  This is the only executed-program
+            // delta from E357: materialize the PPL308 result GPUVA in r0/r1,
+            // materialize 1337.0f in r2, device-store r2 through r0:r1, STOP.
+            fn swizzle_imm32(value: u32) -> u64 {
+                let imm_a = (value & 0x7f) as u64;
+                let imm_b = ((value >> 7) & 0x0f) as u64;
+                let imm_c = ((value >> 11) & 0x03) as u64;
+                let imm_d = ((value >> 13) & 0x0fff) as u64;
+                let imm_e = ((value >> 25) & 0x7f) as u64;
+
+                (imm_a << 8)
+                    | (imm_b << 33)
+                    | (imm_c << 42)
+                    | (imm_d << 48)
+                    | (imm_e << 25)
+            }
+
+            fn imm_inst(reg: u8, value: u32) -> [u8; 8] {
+                let base = u64::from_le_bytes([0x0c, 0x80, 0x02, 0, 0, 0, 0, 0]);
+                (base | ((reg as u64) << 4) | swizzle_imm32(value)).to_le_bytes()
+            }
+
+            let mut body_pos = BODY_OFF;
+            for inst in [
+                imm_inst(0, result_addr as u32),
+                imm_inst(2, 1337.0f32.to_bits()),
+                imm_inst(1, (result_addr >> 32) as u32),
+            ] {
+                body_bytes[body_pos..body_pos + inst.len()].copy_from_slice(&inst);
+                body_pos += inst.len();
+            }
+            const WORKING_BODY_TAIL: [u8; 18] = [
+                0xe7, 0x00, 0x54, 0x04, 0x00, 0x00, 0x00, 0x00,
+                0x11, 0x01, 0x00, 0x90, 0x08, 0x00,
+                0x0e, 0x00, 0x00, 0x00,
+            ];
+            body_bytes[body_pos..body_pos + WORKING_BODY_TAIL.len()]
+                .copy_from_slice(&WORKING_BODY_TAIL);
+            body_pos += WORKING_BODY_TAIL.len();
+            if body_pos != BODY_OFF + 42 {
+                return Err(EIO);
+            }
+
+            // E359 keeps E357's full G15 entry-state program shared by
+            // Alyssa's explicitly successful a1006e52 M3 Compute path and
+            // pac85's independent G15 demo.  The paired working body above is
+            // the only executed-program delta in this discriminator.
+            const ENTRY_LEN: usize = 84;
+            let mut pos = 0usize;
+
+            entry_bytes[pos..pos + 8]
+                .copy_from_slice(&[0x77, 0x00, 0x2a, 0x41, 0x00, 0x00, 0x00, 0x00]);
+            pos += 8;
+            entry_bytes[pos..pos + 3].copy_from_slice(&[0x77, 0x01, 0x2a]);
+            pos += 3;
+            let shifted_body = (body_addr >> 7).to_le_bytes();
+            entry_bytes[pos..pos + 5].copy_from_slice(&shifted_body[..5]);
+            pos += 5;
+
+            const WORKING_ENTRY_EPILOG: [u8; 68] = [
+                0x04, 0x00, 0xf7, 0x00, 0x2a, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x1c, 0x80, 0x02, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x14, 0x81, 0x11, 0x06,
+                0x00, 0x00, 0x00, 0x00, 0x0c, 0x80, 0x02, 0x00,
+                0x04, 0x00, 0x00, 0x00, 0x9f, 0x11, 0x54, 0x00,
+                0x02, 0x00, 0x08, 0xa8, 0x10, 0x05, 0x1c, 0x80,
+                0x02, 0x00, 0x04, 0x00, 0x00, 0x00, 0x0f, 0x12,
+                0x54, 0x00, 0x4c, 0xff, 0x0e, 0x00, 0x00, 0x00,
+                0x0e, 0x00, 0x00, 0x00,
+            ];
+            entry_bytes[pos..pos + WORKING_ENTRY_EPILOG.len()]
+                .copy_from_slice(&WORKING_ENTRY_EPILOG);
+            pos += WORKING_ENTRY_EPILOG.len();
+
+            if pos != ENTRY_LEN {
+                return Err(EIO);
+            }
+            entry_bytes[pos..].fill(0);
+
+            // The 0x30-byte G15 direct stream independently appears in Alyssa's
+            // working m1n1 path and pac85's standalone macOS AGX demo.
+            fn put32(bytes: &mut [u8], pos: &mut usize, value: u32) {
+                bytes[*pos..*pos + 4].copy_from_slice(&value.to_le_bytes());
+                *pos += 4;
+            }
+
+            let cdm_bytes = g15_cdm_root.as_mut_slice();
+            let mut pos = 0usize;
+            put32(cdm_bytes, &mut pos, 0x0008_0000);
+            let shifted_entry = ((entry_addr & 0xffff_ffff) << 26)
+                | ((entry_addr >> 32) << 16);
+            cdm_bytes[pos..pos + 8].copy_from_slice(&shifted_entry.to_le_bytes());
+            pos += 8;
+            // Exact 23J220 ordinary direct-launch dword 3 (E241/E242/E244).
+            // The older m1n1 bring-up stream used 0x40 here, but the target
+            // producer derives this from ComputeProgramVariant +0xa24 and the
+            // default distribution mode, yielding bit 30 set and no low bits.
+            put32(cdm_bytes, &mut pos, 0x4000_0000);
+            for _ in 0..6 {
+                put32(cdm_bytes, &mut pos, 1);
+            }
+            put32(cdm_bytes, &mut pos, 0x6000_0160);
+            put32(cdm_bytes, &mut pos, 0x4000_0000);
+            if pos != CDM_LEN {
+                return Err(EIO);
+            }
+
+            core::sync::atomic::fence(Ordering::SeqCst);
+            dev_info!(
+                self.dev.as_ref(),
+                "T8122 G15 E359 working-entry+body corrected-PPL CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
+                g15_cdm_addr,
+                entry_addr,
+                body_addr,
+                profile_helper_addr,
+                result_addr,
+                g15_args_addr,
+                g15_statics_addr
+            );
+            (blob, profile_helper)
+        };
+        #[ver(G == G15)]
+        let cdm_ctrl_stream_end = g15_cdm_root
+            .gpu_va()
+            .get()
+            // Exact 23J220 endComputePass() publishes raw +0x60 from the
+            // pre-increment write pointer: the Stream Terminate token itself,
+            // not the allocator's one-past pointer. E248's 0x30 was off by 4.
+            .checked_add(0x2c)
+            .ok_or(EOVERFLOW)?;
+        #[ver(G != G15)]
+        let cdm_ctrl_stream_end = cmdbuf.cdm_ctrl_stream_end;
 
         mod_dev_dbg!(
             self.dev,
@@ -108,25 +363,63 @@ impl super::QueueInner::ver {
             ev_comp.value.next(),
         );
 
+        // G15's RCE/CDM path directly touches the command timestamps. The
+        // dynamically working M3 m1n1 path faults when these live in the
+        // firmware-only shared heap and moves both start/end timestamps to
+        // GPU/FW shared RW memory. Keep the legacy placement on older GPUs.
+        #[ver(G != G15)]
         let timestamps = Arc::new(
             kalloc.shared.new_default::<fw::job::JobTimestamps>()?,
             GFP_KERNEL,
         )?;
+        #[ver(G == G15)]
+        let timestamps = Arc::new(
+            kalloc.gpu.new_default::<fw::job::JobTimestamps>()?,
+            GFP_KERNEL,
+        )?;
 
+        #[ver(G != G15)]
         let uuid = 0;
+        #[ver(G == G15)]
+        let uuid = common::next_g15_command_uuid();
         mod_dev_dbg!(self.dev, "[Submission {}] UUID = {:#x?}\n", id, uuid);
 
         // TODO: check
         #[ver(V >= V13_0B4)]
+        // G15 mirrors AGXCLChannelSKU::submitBuffer(): consume one value from
+        // the command-queue-wide sequence used at command +0x04.
         let count = self.counter.fetch_add(1, Ordering::Relaxed);
 
+        // G15 uses the same GPU/FW shared RW command placement as the
+        // independently working M3 m1n1 Compute path. In particular, RCE/CDM
+        // must be able to access command-side state that is GPU-read-only on
+        // older generations.
+        #[ver(G != G15)]
+        let comp_alloc = kalloc.gpu_ro.alloc_object()?;
+        #[ver(G == G15)]
+        let comp_alloc = kalloc.gpu.alloc_object()?;
+
         let comp = GpuObject::new_init_prealloc(
-            kalloc.gpu_ro.alloc_object()?,
+            comp_alloc,
             |ptr: GpuWeakPointer<fw::compute::RunCompute::ver>| {
                 let notifier = notifier.clone();
                 let vm_bind = vm_bind.clone();
                 try_init!(fw::compute::RunCompute::ver {
                     preempt_buf: preempt_buf,
+                    #[ver(G == G15)]
+                    g15_result: g15_result,
+                    #[ver(G == G15)]
+                    g15_argument_table: g15_argument_table,
+                    #[ver(G == G15)]
+                    g15_statics: g15_statics,
+                    #[ver(G == G15)]
+                    g15_cdm_root: g15_cdm_root,
+                    #[ver(G == G15)]
+                    g15_body: g15_body,
+                    #[ver(G == G15)]
+                    g15_entry: g15_entry,
+                    #[ver(G == G15)]
+                    g15_profile_helper: g15_profile_helper,
                     micro_seq: {
                         let mut builder = microseq::Builder::new();
 
@@ -135,9 +428,9 @@ impl super::QueueInner::ver {
                         let start_comp = builder.add(microseq::StartCompute::ver {
                             header: microseq::op::StartCompute::HEADER,
                             unk_pointer: inner_weak_ptr!(ptr, unk_pointee),
-                            #[ver(G < G14X)]
+                            #[ver(G < G14X && G != G15)]
                             job_params1: Some(inner_weak_ptr!(ptr, job_params1)),
-                            #[ver(G >= G14X)]
+                            #[ver(G >= G14X || G == G15)]
                             job_params1: None,
                             #[ver(G >= G14X)]
                             registers: inner_weak_ptr!(ptr, registers),
@@ -153,8 +446,10 @@ impl super::QueueInner::ver {
                             uuid,
                             attachments: *attachments,
                             padding: Default::default(),
-                            #[ver(V >= V13_0B4)]
+                            #[ver(V >= V13_0B4 && G != G15)]
                             unk_flag: inner_weak_ptr!(ptr, unk_flag),
+                            #[ver(G == G15)]
+                            unk_flag: inner_weak_ptr!(ptr, g15_recovery_marker_878),
                             #[ver(V >= V13_0B4)]
                             counter: U64(count),
                             #[ver(V >= V13_0B4)]
@@ -228,8 +523,10 @@ impl super::QueueInner::ver {
                             has_attachments: (attachments.count > 0) as u32,
                             #[ver(V >= V13_0B4)]
                             unk_64: Default::default(),
-                            #[ver(V >= V13_0B4)]
+                            #[ver(V >= V13_0B4 && G != G15)]
                             unk_flag: inner_weak_ptr!(ptr, unk_flag),
+                            #[ver(G == G15)]
+                            unk_flag: inner_weak_ptr!(ptr, g15_recovery_marker_878),
                             #[ver(V >= V13_0B4)]
                             unk_79: Default::default(),
                         })?;
@@ -247,17 +544,25 @@ impl super::QueueInner::ver {
             },
             |inner, _ptr| {
                 let vm_slot = vm_bind.slot();
+                #[ver(G == G15)]
+                let context_generation = vm_bind.generation();
                 try_init!(fw::compute::raw::RunCompute::ver {
                     tag: fw::workqueue::CommandType::RunCompute,
                     #[ver(V >= V13_0B4)]
                     counter: U64(count),
                     unk_4: 0,
+                    #[ver(G != G15)]
                     vm_slot,
+                    #[ver(G == G15)]
+                    g15_context_id_10: vm_slot,
+                    #[ver(G != G15)]
                     notifier: inner.notifier.gpu_pointer(),
+                    #[ver(G == G15)]
+                    g15_event_control_fwva_14: U64(0),
                     unk_pointee: Default::default(),
-                    #[ver(G < G14X)]
+                    #[ver(G < G14X && G != G15)]
                     __pad0: Default::default(),
-                    #[ver(G < G14X)]
+                    #[ver(G < G14X && G != G15)]
                     job_params1 <- try_init!(fw::compute::raw::JobParameters1 {
                         preempt_buf1: inner.preempt_buf.gpu_pointer(),
                         cdm_ctrl_stream_base: U64(cmdbuf.cdm_ctrl_stream_base),
@@ -301,24 +606,137 @@ impl super::QueueInner::ver {
                             */
                         }
                     ),
+                    #[ver(G == G15)]
+                    registers: fw::job::raw::RegisterArray::new(
+                        inner_weak_ptr!(_ptr, registers.registers),
+                        |r| {
+                            // Keep the legacy per-queue USC base consumed on the G15
+                            // specialization even though Apple does not encode it in
+                            // this exact empty-Compute RegisterArray.
+                            let _ = self.usc_exec_base;
+
+                            // E067 fixes the exact 23J220 register/source map.
+                            // E132 then proved the older E068 cross-build empty oracle
+                            // was stale for hardware-facing data-buffer state: stock
+                            // 23J220 owns a 0x1480 primary Compute backing, four real
+                            // 8-byte tail slots, and raw +0xa4 == 0x1c. The same-build
+                            // begin/end pair also owns a terminate-only CDM root below.
+                            //
+                            // Form-1 Apple register IDs are encoded with bit 0 set in
+                            // the 12-byte RegisterArray entry (e.g. 0x12090 -> 0x12091).
+                            r.add(0x1a510, inner.preempt_buf.gpu_pointer().into());
+                            r.add(0x1a420, inner.g15_cdm_root.gpu_pointer().into());
+                            r.add(
+                                0x1a4d0,
+                                inner.preempt_buf.gpu_offset_pointer(preempt2_off).into(),
+                            );
+                            r.add(
+                                0x1a4d8,
+                                inner.preempt_buf.gpu_offset_pointer(preempt3_off).into(),
+                            );
+                            r.add(
+                                0x1a4e0,
+                                inner.preempt_buf.gpu_offset_pointer(preempt4_off).into(),
+                            );
+                            r.add(
+                                0x1a4e8,
+                                inner.preempt_buf.gpu_offset_pointer(preempt5_off).into(),
+                            );
+                            r.add(0x1a440, 0x154024201);
+                            r.add(0x1a458, 0x10c08860);
+                            r.add(0x12091, 0x1c);
+                            r.add(0x101d9, 0x1c);
+                            r.add(0x1a089, 0);
+                            r.add(0x1a091, 0);
+                            r.add(0x1a059, 0);
+                            r.add(0x1a061, 0);
+                            r.add(0x1a0b9, 0);
+                            r.add(0x1a0c1, 0);
+                            r.add(0x101d1, 0);
+                            r.add(0x0d479, 0);
+                            r.add(0x1a0e9, 0);
+                            // E260 exact 23J220 control-flow closure: with the
+                            // ordinary non-ray default requirement tuple, context
+                            // +0x658/+0x65c remain zero. endComputePass() therefore
+                            // skips the late real-dispatch resource synthesis block;
+                            // raw +0x158/+0x1b0 stay zero and 0x107a0 uses Apple's
+                            // zero-resource fallback.
+                            r.add(0x107a1, 0x00ff_0000);
+                        },
+                    ),
+                    #[ver(G != G15)]
                     __pad1: Default::default(),
+                    #[ver(G == G15)]
+                    g15_pre_micro_730: Default::default(),
+                    // E133 closes the exact 23J220 stock-empty sources:
+                    // raw Compute +0xc0/+0xd8 are explicitly initialized to zero
+                    // by beginComputePass() and are not rewritten on empty close.
+                    #[ver(G == G15)]
+                    g15_raw_compute_c0_740: U64(0),
+                    #[ver(G == G15)]
+                    g15_raw_compute_d8_lo_748: U32(0),
+                    #[ver(G == G15)]
+                    g15_pre_micro_74c: Default::default(),
+                    #[ver(G == G15)]
+                    g15_raw_compute_d8_hi_750: U32(0),
+                    #[ver(G == G15)]
+                    g15_pre_micro_754: Default::default(),
+                    #[ver(G != G15)]
                     microsequence: inner.micro_seq.gpu_pointer(),
+                    #[ver(G == G15)]
+                    // E176 fail-closed phase-0 image. E069/E070 prove +0x760
+                    // is a selected G15 SKU-slot FWVA; E175 has not yet called
+                    // phase 1/finalize, so there is no legitimate slot to publish.
+                    g15_sku_stream_fwva_760: U64(0),
+                    #[ver(G != G15)]
                     microsequence_size: inner.micro_seq.len() as u32,
+                    #[ver(G == G15)]
+                    g15_sku_stream_size_768: 0,
                     job_params2 <- try_init!(fw::compute::raw::JobParameters2::ver {
                         #[ver(V >= V13_0B4)]
                         unk_0_0: 0,
+                        #[ver(G != G15)]
                         unk_0: Default::default(),
+                        #[ver(G == G15)]
+                        g15_unk_770: U32(0),
+                        #[ver(G == G15)]
+                        g15_state_774: U64(0),
+                        #[ver(G == G15)]
+                        g15_state_77c: U64(0),
+                        #[ver(G == G15)]
+                        g15_state_784: U64(0),
+                        #[ver(G == G15)]
+                        g15_state_78c: U64(0),
                         preempt_buf1: inner.preempt_buf.gpu_pointer(),
-                        cdm_ctrl_stream_end: U64(cmdbuf.cdm_ctrl_stream_end),
+                        cdm_ctrl_stream_end: U64(cdm_ctrl_stream_end),
+                        #[ver(G != G15)]
                         unk_34: Default::default(),
-                        #[ver(G < G14X)]
+                        #[ver(G == G15)]
+                        g15_state_7a4: U64(0),
+                        #[ver(G == G15)]
+                        g15_state_7ac: U32(0),
+                        #[ver(G == G15)]
+                        g15_unk_7b0: U32(0),
+                        #[ver(G == G15)]
+                        g15_state_7b4: U64(0),
+                        #[ver(G == G15)]
+                        g15_state_7bc: U32(0),
+                        #[ver(G == G15)]
+                        g15_unk_7c0: U32(0),
+                        #[ver(G < G14X && G != G15)]
                         unk_g14x: 0,
-                        #[ver(G >= G14X)]
+                        #[ver(G >= G14X && G != G15)]
                         unk_g14x: 0x24201,
+                        #[ver(G != G15)]
                         unk_58: 0,
+                        #[ver(G == G15)]
+                        // Apple mirrors the exact emitted 0x1a440 value here.
+                        // E068 empty Compute has raw +0x170 == 0 on J615/G15G.
+                        g15_reg_1a440_value: U64(0x154024201),
                         #[ver(V < V13_0B4)]
                         unk_5c: 0,
                     }),
+                    #[ver(G != G15)]
                     encoder_params <- try_init!(fw::job::raw::EncoderParams {
                         unk_8: 0x0,     // fixed
                         sync_grow: 0x0, // check!
@@ -330,10 +748,35 @@ impl super::QueueInner::ver {
                         sampler_count: cmdbuf.sampler_count as u32,
                         sampler_max: (cmdbuf.sampler_count as u32) + 1,
                     }),
+                    #[ver(G == G15)]
+                    g15_raw_compute_50_lo_7cc: U32(0),
+                    #[ver(G == G15)]
+                    g15_encoder_pad_7d0: Default::default(),
+                    #[ver(G == G15)]
+                    g15_raw_compute_ac_7d4: 0,
+                    #[ver(G == G15)]
+                    g15_encoder_pad_7d5: Default::default(),
+                    #[ver(G == G15)]
+                    g15_raw_compute_a8_b0_lo_7d8: U64(0),
+                    #[ver(G == G15)]
+                    g15_raw_compute_b0_hi_7e0: U32(0),
+                    #[ver(G != G15)]
                     meta <- try_init!(fw::job::raw::JobMeta {
                         unk_0: 0,
                         unk_2: 0,
                         no_preemption: 0,
+                        stamp: ev_comp.stamp_pointer,
+                        fw_stamp: ev_comp.fw_stamp_pointer,
+                        stamp_value: ev_comp.value.next(),
+                        stamp_slot: ev_comp.slot,
+                        evctl_index: 0, // fixed
+                        flush_stamps: flush_stamps as u32,
+                        uuid,
+                        event_seq: ev_comp.event_seq as u32,
+                    }),
+                    #[ver(G == G15)]
+                    meta <- try_init!(fw::job::raw::G15JobMeta {
+                        engine_state: U32(0),
                         stamp: ev_comp.stamp_pointer,
                         fw_stamp: ev_comp.fw_stamp_pointer,
                         stamp_value: ev_comp.value.next(),
@@ -349,25 +792,95 @@ impl super::QueueInner::ver {
                         end_addr: Some(inner_ptr!(inner.timestamps.gpu_pointer(), end)),
                     }),
                     user_timestamp_pointers: inner.user_timestamps.pointers()?,
+                    #[ver(G != G15)]
                     client_sequence: slot_client_seq,
+                    #[ver(G != G15)]
                     pad_2d1: Default::default(),
+                    #[ver(G != G15)]
                     unk_2d4: 0,
+                    #[ver(G != G15)]
                     unk_2d8: 0,
+                    #[ver(G == G15)]
+                    g15_pad_838: Default::default(),
+                    #[ver(G == G15)]
+                    g15_uma_page_pool_state_fwva_83e: U64(0),
+                    #[ver(G == G15)]
+                    // AGXUMAPool::prepareLocked() sets the descriptor prepared
+                    // state before submitBuffer() copies descriptor +0x624 here.
+                    // The exact stock 23J220 empty-Compute path therefore uses 1.
+                    g15_uma_prepared_846: 1,
+                    #[ver(G == G15)]
+                    g15_uma_min_pool_size_847: U64(0),
+                    #[ver(G == G15)]
+                    g15_uma_ideal_pool_size_84f: U64(0),
+                    #[ver(G == G15)]
+                    g15_uma_metrics_fwva_857: U64(0),
+                    #[ver(G == G15)]
+                    // 23J220 exports AGXCLCommandDescriptor +0x494 here.
+                    // That byte is the generation paired with the managed
+                    // context ID at RunCompute +0x10, not a constant.
+                    g15_context_id_generation_85f: context_generation,
                     #[ver(V >= V13_0B4)]
                     context_store_req: U64(0),
+                    #[ver(G == G15)]
+                    g15_tail_868: Default::default(),
                     #[ver(V >= V13_0B4)]
                     context_store_compl: U64(0),
-                    #[ver(V >= V13_0B4)]
+                    #[ver(V >= V13_0B4 && G != G15)]
                     unk_2e9: Default::default(),
-                    #[ver(V >= V13_0B4)]
+                    #[ver(V >= V13_0B4 && G != G15)]
                     unk_flag: U32(0),
-                    #[ver(V >= V13_0B4)]
+                    #[ver(G == G15)]
+                    g15_recovery_marker_878: U32(0),
+                    #[ver(V >= V13_0B4 && G != G15)]
                     unk_pad: Default::default(),
+                    #[ver(G == G15)]
+                    g15_tail_87c: Default::default(),
                 })
             },
         )?;
 
         core::mem::drop(alloc);
+
+        Ok(comp)
+    }
+
+    /// Submit work to a compute queue.
+    pub(super) fn submit_compute(
+        &self,
+        job: &mut Job<super::QueueJob::ver>,
+        cmdbuf: &uapi::drm_asahi_cmd_compute,
+        attachments: &microseq::Attachments,
+        objects: Pin<&xarray::XArray<KBox<file::Object>>>,
+        id: u64,
+        flush_stamps: bool,
+    ) -> Result {
+        let gpu = match (*self.dev)
+            .gpu
+            .as_any()
+            .downcast_ref::<gpu::GpuManager::ver>()
+        {
+            Some(gpu) => gpu,
+            None => {
+                dev_crit!(self.dev.as_ref(), "GpuManager mismatched with Queue!\n");
+                return Err(EIO);
+            }
+        };
+
+        let vm_bind = job.vm_bind.clone();
+        let fence = job.fence.clone();
+        let ev_comp = job.get_comp()?.event_info();
+        let comp = self.build_compute_command(
+            gpu,
+            cmdbuf,
+            attachments,
+            objects,
+            id,
+            flush_stamps,
+            vm_bind.clone(),
+            ev_comp,
+        )?;
+        let comp_job = job.get_comp()?;
 
         fence.add_command();
         comp_job.add_cb(comp, vm_bind.slot(), move |error| {
@@ -382,4 +895,108 @@ impl super::QueueInner::ver {
 
         Ok(())
     }
+
+    /// Stock-empty command construction route. The normal UAPI
+    /// fields are validated before E180 is entered; E180 then arms phase 1 before
+    /// invoking the exact shared builder above. The fully finalized command stays
+    /// trapped in the QueueJob RAII owner and is never added to a WorkQueue here.
+    fn construct_g15_stock_empty_phase0_unpublished(
+        &self,
+        job: &mut Job<super::QueueJob::ver>,
+        cmdbuf: &uapi::drm_asahi_cmd_compute,
+        attachments: &microseq::Attachments,
+        objects: Pin<&xarray::XArray<KBox<file::Object>>>,
+        id: u64,
+        flush_stamps: bool,
+    ) -> Result {
+        #[ver(G != G15)]
+        {
+            let _ = (job, cmdbuf, attachments, objects, id, flush_stamps);
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            if cmdbuf.flags != 0
+                || cmdbuf.sampler_count != 0
+                || cmdbuf.cdm_ctrl_stream_base != 0
+                || cmdbuf.cdm_ctrl_stream_end != 0
+                || cmdbuf.sampler_heap != 0
+                || cmdbuf.helper.binary != 0
+                || cmdbuf.helper.cfg != 0
+                || cmdbuf.helper.data != 0
+            {
+                return Err(EINVAL);
+            }
+
+            // Claim the bounded execution slot only after the normal UAPI
+            // command has been copied and mechanically proven stock-empty.
+            file::claim_g15_stock_empty_compute()?;
+            dev_info!(
+                self.dev.as_ref(),
+                "T8122 G15 normal-UAPI stock-empty Compute accepted; bounded slot claimed\n"
+            );
+
+            let gpu = match (*self.dev)
+                .gpu
+                .as_any()
+                .downcast_ref::<gpu::GpuManager::ver>()
+            {
+                Some(gpu) => gpu,
+                None => {
+                    dev_crit!(self.dev.as_ref(), "GpuManager mismatched with Queue!\n");
+                    return Err(EIO);
+                }
+            };
+            let vm_bind = job.vm_bind.clone();
+            let ev_comp = job.get_comp()?.event_info();
+
+            job.construct_g15_stock_empty_unpublished(|| {
+                self.build_compute_command(
+                    gpu,
+                    cmdbuf,
+                    attachments,
+                    objects,
+                    id,
+                    flush_stamps,
+                    vm_bind,
+                    ev_comp,
+                )
+            })
+        }
+    }
+
+
+    /// Stock-empty composition boundary. This produces one fully-owned pending
+    /// Compute WorkQueue command but deliberately stops before Job::commit(),
+    /// Job::submit(), QueueInfo publication, pipe transport, or GPU execution.
+    pub(super) fn prepare_g15_stock_empty_workqueue_unpublished(
+        &self,
+        job: &mut Job<super::QueueJob::ver>,
+        cmdbuf: &uapi::drm_asahi_cmd_compute,
+        attachments: &microseq::Attachments,
+        objects: Pin<&xarray::XArray<KBox<file::Object>>>,
+        id: u64,
+        flush_stamps: bool,
+    ) -> Result {
+        #[ver(G != G15)]
+        {
+            let _ = (job, cmdbuf, attachments, objects, id, flush_stamps);
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            self.construct_g15_stock_empty_phase0_unpublished(
+                job,
+                cmdbuf,
+                attachments,
+                objects,
+                id,
+                flush_stamps,
+            )?;
+            job.transfer_g15_stock_empty_to_workqueue()
+        }
+    }
+
 }

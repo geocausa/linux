@@ -16,6 +16,7 @@ use crate::fw::initdata::*;
 use crate::fw::types::*;
 use crate::module_parameters;
 use crate::{
+    alloc,
     driver::AsahiDevice,
     gem,
     gpu,
@@ -29,6 +30,7 @@ use kernel::error::{
 use kernel::macros::versions;
 use kernel::prelude::*;
 use kernel::try_init;
+use kernel::{new_mutex, sync::Arc};
 
 use ::pin_init;
 use ::pin_init::Init;
@@ -40,6 +42,7 @@ pub(crate) struct InitDataBuilder<'a> {
     alloc: &'a mut gpu::KernelAllocators,
     cfg: &'static hw::HwConfig,
     dyncfg: &'a hw::DynConfig,
+    g15_shared_bank1: Option<mmu::G15SharedBank1>,
 }
 
 #[versions(AGX)]
@@ -50,12 +53,14 @@ impl<'a> InitDataBuilder::ver<'a> {
         alloc: &'a mut gpu::KernelAllocators,
         cfg: &'static hw::HwConfig,
         dyncfg: &'a hw::DynConfig,
+        g15_shared_bank1: Option<mmu::G15SharedBank1>,
     ) -> InitDataBuilder::ver<'a> {
         InitDataBuilder::ver {
             dev,
             alloc,
             cfg,
             dyncfg,
+            g15_shared_bank1,
         }
     }
 
@@ -207,6 +212,67 @@ impl<'a> InitDataBuilder::ver<'a> {
                 }
                 _ => (),
             }
+            Ok(())
+        })
+    }
+
+    /// Construct the exact J615/C0 G15 HwDataA pre-tail at +0x3a9c.
+    ///
+    /// The DPE/PPT dynamic patch count is zero on this path. The trailing
+    /// +0x4188 block is the separately populated G15G DPE leakage-update image
+    /// reconstructed exactly by E056.
+    fn g15_hwdata_a_pretail() -> impl Init<raw::G15HwDataAPreTail> {
+        pin_init::init_zeroed::<raw::G15HwDataAPreTail>().chain(|ret| {
+            const Q_BANK: u64 = 0x03ff_ffff_03ff_ffff;
+            const Q_3FFFFF: u64 = 0x003f_ffff_003f_ffff;
+            const Q_0F07: u64 = 0x0f07_0f07_0f07_0f07;
+
+            ret.constant_008 = F32::from_bits(0x40a0_0000); // 5.0f
+
+            let dpe = &mut ret.dpe_00c;
+            for v in dpe.all_ones_0cc.iter_mut() {
+                *v = U64(u64::MAX);
+            }
+            dpe.bootstrap_0ec = U64(0x0000_0000_0008_0000);
+            for v in dpe.q_3fffff_0f4.iter_mut() {
+                *v = U64(Q_3FFFFF);
+            }
+            dpe.literal_114 = U64(0x003f_0000_0000_0000);
+            dpe.literal_13c = U64(0x2000_0000_0000_0000);
+            for v in dpe.all_ones_144.iter_mut() {
+                *v = U64(u64::MAX);
+            }
+            for v in dpe.q_0f07_164.iter_mut() {
+                *v = U64(Q_0F07);
+            }
+            for v in dpe.bank1_184.iter_mut() {
+                *v = U64(Q_BANK);
+            }
+            dpe.special_384 = U64(0xa000_0000_0000_0017);
+            for v in dpe.all_ones_38c.iter_mut() {
+                *v = U64(u64::MAX);
+            }
+            for v in dpe.q_0f07_3ac.iter_mut() {
+                *v = U64(Q_0F07);
+            }
+            for v in dpe.bank2_3cc.iter_mut() {
+                *v = U64(Q_BANK);
+            }
+            dpe.control_5d4 = U64(0x0000_0000_00c0_0000);
+
+            let leak = &mut ret.dpe_leakage_6ec;
+            leak.value_000 = 0;
+            leak.value_004 = 1;
+            leak.value_008 = U64(0x0000_0005_0000_01f4);
+            leak.value_010 = U64(0x0000_30d4_0000_30d4);
+            leak.value_018 = U64(0x0000_30d4_0000_30d4);
+            leak.value_020 = U64(0x0000_0bb8_0000_30d4);
+            leak.value_028 = U64(0x0000_0bb8_0000_0bb8);
+            leak.value_030 = U64(0x0000_30d4_0000_30d4);
+            leak.value_038 = U64(0x0000_30d4_0000_30d4);
+            leak.value_040 = U64(0x0000_30d4_0000_30d4);
+            leak.value_048 = U64(0x0000_30d4_0000_30d4);
+            leak.value_050 = 1;
             Ok(())
         })
     }
@@ -411,11 +477,24 @@ impl<'a> InitDataBuilder::ver<'a> {
                             ..Zeroable::init_zeroed()
                         })
                     },
+                    // G15 only programs the primary FastDie mask at HwDataA
+                    // +0x8ac. The generated second copy at +0x1278 remains
+                    // zero from the allocation clear; older generations clone
+                    // the configured mask here.
+                    #[ver(G != G15)]
                     fast_die0_sensor_mask_2: U64(cfg.fast_sensor_mask[0]),
+                    #[ver(G == G15)]
+                    fast_die0_sensor_mask_2: U64(0),
                     #[ver(G >= G14X)]
                     fast_die1_sensor_mask_2: U64(cfg.fast_sensor_mask[1]),
                     unk_e24: cfg.da.unk_e24,
                     unk_e28: 1,
+                    #[ver(G == G15)]
+                    g15_sochot_sensor_mask_1288: U64(cfg.fast_sensor_mask[0]),
+                    #[ver(G == G15)]
+                    g15_sochot_constant_1290: 0x7d,
+                    #[ver(G == G15)]
+                    g15_sochot_control_bit_1294: 1,
                     fast_die0_sensor_mask_alt: U64(cfg.fast_sensor_mask_alt[0]),
                     #[ver(G >= G14X)]
                     fast_die1_sensor_mask_alt: U64(cfg.fast_sensor_mask_alt[1]),
@@ -423,26 +502,76 @@ impl<'a> InitDataBuilder::ver<'a> {
                     fast_die0_sensor_present: U64(cfg.fast_die0_sensor_present as u64),
                     unk_163c: 1,
                     unk_3644: 0,
+                    #[ver(G != G15)]
                     hws1 <- Self::hw_shared1(cfg),
+                    #[ver(G != G15)]
                     hws2 <- Self::hw_shared2(cfg, dyncfg),
+                    #[ver(G != G15)]
                     hws3 <- Self::hw_shared3(cfg),
+                    #[ver(G != G15)]
                     unk_3ce8: 1,
+                    #[ver(G == G15)]
+                    g15_pretail_3a9c <- Self::g15_hwdata_a_pretail(),
                     ..Zeroable::init_zeroed()
                 })
                 .chain(|raw| {
+                    #[ver(G == G15)]
+                    {
+                        // J615/T8122 MTR sensor topology imported by
+                        // AGXArmFirmware::initPowerAndPerformanceData(). Apple's
+                        // MtrPolynomGFX records select sensors 3, 6, 8, 9, 11,
+                        // and 14, so accelerator +0x1a08 and HwDataA +0x1a98
+                        // contain the exact bitmap 0x4b48. Firmware's MTR alarm
+                        // handler treats a zero bitmap as fatal before it can
+                        // match/acknowledge the hardware alarm.
+                        const G15_MTR_SENSOR_MASK: u64 = 0x4b48;
+                        const G15_MTR_POLYNOMS: [(usize, [u32; 4]); 6] = [
+                            (3, [0x0000_860c, 0x0000_eed1, 0x01ff_f024, 0x01ff_fc00]),
+                            (6, [0x0000_850a, 0x0000_ef64, 0x01ff_f00e, 0x01ff_fbf8]),
+                            (8, [0x0000_862f, 0x0000_efe1, 0x01ff_effe, 0x01ff_fbf2]),
+                            (9, [0x0000_85c2, 0x0000_f00d, 0x01ff_eff8, 0x01ff_fbf0]),
+                            (11, [0x0000_8448, 0x0000_f00d, 0x01ff_eff8, 0x01ff_fbf0]),
+                            (14, [0x0000_84ee, 0x0000_efbc, 0x01ff_f008, 0x01ff_fbf4]),
+                        ];
+
+                        // In the generated G15 layout `unk_1640` begins at
+                        // HwDataA +0x1a94. Apple lays out the MTR bitmap at
+                        // +0x1a98, a second bitmap word at +0x1aa0
+                        // (zero on J615), then one 0x78-byte sensor record from
+                        // +0x1aa4. Each J615 property carries four u32 values;
+                        // the optional word at record +0x58 stays allocation-zero.
+                        for (i, byte) in G15_MTR_SENSOR_MASK.to_le_bytes().iter().enumerate() {
+                            raw.unk_1640[0x04 + i] = *byte;
+                        }
+                        for (sensor, coeffs) in G15_MTR_POLYNOMS {
+                            let base = 0x10 + sensor * 0x78;
+                            for (i, byte) in 4u32.to_le_bytes().iter().enumerate() {
+                                raw.unk_1640[base + i] = *byte;
+                            }
+                            for (word_index, word) in coeffs.iter().enumerate() {
+                                let off = base + 4 + word_index * 4;
+                                for (i, byte) in word.to_le_bytes().iter().enumerate() {
+                                    raw.unk_1640[off + i] = *byte;
+                                }
+                            }
+                        }
+                    }
+
                     for i in 0..self.dyncfg.pwr.perf_states.len() {
                         raw.sram_k[i] = self.cfg.sram_k;
                     }
 
+                    #[ver(G != G15)]
                     for (i, coef) in pwr.core_leak_coef.iter().enumerate() {
                         raw.core_leak_coef[i] = *coef;
                     }
 
+                    #[ver(G != G15)]
                     for (i, coef) in pwr.sram_leak_coef.iter().enumerate() {
                         raw.sram_leak_coef[i] = *coef;
                     }
 
-                    #[ver(V >= V13_0B4)]
+                    #[ver(V >= V13_0B4 && G != G15)]
                     if let Some(csafr) = pwr.csafr.as_ref() {
                         for (i, coef) in csafr.leak_coef_afr.iter().enumerate() {
                             raw.aux_leak_coef.cs_1[i] = *coef;
@@ -478,7 +607,7 @@ impl<'a> InitDataBuilder::ver<'a> {
                         raw.power_zones[i].unk_10 = 1320000000;
                     }
 
-                    #[ver(V >= V13_0B4 && G >= G14X)]
+                    #[ver(V >= V13_0B4 && G >= G14X && G != G15)]
                     for (i, j) in raw.hws2.g14.curve2.t1.iter().enumerate() {
                         raw.unk_hws2[i] = if *j == 0xffff { 0 } else { j / 2 };
                     }
@@ -538,11 +667,24 @@ impl<'a> InitDataBuilder::ver<'a> {
                     // Unknown page
                     //unk_30: U64(0x6f_ffff8000),
                     unk_30: U64(mmu::IOVA_UNK_PAGE),
+                    #[ver(G != G15)]
                     timestamp_area_base: U64(gpu::IOVA_KERN_TIMESTAMP_RANGE.start),
+                    #[ver(G == G15)]
+                    // On G15 this inherited field lands at exact HwDataB +0x28.
+                    // Apple writes convertGPUVAToFWVA(0xfffffc2011800000) here;
+                    // ChinookV9's conversion is identity (eGartRange 11 base).
+                    timestamp_area_base: U64(0xffff_fc20_1180_0000),
                     // TODO: yuv matrices
                     chip_id: cfg.chip_id,
                     unk_454: cfg.db.unk_454,
+                    #[ver(G != G15)]
                     unk_458: 0x1,
+                    #[ver(G == G15)]
+                    // Exact J615/G15G chip-info revision-low word at HwDataB +0xa30.
+                    unk_458: 0x0,
+                    #[ver(G == G15)]
+                    // Exact J615/G15G process-node word at HwDataB +0xa34.
+                    unk_45c: 0x4,
                     unk_460: 0x1,
                     unk_464: 0x1,
                     unk_468: 0x1,
@@ -550,7 +692,12 @@ impl<'a> InitDataBuilder::ver<'a> {
                     unk_484: 0x1,
                     unk_48c: 0x1,
                     base_clock_khz: cfg.base_clock_hz / 1000,
+                    #[ver(G != G15)]
                     power_sample_period: dyncfg.pwr.power_sample_period,
+                    #[ver(G == G15)]
+                    // Exact J615 production path: `model-slow` is absent from
+                    // Apple's ADT, so AGXFirmware writes 1 to HwDataB +0xa6c.
+                    power_sample_period: 1,
                     unk_49c: 0x1,
                     unk_4a0: 0x1,
                     unk_4a4: 0x1,
@@ -563,6 +710,8 @@ impl<'a> InitDataBuilder::ver<'a> {
                     unk_534: cfg.db.unk_534,
                     num_frags: dyncfg.id.num_frags * dyncfg.id.num_clusters,
                     unk_554: 0x1,
+                    #[ver(G == G15)]
+                    g15_uat_mode_b40: 1,
                     uat_ttb_base: U64(dyncfg.uat_ttb_base),
                     gpu_core_id: cfg.gpu_core as u32,
                     gpu_rev_id: dyncfg.id.gpu_rev_id as u32,
@@ -579,24 +728,52 @@ impl<'a> InitDataBuilder::ver<'a> {
                     #[ver(V < V13_0B4)]
                     unk_ac0: 0x1020,
 
+                    #[ver(G == G15)]
+                    unk_4f8: 1,
                     #[ver(V >= V13_0B4)]
                     unk_ae4: Array::new([0x0, 0x3, 0x7, 0x7]),
                     #[ver(V < V13_0B4)]
                     unk_ae4: Array::new([0x0, 0xf, 0x3f, 0x3f]),
                     unk_b10: 0x1,
                     timer_offset: U64(0),
+                    #[ver(G != G15)]
                     unk_b24: 0x1,
+                    #[ver(G != G15)]
                     unk_b28: 0x1,
+                    #[ver(G != G15)]
                     unk_b2c: 0x1,
+                    #[ver(G != G15)]
                     unk_b30: cfg.db.unk_b30,
-                    #[ver(V >= V13_0B4)]
+                    #[ver(V >= V13_0B4 && G != G15)]
                     unk_b38_0: 1,
-                    #[ver(V >= V13_0B4)]
+                    #[ver(V >= V13_0B4 && G != G15)]
                     unk_b38_4: 1,
+                    #[ver(G != G15)]
                     unk_b38: Array::new([0xffffffff; 12]),
-                    #[ver(V >= V13_0B4 && V < V13_3)]
+                    #[ver(G == G15)]
+                    // Exact final J615/G15G image produced by Apple's
+                    // initFirmwareData() immediately before bootFirmware().
+                    g15_startup_17ec: raw::G15HwDataBStartup {
+                        zero_17ec: Array::new([0; 2]),
+                        flag_17f4: 1,
+                        one_17f8: 1,
+                        one_17fc: 1,
+                        flag_1800: 1,
+                        zero_1804: 0,
+                        one_1808: 1,
+                        one_180c: 1,
+                        flag_1810: 1,
+                        zero_1814: 0,
+                        sentinels_1818: Array::new([0xffff_ffff; 12]),
+                        zero_1848: 0,
+                        zero_184c: Array::new([0; 2]),
+                        zero_1854: 0,
+                        flag_1858: 1,
+                        zero_185c: 0,
+                    },
+                    #[ver(V >= V13_0B4 && V < V13_3 && G != G15)]
                     unk_c3c: 0x19,
-                    #[ver(V >= V13_3)]
+                    #[ver(V >= V13_3 && G != G15)]
                     unk_c3c: 0x1a,
                     ..Zeroable::init_zeroed()
                 })
@@ -881,6 +1058,48 @@ impl<'a> InitDataBuilder::ver<'a> {
                             comp: alloc.private.new_default::<GpuStatsComp>()?,
                         })
                     },
+                    #[ver(G == G15)]
+                    // Exact 0x88-byte persistent firmware time/activity
+                    // snapshot. Zero marker means first use; firmware then
+                    // owns the save/restore contents.
+                    g15_persistent_time: alloc.private.new_default::<G15FirmwareTimeState>()?,
+                    #[ver(G == G15)]
+                    // Exact Apple 0x60-byte firmware control/state block.
+                    g15_control_state: alloc.private.new_default::<G15ControlState>()?,
+                    #[ver(G == G15)]
+                    g15_stats_vtx: alloc.private.new_default::<G15StatsVtx>()?,
+                    #[ver(G == G15)]
+                    g15_stats_frag: alloc.private.new_object(
+                        Default::default(),
+                        |_inner| raw::G15StatsFrag {
+                            pad_000: Default::default(),
+                            cur_stamp_id: -1,
+                            pad_c1c: Default::default(),
+                            unk_id: -1,
+                            pad_c34: Default::default(),
+                        },
+                    )?,
+                    #[ver(G == G15)]
+                    g15_stats_comp: alloc.private.new_default::<G15StatsComp>()?,
+                    #[ver(G == G15)]
+                    // Apple exposes these as named GPU/FW hardware mappings.
+                    // Firmware proves 256 x 0x10 PB records and 256 x 0x20 UMA
+                    // records. The GPU-shared allocator gives both GPU and FW
+                    // read/write access, matching the observed ownership.
+                    g15_pb_desc_table: alloc
+                        .gpu
+                        .array_empty::<raw::G15PBDescriptor>(0x100)?,
+                    #[ver(G == G15)]
+                    g15_uma_page_pool_desc_table: alloc
+                        .gpu
+                        .array_empty::<raw::G15UMAPagePoolDescriptor>(0x100)?,
+                    #[ver(G == G15)]
+                    // G15 HWDS-ID firmware state is exactly 256 x 8 bytes.
+                    // Apple zeroes the full 0x800-byte mapping before boot;
+                    // firmware reads/writes both u32 words in each entry.
+                    g15_hwds_counters: alloc
+                        .shared
+                        .array_empty::<raw::G15HWDSCounterEntry>(0x100)?,
 
                     hwdata_a: hwa,
                     unkptr_190: alloc.private.array_empty_tagged(0x80, b"I190")?,
@@ -898,47 +1117,161 @@ impl<'a> InitDataBuilder::ver<'a> {
             },
             |inner, _ptr| {
                 try_init!(raw::RuntimePointers::ver {
+                    #[ver(G != G15)]
                     pipes: Default::default(),
+                    #[ver(G != G15)]
                     device_control: Default::default(),
+                    #[ver(G != G15)]
                     event: Default::default(),
+                    #[ver(G != G15)]
                     fw_log: Default::default(),
+                    #[ver(G != G15)]
                     ktrace: Default::default(),
+                    #[ver(G != G15)]
                     stats: Default::default(),
 
+                    #[ver(G != G15)]
                     stats_vtx: inner.stats.vtx.gpu_pointer(),
+                    #[ver(G != G15)]
                     stats_frag: inner.stats.frag.gpu_pointer(),
+                    #[ver(G != G15)]
                     stats_comp: inner.stats.comp.gpu_pointer(),
 
+                    #[ver(G != G15)]
                     hwdata_a: inner.hwdata_a.gpu_pointer(),
+                    #[ver(G != G15)]
                     unkptr_190: inner.unkptr_190.gpu_pointer(),
+                    #[ver(G != G15)]
                     unkptr_198: inner.unkptr_198.gpu_pointer(),
+                    #[ver(G != G15)]
                     hwdata_b: inner.hwdata_b.gpu_pointer(),
+                    #[ver(G != G15)]
                     hwdata_b_2: inner.hwdata_b.gpu_pointer(),
 
+                    #[ver(G != G15)]
                     fwlog_buf: None,
 
+                    #[ver(G != G15)]
                     unkptr_1b8: inner.unkptr_1b8.gpu_pointer(),
 
-                    #[ver(G < G14X)]
+                    #[ver(G < G14X && G != G15)]
                     unkptr_1c0: inner.unkptr_1c0.gpu_pointer(),
-                    #[ver(G < G14X)]
+                    #[ver(G < G14X && G != G15)]
                     unkptr_1c8: inner.unkptr_1c8.gpu_pointer(),
 
+                    #[ver(G != G15)]
                     buffer_mgr_ctl_gpu_addr: U64(gpu::IOVA_KERN_GPU_BUFMGR_LOW),
+                    #[ver(G != G15)]
                     buffer_mgr_ctl_fw_addr: U64(gpu::IOVA_KERN_GPU_BUFMGR_HIGH),
 
+                    #[ver(G != G15)]
                     __pad0: Default::default(),
+                    #[ver(G != G15)]
                     unk_160: U64(0),
+                    #[ver(G != G15)]
                     unk_168: U64(0),
+                    #[ver(G != G15)]
                     unk_1d0: 0,
+                    #[ver(G != G15)]
                     unk_1d4: 0,
+                    #[ver(G != G15)]
                     unk_1d8: Default::default(),
 
+                    #[ver(G != G15)]
                     __pad1: Default::default(),
+                    #[ver(G != G15)]
                     gpu_scratch: raw::RuntimeScratch::ver {
                         unk_6b38: 0xff,
                         ..Default::default()
                     },
+
+                    // G15 compact wrapper. Only fields with exact semantics are
+                    // populated here; opaque backing pointers stay zero until the
+                    // matching Apple allocations are reconstructed.
+                    #[ver(G == G15)]
+                    hwdata_b: inner.hwdata_b.gpu_pointer(),
+                    #[ver(G == G15)]
+                    g15_fwbrn_table: U64(0),
+                    #[ver(G == G15)]
+                    g15_persistent_time: inner.g15_persistent_time.gpu_pointer(),
+                    #[ver(G == G15)]
+                    pipes: Default::default(),
+                    #[ver(G == G15)]
+                    device_control: Default::default(),
+                    #[ver(G == G15)]
+                    event: Default::default(),
+                    #[ver(G == G15)]
+                    fw_log: Default::default(),
+                    #[ver(G == G15)]
+                    ktrace: Default::default(),
+                    #[ver(G == G15)]
+                    stats: Default::default(),
+                    #[ver(G == G15)]
+                    fwlog_buf: None,
+                    #[ver(G == G15)]
+                    // allocateSharedData zero-fills the wrapper. Firmware owns
+                    // these six-per-FWLog-channel sequences; both start at 0.
+                    #[ver(G == G15)]
+                    fwlog_payload_slot_seq_200: Default::default(),
+                    #[ver(G == G15)]
+                    fwlog_message_seq_218: Default::default(),
+                    #[ver(G == G15)]
+                    // Explicitly cleared again by initFirmwareSharedData().
+                    fwlog_enabled_230: 0,
+                    #[ver(G == G15)]
+                    g15_ptr_234: U64(inner.g15_stats_vtx.gpu_va().get()),
+                    #[ver(G == G15)]
+                    g15_ptr_23c: U64(inner.g15_stats_frag.gpu_va().get()),
+                    #[ver(G == G15)]
+                    g15_ptr_244: U64(inner.g15_stats_comp.gpu_va().get()),
+                    #[ver(G == G15)]
+                    g15_control_state: U64(inner.g15_control_state.gpu_va().get()),
+                    #[ver(G == G15)]
+                    g15_pad_254: Default::default(),
+                    #[ver(G == G15)]
+                    g15_hwds_counters: U64(inner.g15_hwds_counters.gpu_va().get()),
+                    #[ver(G == G15)]
+                    g15_pb_desc_addr: U64(inner.g15_pb_desc_table.gpu_va().get()),
+                    #[ver(G == G15)]
+                    // AGXArmFirmware::convertGPUVAToFWVA() is an identity
+                    // function on this exact G15 host driver.
+                    g15_pb_desc_fw_addr: U64(inner.g15_pb_desc_table.gpu_va().get()),
+                    #[ver(G == G15)]
+                    g15_uma_page_pool_desc_addr: U64(
+                        inner.g15_uma_page_pool_desc_table.gpu_va().get(),
+                    ),
+                    #[ver(G == G15)]
+                    g15_uma_page_pool_desc_fw_addr: U64(
+                        inner.g15_uma_page_pool_desc_table.gpu_va().get(),
+                    ),
+                    #[ver(G == G15)]
+                    // All G15/G15G vtables resolve this source to
+                    // AGXAcceleratorG15::halGetDefaultUscMaxTgmem() => 4.
+                    g15_usc_max_tgmem: 4,
+                    #[ver(G == G15)]
+                    g15_zero_2d4: 0,
+                    #[ver(G == G15)]
+                    // Firmware owns +0x2d8..+0x3af and performs its own
+                    // first-boot initialization (including +0x2fc = 1 and
+                    // +0x314 = 0xabcdabcd). Keep the compile-only host image
+                    // zeroed until any additional host-side initialization is
+                    // directly proven.
+                    g15_runtime_state: Default::default(),
+                    #[ver(G == G15)]
+                    g15_marker_3b0: 0xff,
+                    #[ver(G == G15)]
+                    g15_zero_3b1: Default::default(),
+                    #[ver(G == G15)]
+                    // Exact unaligned firmware pointer to the 0x4360 HwDataA
+                    // allocation. Firmware dereferences this wrapper field
+                    // extensively, including G15-only tail offsets.
+                    g15_ptr_441: U64(inner.hwdata_a.gpu_va().get()),
+                    #[ver(G == G15)]
+                    g15_zero_449: U64(0),
+                    #[ver(G == G15)]
+                    g15_zero_451: U64(0),
+                    #[ver(G == G15)]
+                    g15_tail_459: Default::default(),
                 })
             },
         )
@@ -975,44 +1308,437 @@ impl<'a> InitDataBuilder::ver<'a> {
     #[inline(never)]
     pub(crate) fn build(&mut self) -> Result<KBox<GpuObject<InitData::ver>>> {
         let runtime_pointers = self.runtime_pointers()?;
+        #[ver(G != G15)]
         let globals = self.globals()?;
+        #[ver(G != G15)]
         let fw_status = self.fw_status()?;
-        let shared_ro = &mut self.alloc.shared_ro;
+        #[ver(G != G15)]
+        let unk_buf = self.alloc.shared_ro.array_empty_tagged(0x4000, b"IDTA")?;
+        #[ver(G == G15)]
+        let g15_init_sequence = self.alloc.shared_ro.new_object(
+            Default::default(),
+            |_inner| raw::G15InitSequencePage {
+                // Exact G15/G15G empty AGFA sequence. The firmware parser
+                // starts with this record and exits immediately on kind == 0.
+                terminator: raw::G15InitSequenceEntry {
+                    value: U64(0),
+                    register_offset: U32(0),
+                    shift: U32(0),
+                    kind: U32(0),
+                    reserved: U32(0),
+                },
+                unused: Default::default(),
+            },
+        )?;
+        #[ver(G == G15)]
+        let g15_globals = self.alloc.private.new_object(
+            Default::default(),
+            |_inner| raw::G15Q4Config {
+                // Exact G15G/J615 host values proven from the paired Apple
+                // AGXG15G driver. These are established before firmware sees
+                // q4; unresolved accelerator-derived fields remain zero.
+                // Accelerator::start zeroes +0x2970/+0x2974 and its only
+                // population path is gated by config bit 34. Base configure
+                // clears bit 34 and G15 never restores it, so both are exact 0.
+                // q4 +0x000 is 7 only when accelerator config bit 28 is set.
+                // Exact J615 keeps bit 28 clear throughout setup.
+                flags_000: U32(0),
+                // Base/Arm initFirmwareData explicitly clear these prefix
+                // dwords. +0x034 has no non-zero host writer and remains
+                // zero on either branch from the zero-filled allocation.
+                zero_004: U32(0),
+                zero_008: U32(0),
+                zero_00c: U32(0),
+                zero_010: U32(0),
+                zero_014: U32(0),
+                zero_018: U32(0),
+                unk_01c: U32(0),
+                // Apple pairs getDefaultRelaxedCLContextSwitchTimeout() with
+                // setRelaxedCLKillTimeout(); ChinookV9's default is 3000.
+                relaxed_cl_kill_timeout_020: U32(0x0bb8),
+                frg_task_timeout_024: U32(0),
+                // Base configure zeroes the complete accelerator
+                // +0x65c..+0x663 qword. Apple later copies +0x660 directly
+                // into q4 +0x028; G15/G15G configure only rewrites the packed
+                // +0x650..+0x656 feature word, so exact J615 remains zero.
+                accelerator_config_660_028: U32(0),
+                // Base AGXAccelerator::configureDevice() forces config bit 0
+                // on before firmware data construction. AGXFirmware copies
+                // that bit directly to q4 +0x02c.
+                accelerator_config_bit0_02c: U32(1),
+                // q4 +0x030 is accelerator config bit 1 / Smart Idle Off.
+                // The exact AGXG15G personality table has three T8122
+                // matches (G15G, G15G_A0, G15G_B0), and every matching
+                // subclass returns 1 from halIsSmartidleOffEnabled().
+                smart_idle_off_enabled_030: U32(1),
+                zero_034: U32(0),
+                constant_038: U32(0x78),
+                // Apple explicitly starts the CPMS/QoS control words at
+                // zero in AGXArmFirmware::initFirmwareData. +0x044 has
+                // no host population path and remains allocation-zeroed.
+                cpms_window_size_03c: U32(0),
+                cpms_tfca_size_040: U32(0),
+                zero_044: U32(0),
+                kick_channel_qos_arg2_048: U32(0),
+                kick_channel_qos_arg1_04c: U32(0),
+                unk_050: 0xffff,
+                unk_052: 0x0028,
+                unk_054: 0xffff,
+                // Exact host clear immediately after the 0x50/0x52/0x54 tuple.
+                zero_056: U32(0),
+                // G15 constructor/start establishes accelerator+0x9d08 low two
+                // bits as zero; later writers touch bits 3/5 only. Apple stores
+                // ((byte & 3) == 0) here, so the exact J615 value is 1.
+                // Apple seeds power interface 0 from accelerator +0x2288.
+                // Base configure uses 0xfe6 (4070), and exact J615 has no
+                // `gpu-max-power` override, so q4 +0x078 receives 4070.
+                // q4 +0x074 is never populated by the G15 host and has only
+                // firmware readers before bootstrap; preserve the zeroed allocation.
+                zero_074: U32(0),
+                gpu_max_power_078: U32(4070),
+                // setupConfig enables interfaces 1/2 with a full-scale 0x10000
+                // target. With J615's two perf states, max pstate index 1 and
+                // gpu-pwr-min-duty-cycle=30, normalization yields 100 for both.
+                power_interface_1_target_07c: U32(100),
+                power_interface_2_target_080: U32(100),
+                low2_clear_05a: U32(1),
+                // On exact J615, the `model-slow` probe property is absent.
+                // Apple therefore writes 1 to HwDataB +0xa6c, and the arm
+                // firmware setup copies/defaults that value into q4 +0x05e.
+                // The same field is the target of setCSwitchTimerMultiplier().
+                cswitch_timer_multiplier_05e: U32(1),
+                // q4 +0x062/+0x070 are runtime-mutable controls, but the
+                // exact G15 bootstrap path never invokes their setters. The
+                // zero-filled q4 allocation therefore reaches firmware as 0.
+                cdm_cswitch_mode_change_062: U32(0),
+                command_submission_enabled_070: AtomicU32::new(0),
+                // AGXAccelerator::start() builds the GPU PerfStateInfo from
+                // exact J615 `gpu-num-perf-states = 2`. G15 constructor byte
+                // +0x4e1 is zero, so Apple takes the direct 0x448-byte copy
+                // to accelerator +0xa1e0 rather than the MGPU combiner.
+                // getPerfStateCap(domain 0) returns count - 1, and the Arm
+                // initializer stores that cap multiplied by 100 at q4+0x8c.
+                perf_state_cap_x100_08c: U32(100),
+                // setupConfig explicitly clears the firmware-object backing
+                // words at +0x17a0/+0x17a4/+0x17a8/+0x17ac/+0x17b0 and
+                // the +0x17b4 validity byte. initPowerAndPerformanceData()
+                // copies those bootstrap values to q4 +0x90..+0xa4 before
+                // any performance-controller runtime update. The J615 ADT
+                // target/boost values are configuration inputs, not these
+                // initial q4 words.
+                performance_target_090: U32(0),
+                performance_transfer_output_094: U32(0),
+                performance_boost_min_util_098: U32(0),
+                performance_boost_ce_step_09c: U32(0),
+                performance_reset_iters_0a0: U32(0),
+                performance_boost_min_util_valid_0a4: 0,
+                // Firmware caches q4 +0x26f and uses it to gate an extra
+                // conflict/resource scan. The exact J615 host never writes
+                // this byte, so it remains zero from the allocation.
+                conflict_scan_enable_26f: 0,
+                // AGXAccelerator::configurePowerAndPerformanceController()
+                // establishes the Smart Idle defaults before configureDevice
+                // probes its optional gpu-idleoff-* overrides. Exact J615
+                // omits all ten properties, so initFirmwareData copies these
+                // unchanged defaults into q4 +0x7a8..+0x7cc.
+                smart_idle_standby_timer_us_7a8: U32(700),
+                smart_idle_prob_init_val_7ac: f32!(1.0),
+                smart_idle_fn_hit_7b0: f32!(0.8),
+                smart_idle_fi_hit_7b4: f32!(0.2),
+                smart_idle_fn_miss_7b8: f32!(0.9),
+                smart_idle_fi_miss_7bc: f32!(0.1),
+                smart_idle_nei_hit_7c0: f32!(0.25),
+                smart_idle_min_confidence_7c4: f32!(0.7),
+                smart_idle_high_confidence_7c8: f32!(0.9),
+                smart_idle_reset_iterations_7cc: U32(6),
+                // initPowerAndPerformanceData() enables UT and CLVR by
+                // default. It also copies the two keepalive thresholds from
+                // accelerator +0x1e90/+0x1e8c. configureDevice establishes
+                // both as 100 before optional property overrides; exact J615
+                // omits both gpu-keepalive-* threshold properties.
+                ut_engagement_enabled_7d0: U32(1),
+                clvr_engagement_enabled_7d4: U32(1),
+                gpu_keepalive_perf_mode_threshold_7d8: U32(100),
+                gpu_keepalive_off_mode_threshold_7dc: U32(100),
+                // AGXArmFirmware::init() explicitly clears the entire q4
+                // register-patch staging span through +0x96b. Firmware later
+                // reads +0x964 as the record count for entries at +0x7f4;
+                // exact J615 bootstrap therefore takes the zero-count path.
+                boot_patch_record_count_964: U32(0),
+                boot_patch_count_zero_968: U32(0),
+                // These are runtime inputs from the IOGPU
+                // set_display_params_for_gpu user-client method. Apple starts
+                // the zeroed q4 block with no display override; firmware falls
+                // back to its live timestamp/interval state while both are 0.
+                // The interval, once supplied, is clamped by the host to
+                // 100000..400000 ticks in the firmware 24 MHz timebase.
+                display_pm_timestamp_96c: U64(0),
+                display_pm_interval_974: U64(0),
+                // AGXArmFirmware::setupConfig copies the four values below
+                // from accelerator +0x1e48..+0x1e60. AGXAccelerator's static
+                // initialization proves their exact J615 values.
+                // configureDevice establishes the exact seven-word source
+                // record at accelerator +0x1e48..+0x1e60 and setupConfig
+                // copies it to q4 +0x97c..+0x994. Direct setters prove the
+                // first three words are the 3D/TA/CL progress-check intervals.
+                progress_check_interval_3d_97c: U32(40),
+                progress_check_interval_ta_980: U32(10),
+                progress_check_interval_cl_984: U32(250),
+                unk_988: U32(1),
+                unk_98c: U32(1),
+                unk_990: U32(100),
+                unk_994: U32(1),
+                // AGXFirmware::init() invokes the active ChinookV9
+                // setupConfig() before firmware data initialization. That
+                // establishes 2/40/5 as the three delay defaults and clears
+                // their override state. Exact J615 omits the corresponding
+                // gpu-*-delay/early-wake properties, so
+                // initPowerAndPerformanceData() selects those defaults and
+                // writes them directly to q4 +0x9a0/+0x9a4/+0x9a8.
+                gpu_idle_off_delay_ms_9a0: U32(2),
+                fender_idle_off_delay_ms_9a4: U32(40),
+                fw_early_wake_timeout_ms_9a8: U32(5),
+                // Exact ChinookV9 defaults, applied by paired getter/setter
+                // calls in AGXArmFirmware::initFirmwareData.
+                cl_context_switch_timeout_9b0: U32(0x28),
+                cl_kill_timeout_9b4: U32(0x32),
+                // initFirmwareData explicitly clears the GVDM timer field;
+                // setGVDMTimerInterval() targets the same q4 +0x9ac word.
+                gvdm_timer_interval_9ac: U32(0),
+                cdm_backoff_timeout_9bc: 0x04,
+                // Exact host bootstrap clears/retains these as zero. The
+                // table selector is explicitly zeroed before firmware can
+                // take the optional +0x9e5 table-copy path.
+                zero_9b8: U32(0),
+                table_selector_9dd: U64(0),
+                zero_de5: U32(0),
+                // Keepalive override setters are runtime-only. Zero means
+                // no override; threshold getters fall back to +0x7d8/+0x7dc.
+                gpu_keepalive_override_de9: U32(0),
+                gfxc_keepalive_override_ded: U32(0),
+                gpu_keepalive_perf_mode_threshold_override_df1: U32(0),
+                gpu_keepalive_off_mode_threshold_override_df5: U32(0),
+                // initFirmwareData calls ChinookV9 initSoftFaultSettings(true).
+                // Its updater encodes enabled as bit0=1, bit1=0, bit2=0 and
+                // masks the word to three bits, yielding exact q4 +0xdf9 = 1.
+                soft_fault_settings_df9: U32(1),
+                ..Default::default()
+            },
+        )?;
+        #[ver(G == G15)]
+        let g15_q21 = self.alloc.shared.new_object(
+            Default::default(),
+            |_inner| raw::G15SharedStatus {
+                host_flags: 0,
+                banner_guard: AtomicU32::new(1),
+                unk_08: 0,
+                busy: AtomicU32::new(0),
+                unk_10: 0,
+                firmware_ready: AtomicU32::new(0),
+                power_state: AtomicU32::new(0),
+                unk_1c: 0,
+            },
+        )?;
+        #[ver(G == G15)]
+        let mut g15_q22_alloc = alloc::G15SharedBank1Allocator::new(
+            self.dev,
+            self.g15_shared_bank1.clone().ok_or(EINVAL)?,
+            mmu::UAT_PGSZ,
+            mmu::PROT_G15_RANGE7_FW,
+            true,
+            None,
+        );
+        #[ver(G == G15)]
+        let g15_mapping_ring_backing =
+            g15_q22_alloc.new_default::<G15MappingRingBacking>()?;
+        #[ver(G == G15)]
+        let g15_mapping_notifier = mmu::G15MappingNotifierHandle::new(Arc::pin_init(
+            new_mutex!(
+                mmu::G15MappingNotifier::new(
+                    self.dev,
+                    g15_mapping_ring_backing,
+                ),
+                "g15_mapping_notifier"
+            ),
+            GFP_KERNEL,
+        )?);
+        #[ver(G == G15)]
+        let (g15_cache_flush_state_va, g15_cache_flush_ring_va) = {
+            let notifier = g15_mapping_notifier.lock();
+            (notifier.state_gpu_va(), notifier.ring_gpu_va())
+        };
+        #[ver(G == G15)]
+        let g15_q22 = self.alloc.shared.new_object(
+            Default::default(),
+            |_inner| raw::G15Q22Shared {
+                // Apple allocFirmwareData() calls allocateSharedData(..., true,
+                // false) with eGartRange=7, zero extra options, and exact 0x20 /
+                // 0x1800 suballocations. That is option word 0x700000007, so
+                // these bootstrap objects use the same shared bank-1 PTE class
+                // as later range-7 PM resources. The q22 producer is not yet
+                // attached while these two self-hosting mappings are created.
+                shared_ptr_4568: U64(g15_cache_flush_state_va),
+                shared_ptr_4570: U64(g15_cache_flush_ring_va),
+                // Apple sets +0x45c4 to one before firmware starts. G15's
+                // accelerator configure path clears feature bit 28 before the
+                // const smart-idle query, so +0xc3cc is exactly zero on J615.
+                host_flag_45c4: U32(1),
+                // initFirmwareData starts this at zero; setKickChannelQos()
+                // flips it to one before updating q4 +0x04c/+0x048.
+                kick_channel_qos_valid_c3c8: U32(0),
+                feature_c3cc: U32(0),
+                ..Default::default()
+            },
+        )?;
+        #[ver(G == G15)]
+        let g15_q23 = self.alloc.shared.new_object(
+            Default::default(),
+            |_inner| raw::G15Q23Shared {
+                // Exact E056 mirror of the G15G DPE leakage-update image.
+                snapshot_update_158: U32(0),
+                snapshot_15c: U32(1),
+                snapshot_160: U32(500),
+                snapshot_164: U32(5),
+                snapshot_168: U64(0x0000_30d4_0000_30d4),
+                snapshot_170: U64(0x0000_30d4_0000_30d4),
+                snapshot_178: U64(0x0000_0bb8_0000_30d4),
+                snapshot_180: U64(0x0000_0bb8_0000_0bb8),
+                snapshot_188: U64(0x0000_30d4_0000_30d4),
+                snapshot_190: U64(0x0000_30d4_0000_30d4),
+                snapshot_198: U64(0x0000_30d4_0000_30d4),
+                snapshot_1a0: U64(0x0000_30d4_0000_30d4),
+                snapshot_1a8: U32(1),
+                tuning_update_1d0: 0,
+                host_zero_1e8: U32(0),
+                ..Default::default()
+            },
+        )?;
+
+        #[ver(G == G15)]
+        {
+            // q4/q21/q22/q23 are now exact-size typed G15 root objects.
+            // Fields whose accelerator/ADT source is not yet reconstructed
+            // deliberately remain zero; runtime G15 dispatch is still off.
+        }
+        let cfg = self.cfg;
+
+        // 16 KiB UAT pages use 11 index bits at the lower levels. G15 keeps
+        // the same three-level layout but widens the root (shift 36) from
+        // 8 entries (39-bit IAS) to 64 entries (42-bit IAS).
+        let root_bits = self.cfg.uat_ias.checked_sub(36).ok_or(EINVAL)?;
+        if root_bits > 11 {
+            return Err(EINVAL);
+        }
+        let root_entries = 1usize << root_bits;
 
         let obj = self.alloc.private.new_init(
             try_init!(InitData::ver {
-                unk_buf: shared_ro.array_empty_tagged(0x4000, b"IDTA")?,
+                #[ver(G != G15)]
+                unk_buf,
                 runtime_pointers,
+                #[ver(G != G15)]
                 globals,
+                #[ver(G != G15)]
                 fw_status,
+                #[ver(G == G15)]
+                g15_init_sequence,
+                #[ver(G == G15)]
+                g15_globals,
+                #[ver(G == G15)]
+                g15_q21,
+                #[ver(G == G15)]
+                g15_mapping_notifier,
+                #[ver(G == G15)]
+                g15_q22,
+                #[ver(G == G15)]
+                g15_q23,
             }),
             |inner, _ptr| {
-                let cfg = &self.cfg;
                 try_init!(raw::InitData::ver {
-                    #[ver(V == V13_5 && G != G14X)]
+                    #[ver(V == V13_5 && G != G14X && G != G15)]
                     ver_info: Array::new([0x6ba0, 0x1f28, 0x601, 0xb0]),
                     #[ver(V == V13_5 && G == G14X)]
                     ver_info: Array::new([0xb390, 0x70f8, 0x601, 0xb0]),
+                    #[ver(G != G15)]
                     unk_buf: inner.unk_buf.gpu_pointer(),
+                    #[ver(G != G15)]
                     unk_8: 0,
+                    #[ver(G != G15)]
                     unk_c: 0,
+                    #[ver(G != G15)]
                     runtime_pointers: inner.runtime_pointers.gpu_pointer(),
+                    #[ver(G != G15)]
                     globals: inner.globals.gpu_pointer(),
+                    #[ver(G != G15)]
                     fw_status: inner.fw_status.gpu_pointer(),
+                    #[ver(G != G15)]
                     uat_page_size: 0x4000,
+                    #[ver(G != G15)]
                     uat_page_bits: 14,
+                    #[ver(G != G15)]
                     uat_num_levels: 3,
+                    #[ver(G != G15)]
                     uat_level_info: Array::new([
-                        Self::uat_level_info(cfg, 36, 8),
-                        Self::uat_level_info(cfg, 25, 2048),
-                        Self::uat_level_info(cfg, 14, 2048),
+                        Self::uat_level_info(&cfg, 36, root_entries),
+                        Self::uat_level_info(&cfg, 25, 2048),
+                        Self::uat_level_info(&cfg, 14, 2048),
                     ]),
+                    #[ver(G != G15)]
                     __pad0: Default::default(),
+                    #[ver(G != G15)]
                     host_mapped_fw_allocations: 1,
+                    #[ver(G != G15)]
                     unk_ac: 0,
+                    #[ver(G != G15)]
                     unk_b0: 0,
+                    #[ver(G != G15)]
                     unk_b4: 0,
+                    #[ver(G != G15)]
                     unk_b8: 0,
+
+                    // G15 top-level root reconstructed from
+                    // AGXArmFirmware::initFirmwareData and RTKit-2419.140.12.
+                    #[ver(G == G15)]
+                    g15_q0_signature: U64(0x0c08_e21e_8380_0490),
+                    #[ver(G == G15)]
+                    g15_q1_init_sequence: U64(inner.g15_init_sequence.gpu_va().get()),
+                    // Exact: Apple's root allocation is zeroed and the G15
+                    // host constructor never writes q2.
+                    #[ver(G == G15)]
+                    g15_q2: U64(0),
+                    #[ver(G == G15)]
+                    g15_q3_runtime_pointers: U64(inner.runtime_pointers.gpu_va().get()),
+                    #[ver(G == G15)]
+                    g15_q4_globals: U64(inner.g15_globals.gpu_va().get()),
+                    #[ver(G == G15)]
+                    g15_q5_host_mapped: U64(0x0000_0001_0000_0000),
+                    // q6..q20 are the compact UAT description. Apple writes
+                    // q6..q18 only; q19/q20 are the final 0x10 bytes of this
+                    // block's zero pad and stay zero from the zeroed root allocation.
+                    // G15's Apple ADT advertises a 43-bit virtual address size including the
+                    // TTBR selector, i.e. a 42-bit per-TTBR input width. That
+                    // widens the shift-36 root from 8 to 64 entries; lower levels
+                    // remain the established 25/14 shifts with 2048 entries.
+                    #[ver(G == G15)]
+                    g15_q6_q20_uat: raw::G15UatConfig {
+                        page_size: 0x4000,
+                        page_bits: 14,
+                        num_levels: 3,
+                        level_info: Array::new([
+                            Self::uat_level_info(&cfg, 36, root_entries),
+                            Self::uat_level_info(&cfg, 25, 2048),
+                            Self::uat_level_info(&cfg, 14, 2048),
+                        ]),
+                        __pad0: Default::default(),
+                    },
+                    #[ver(G == G15)]
+                    g15_q21: U64(inner.g15_q21.gpu_va().get()),
+                    #[ver(G == G15)]
+                    g15_q22: U64(inner.g15_q22.gpu_va().get()),
+                    #[ver(G == G15)]
+                    g15_q23: U64(inner.g15_q23.gpu_va().get()),
+                    #[ver(G == G15)]
+                    g15_phantom: PhantomData,
                 })
             },
         )?;

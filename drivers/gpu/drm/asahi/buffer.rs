@@ -33,6 +33,7 @@
 //! to the most common value used by macOS.
 
 use crate::debug::*;
+use crate::driver::{AsahiDevRef, AsahiDevice};
 use crate::fw::buffer;
 use crate::fw::types::*;
 use crate::util::*;
@@ -41,6 +42,7 @@ use crate::{
     fw,
     gpu,
     hw,
+    mem,
     mmu,
     slotalloc, //
 };
@@ -69,6 +71,2570 @@ pub(crate) const PAGE_SIZE: usize = 1 << PAGE_SHIFT;
 pub(crate) const PAGES_PER_BLOCK: usize = 4;
 /// Size of a buffer block.
 pub(crate) const BLOCK_SIZE: usize = PAGE_SIZE * PAGES_PER_BLOCK;
+
+/// Exact J615/G15G ContextSwitcherGen3 render scratch allocation. Apple
+/// publishes its 32-byte-aligned base and base + 0x280 to the TA command.
+pub(crate) const G15_RENDER_CTXSWITCH_BYTES: usize = 0x8e0;
+
+/// Exact G15 AGXHardwareBufferIDManager capacity. Apple G15/G15G start()
+/// initializes this manager with 0x100 entries; RTKit reuses the assigned ID
+/// directly as the UMA Page-Pool descriptor-table index.
+pub(crate) const G15_HARDWARE_BUFFER_ID_COUNT: usize = 0x100;
+const G15_HARDWARE_BUFFER_ID_NONE: u32 = u32::MAX;
+const G15_HARDWARE_BUFFER_BITMAP_WORDS: usize = G15_HARDWARE_BUFFER_ID_COUNT / 64;
+
+const fn g15_hardware_buffer_initial_free_stack() -> [u16; G15_HARDWARE_BUFFER_ID_COUNT] {
+    let mut stack = [0u16; G15_HARDWARE_BUFFER_ID_COUNT];
+    let mut i = 0;
+    while i < G15_HARDWARE_BUFFER_ID_COUNT {
+        stack[i] = (G15_HARDWARE_BUFFER_ID_COUNT - 1 - i) as u16;
+        i += 1;
+    }
+    stack
+}
+
+const G15_HARDWARE_BUFFER_INITIAL_FREE_STACK: [u16; G15_HARDWARE_BUFFER_ID_COUNT] =
+    g15_hardware_buffer_initial_free_stack();
+const _: [(); 0xff] = [(); G15_HARDWARE_BUFFER_INITIAL_FREE_STACK[0] as usize];
+const _: [(); 0x00] = [(); G15_HARDWARE_BUFFER_INITIAL_FREE_STACK[0xff] as usize];
+
+/// Per-FList sticky HardwareBuffer-ID state. Apple stores the sticky ID at
+/// AGXHardwareBufferBase +0x10; when an inactive ID is stolen, the old object
+/// keeps that stale value until its next allocation detects the owner mismatch.
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
+pub(crate) struct G15HardwareBufferBinding {
+    owner_cookie: u64,
+    hardware_buffer_id: u32,
+}
+
+#[allow(dead_code)]
+impl G15HardwareBufferBinding {
+    pub(crate) fn new(owner_cookie: u64) -> Result<Self> {
+        if owner_cookie == 0 {
+            return Err(EINVAL);
+        }
+        Ok(Self {
+            owner_cookie,
+            hardware_buffer_id: G15_HARDWARE_BUFFER_ID_NONE,
+        })
+    }
+
+    pub(crate) fn hardware_buffer_id(&self) -> Option<u32> {
+        (self.hardware_buffer_id != G15_HARDWARE_BUFFER_ID_NONE)
+            .then_some(self.hardware_buffer_id)
+    }
+}
+
+/// Result of one HardwareBuffer-ID reference acquisition. `first_reference`
+/// matches Apple's bool out-parameter and the argument passed to
+/// AGXHardwareBufferBase::prepareBufferResources(): it is true exactly on the
+/// transition from zero references to one.
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
+pub(crate) struct G15HardwareBufferLease {
+    pub(crate) hardware_buffer_id: u32,
+    pub(crate) first_reference: bool,
+}
+
+/// Compile-only reconstruction of AGXHardwareBufferIDManager's exact G15 state
+/// machine. Callers must provide external synchronization before this becomes
+/// runtime-active; E079 deliberately does not instantiate or lock this object.
+#[derive(Debug)]
+#[allow(dead_code)]
+pub(crate) struct G15HardwareBufferIdState {
+    owners: [u64; G15_HARDWARE_BUFFER_ID_COUNT],
+    refs: [u32; G15_HARDWARE_BUFFER_ID_COUNT],
+    free_bitmap: [u64; G15_HARDWARE_BUFFER_BITMAP_WORDS],
+    free_stack: [u16; G15_HARDWARE_BUFFER_ID_COUNT],
+    free_top: i16,
+}
+
+#[allow(dead_code)]
+impl G15HardwareBufferIdState {
+    pub(crate) fn new() -> Self {
+        Self {
+            owners: [0; G15_HARDWARE_BUFFER_ID_COUNT],
+            refs: [0; G15_HARDWARE_BUFFER_ID_COUNT],
+            free_bitmap: [u64::MAX; G15_HARDWARE_BUFFER_BITMAP_WORDS],
+            free_stack: G15_HARDWARE_BUFFER_INITIAL_FREE_STACK,
+            free_top: (G15_HARDWARE_BUFFER_ID_COUNT - 1) as i16,
+        }
+    }
+
+    fn set_free(&mut self, id: usize, free: bool) {
+        let word = id >> 6;
+        let bit = 1u64 << (id & 63);
+        if free {
+            self.free_bitmap[word] |= bit;
+        } else {
+            self.free_bitmap[word] &= !bit;
+        }
+    }
+
+    fn pop_free_id(&mut self) -> Option<u32> {
+        if self.free_top >= 0 {
+            let top = self.free_top as usize;
+            let id = self.free_stack[top] as u32;
+            self.free_top -= 1;
+            return Some(id);
+        }
+
+        for (word_index, word) in self.free_bitmap.iter().copied().enumerate() {
+            if word != 0 {
+                let bit = word.trailing_zeros() as usize;
+                return Some((word_index * 64 + bit) as u32);
+            }
+        }
+        None
+    }
+
+    fn push_free_id(&mut self, id: u32) -> Result {
+        let next = self.free_top as i32 + 1;
+        if next < 0 || next as usize >= G15_HARDWARE_BUFFER_ID_COUNT {
+            return Err(EOVERFLOW);
+        }
+        self.free_top = next as i16;
+        self.free_stack[next as usize] = id as u16;
+        Ok(())
+    }
+
+    /// Mirrors AGXHardwareBufferIDManager::alloc(). Sticky reuse succeeds when
+    /// binding ID and manager owner still match. Otherwise an unowned LIFO ID
+    /// is used first; after that initial stack is exhausted, the lowest set bit
+    /// in the zero-reference bitmap may steal a dormant sticky ID.
+    pub(crate) fn acquire(
+        &mut self,
+        binding: &mut G15HardwareBufferBinding,
+    ) -> Result<G15HardwareBufferLease> {
+        if binding.owner_cookie == 0 {
+            return Err(EINVAL);
+        }
+
+        if let Some(id) = binding.hardware_buffer_id() {
+            let idx = id as usize;
+            if idx < G15_HARDWARE_BUFFER_ID_COUNT && self.owners[idx] == binding.owner_cookie {
+                self.refs[idx] = self.refs[idx].checked_add(1).ok_or(EOVERFLOW)?;
+                self.set_free(idx, false);
+                return Ok(G15HardwareBufferLease {
+                    hardware_buffer_id: id,
+                    first_reference: self.refs[idx] == 1,
+                });
+            }
+        }
+
+        let id = self.pop_free_id().ok_or(ENOSPC)?;
+        let idx = id as usize;
+        if idx >= G15_HARDWARE_BUFFER_ID_COUNT || self.refs[idx] != 0 {
+            return Err(EIO);
+        }
+        self.refs[idx] = 1;
+        self.set_free(idx, false);
+        self.owners[idx] = binding.owner_cookie;
+        binding.hardware_buffer_id = id;
+        Ok(G15HardwareBufferLease {
+            hardware_buffer_id: id,
+            first_reference: true,
+        })
+    }
+
+    /// Mirrors AGXHardwareBufferIDManager::complete(). The return value is true
+    /// exactly when the reference count is zero after completion and therefore
+    /// the caller must run completeBufferResources(). A normally sticky owner
+    /// retains its ID/owner entry; a mismatched stale owner releases the slot to
+    /// the LIFO stack after clearing the manager's owner entry.
+    pub(crate) fn complete(
+        &mut self,
+        binding: &G15HardwareBufferBinding,
+        hardware_buffer_id: u32,
+    ) -> Result<bool> {
+        let idx = hardware_buffer_id as usize;
+        if idx >= G15_HARDWARE_BUFFER_ID_COUNT {
+            return Err(EINVAL);
+        }
+
+        if self.refs[idx] != 0 {
+            self.refs[idx] -= 1;
+        }
+        if self.refs[idx] != 0 {
+            return Ok(false);
+        }
+
+        self.set_free(idx, true);
+        if binding.hardware_buffer_id != hardware_buffer_id {
+            self.owners[idx] = 0;
+            self.push_free_id(hardware_buffer_id)?;
+        }
+        Ok(true)
+    }
+}
+
+/// Synchronized owner for the exact G15 HardwareBuffer-ID state machine.
+/// E080 defines the lock/Arc lifetime but deliberately does not instantiate this
+/// manager in GpuManager, InitData, a queue, or any FList runtime object.
+#[derive(Clone)]
+#[allow(dead_code)]
+pub(crate) struct G15HardwareBufferIdManager(Arc<Mutex<G15HardwareBufferIdState>>);
+
+#[allow(dead_code)]
+impl G15HardwareBufferIdManager {
+    pub(crate) fn new() -> Result<Self> {
+        Ok(Self(Arc::pin_init(
+            new_mutex!(G15HardwareBufferIdState::new(), "g15_hardware_buffer_ids"),
+            GFP_KERNEL,
+        )?))
+    }
+
+    pub(crate) fn acquire(
+        &self,
+        binding: &mut G15HardwareBufferBinding,
+    ) -> Result<G15HardwareBufferLease> {
+        self.0.lock().acquire(binding)
+    }
+
+    pub(crate) fn complete(
+        &self,
+        binding: &G15HardwareBufferBinding,
+        hardware_buffer_id: u32,
+    ) -> Result<bool> {
+        self.0.lock().complete(binding, hardware_buffer_id)
+    }
+}
+
+/// Accelerator/device-global UMA ownership state recovered from exact 23J220.
+///
+/// E135 proves G15 initializes exactly one 0x100-entry `UMAPool`
+/// AGXHardwareBufferIDManager at accelerator +0x2a08. The independent pool-ID
+/// source is also global: AGXUMAPool::init() increments one zero-initialized
+/// qword and stores the incremented value into pool +0x80. Keep those two
+/// namespaces together here so a future live owner cannot accidentally create
+/// one manager/counter per Queue.
+///
+/// E138 places this host-only state once in the G15 `GpuManager`, matching the
+/// accelerator-global lifetime without allocating a UMAPool or consuming a pool
+/// ID. No caller may treat the pool-ID sequence as Compute-only: eventual
+/// TA/3D/CL pool creation must all consume this same sequence.
+#[allow(dead_code)]
+pub(crate) struct G15DeviceUmaOwnerState {
+    hardware_buffer_ids: G15HardwareBufferIdManager,
+    next_pool_id: u64,
+}
+
+/// Exact 23J220 firmware resource-stack global index ceiling.
+///
+/// E147 closes the shared template bookkeeping at 0x800 global elements per
+/// stack. E150-E152 attach the exact mapped range-7/range-8 backing owners; E153
+/// additionally mutates selected elements through this same global lifetime.
+const G15_FIRMWARE_RESOURCE_MAX_SLOTS: u32 = 0x800;
+const G15_FIRMWARE_RESOURCE_INNER_BITS: u32 = 32;
+const G15_FIRMWARE_RESOURCE_OUTER_WORDS: usize =
+    G15_FIRMWARE_RESOURCE_MAX_SLOTS as usize / G15_FIRMWARE_RESOURCE_INNER_BITS as usize;
+
+/// Exact target stack identity used by both mapped backing construction and
+/// E153 selected-element initialization. The identity fixes the proven range /
+/// protection class and element geometry for each global stack.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+enum G15FirmwareResourceKind {
+    TimestampQueue,
+    SchedulerState,
+    ChannelState,
+    UncachedChannelMemory,
+    CachedChannelMemory,
+}
+
+#[allow(dead_code)]
+impl G15FirmwareResourceKind {
+    const fn elements_per_backing(self) -> u32 {
+        match self {
+            Self::TimestampQueue => fw::workqueue::G15_TIMESTAMP_QUEUE_STATES_PER_BACKING as u32,
+            Self::SchedulerState => fw::workqueue::G15_SCHEDULER_STATES_PER_BACKING as u32,
+            Self::ChannelState => fw::workqueue::G15_CHANNEL_STATE_SLOTS_PER_BACKING as u32,
+            Self::UncachedChannelMemory | Self::CachedChannelMemory => {
+                fw::workqueue::G15_J615_CHANNEL_MEMORY_SLOTS_PER_BACKING as u32
+            }
+        }
+    }
+
+    const fn element_bytes(self) -> usize {
+        match self {
+            Self::TimestampQueue => fw::workqueue::G15_TIMESTAMP_QUEUE_STATE_BYTES,
+            Self::SchedulerState => fw::workqueue::G15_SCHEDULER_STATE_BYTES,
+            Self::ChannelState => fw::workqueue::G15_CHANNEL_STATE_BYTES,
+            Self::UncachedChannelMemory | Self::CachedChannelMemory => {
+                fw::workqueue::G15_J615_CHANNEL_MEMORY_BYTES
+            }
+        }
+    }
+
+    const fn backing_bytes(self) -> usize {
+        match self {
+            Self::TimestampQueue => fw::workqueue::G15_TIMESTAMP_QUEUE_BACKING_BYTES,
+            Self::SchedulerState => fw::workqueue::G15_SCHEDULER_STATE_BACKING_BYTES,
+            Self::ChannelState => fw::workqueue::G15_CHANNEL_STATE_BACKING_BYTES,
+            Self::UncachedChannelMemory | Self::CachedChannelMemory => {
+                fw::workqueue::G15_J615_CHANNEL_MEMORY_BACKING_BYTES
+            }
+        }
+    }
+}
+
+/// Inputs retained by a future mapped device-global resource stack. E125/E126/
+/// E122/E116 already close each range/protection class and exact block geometry.
+/// E150 type-connects those proven allocators to E149's dynamic backing slots.
+/// E151 additionally marks these exact firmware-resource allocations as
+/// pre-q22 bootstrap mappings: initial PTEs are silent until the producer gate
+/// becomes active, while post-activation growth/teardown remains q22-visible.
+/// No current `GpuManager` constructor calls this factory.
+#[allow(dead_code)]
+struct G15FirmwareResourceBackingFactory {
+    dev: AsahiDevRef,
+    bank1: mmu::G15SharedBank1,
+    mapping_notifier: Arc<Mutex<mmu::G15MappingNotifier>>,
+    kind: G15FirmwareResourceKind,
+}
+
+#[allow(dead_code)]
+impl G15FirmwareResourceBackingFactory {
+    fn new(
+        dev: &AsahiDevice,
+        bank1: mmu::G15SharedBank1,
+        mapping_notifier: Arc<Mutex<mmu::G15MappingNotifier>>,
+        kind: G15FirmwareResourceKind,
+    ) -> Self {
+        Self {
+            dev: dev.into(),
+            bank1,
+            mapping_notifier,
+            kind,
+        }
+    }
+
+    fn allocate(&self) -> Result<alloc::G15SharedGpuArray<u8>> {
+        let notifier = Some(self.mapping_notifier.clone());
+        let mut allocator = match self.kind {
+            G15FirmwareResourceKind::TimestampQueue => {
+                alloc::G15SharedBank1Allocator::new_range7_timestamp_queue(
+                    &self.dev,
+                    self.bank1.clone(),
+                    mmu::UAT_PGSZ,
+                    true,
+                    notifier,
+                )
+            }
+            G15FirmwareResourceKind::SchedulerState => {
+                alloc::G15SharedBank1Allocator::new_range8_scheduler_state(
+                    &self.dev,
+                    self.bank1.clone(),
+                    mmu::UAT_PGSZ,
+                    true,
+                    notifier,
+                )
+            }
+            G15FirmwareResourceKind::ChannelState => {
+                alloc::G15SharedBank1Allocator::new_range8_channel_state(
+                    &self.dev,
+                    self.bank1.clone(),
+                    mmu::UAT_PGSZ,
+                    true,
+                    notifier,
+                )
+            }
+            G15FirmwareResourceKind::UncachedChannelMemory => {
+                alloc::G15SharedBank1Allocator::new_range7_channel_memory(
+                    &self.dev,
+                    self.bank1.clone(),
+                    mmu::UAT_PGSZ,
+                    true,
+                    notifier,
+                )
+            }
+            G15FirmwareResourceKind::CachedChannelMemory => {
+                alloc::G15SharedBank1Allocator::new_range8_channel_memory(
+                    &self.dev,
+                    self.bank1.clone(),
+                    mmu::UAT_PGSZ,
+                    true,
+                    notifier,
+                )
+            }
+        }
+        .after_q22_activation();
+        let backing = allocator.array_empty_shared_data::<u8>(self.kind.backing_bytes())?;
+        let base: u64 = backing.weak_pointer().into();
+        if backing.len() != self.kind.backing_bytes()
+            || base == 0
+            || base & (mmu::UAT_PGSZ as u64 - 1) != 0
+        {
+            return Err(EIO);
+        }
+        Ok(backing)
+    }
+}
+
+/// One logical backing slot plus its optional real mapped owner. E149's live
+/// host-only bookkeeping keeps `backing=None`; E150's dormant mapped constructor
+/// stores the exact page-base range-7/range-8 allocation here so last-use mode-0
+/// reclamation drops both the logical slot and GPU mapping atomically.
+#[allow(dead_code)]
+struct G15FirmwareResourceBackingSlot {
+    live: u32,
+    backing: Option<alloc::G15SharedGpuArray<u8>>,
+}
+
+/// Host-side exact bitmap/use-count state for one 23J220 firmware resource
+/// stack. Apple owns one instance per resource type under AGXFirmware.
+///
+/// E149 closes the target shrink mode as zero. Every backing therefore starts
+/// with allocation use-count zero, selection increments it, and releasing the
+/// last selected element immediately removes that backing from the stack. The
+/// fixed host vector below represents Apple's growable backing-pointer array;
+/// `None` entries are exact logical holes and never contribute free indices.
+#[allow(dead_code)]
+struct G15FirmwareResourceStackState {
+    elements_per_backing: u32,
+    outer_free: u64,
+    inner_free: [u32; G15_FIRMWARE_RESOURCE_OUTER_WORDS],
+    blocks: KVec<Option<G15FirmwareResourceBackingSlot>>,
+    backing_factory: Option<G15FirmwareResourceBackingFactory>,
+}
+
+#[allow(dead_code)]
+impl G15FirmwareResourceStackState {
+    fn new(elements_per_backing: u32) -> Result<Self> {
+        Self::new_inner(elements_per_backing, None)
+    }
+
+    fn new_mapped(
+        dev: &AsahiDevice,
+        bank1: mmu::G15SharedBank1,
+        mapping_notifier: Arc<Mutex<mmu::G15MappingNotifier>>,
+        kind: G15FirmwareResourceKind,
+    ) -> Result<Self> {
+        Self::new_inner(
+            kind.elements_per_backing(),
+            Some(G15FirmwareResourceBackingFactory::new(
+                dev,
+                bank1,
+                mapping_notifier,
+                kind,
+            )),
+        )
+    }
+
+    fn new_inner(
+        elements_per_backing: u32,
+        backing_factory: Option<G15FirmwareResourceBackingFactory>,
+    ) -> Result<Self> {
+        if elements_per_backing == 0 || elements_per_backing > G15_FIRMWARE_RESOURCE_MAX_SLOTS {
+            return Err(EINVAL);
+        }
+
+        let max_backings = (G15_FIRMWARE_RESOURCE_MAX_SLOTS as usize)
+            .div_ceil(elements_per_backing as usize);
+        let mut blocks = KVec::with_capacity(max_backings, GFP_KERNEL)?;
+        for _ in 0..max_backings {
+            blocks.push(None, GFP_KERNEL)?;
+        }
+
+        let mut state = Self {
+            elements_per_backing,
+            outer_free: 0,
+            inner_free: [0; G15_FIRMWARE_RESOURCE_OUTER_WORDS],
+            blocks,
+            backing_factory,
+        };
+        // Exact createInitialBacking(): the first backing exists eagerly even
+        // though mode 0 seeds its allocation use-count at zero. The mapped E150
+        // constructor performs the proven GPU allocation here; the current live
+        // E149 constructor remains host-only.
+        state.create_logical_backing(0)?;
+        Ok(state)
+    }
+
+    fn block_range(&self, block: usize) -> Result<(u32, u32)> {
+        let block = u32::try_from(block).map_err(|_| EOVERFLOW)?;
+        let start = block
+            .checked_mul(self.elements_per_backing)
+            .ok_or(EOVERFLOW)?;
+        if start >= G15_FIRMWARE_RESOURCE_MAX_SLOTS {
+            return Err(EINVAL);
+        }
+        let count = self
+            .elements_per_backing
+            .min(G15_FIRMWARE_RESOURCE_MAX_SLOTS - start);
+        Ok((start, count))
+    }
+
+    /// Borrow the exact mapped element owned by one live global selection.
+    /// E153 makes the resource-stack lease, rather than an independent proof
+    /// backing/index, the sole authority for selected-state mutation.
+    fn selected_mapped_element(
+        &mut self,
+        index: u32,
+        expected_kind: G15FirmwareResourceKind,
+    ) -> Result<(u64, &mut [u8])> {
+        if index >= G15_FIRMWARE_RESOURCE_MAX_SLOTS {
+            return Err(EINVAL);
+        }
+        let factory = self.backing_factory.as_ref().ok_or(EINVAL)?;
+        if factory.kind != expected_kind {
+            return Err(EINVAL);
+        }
+        let element_bytes = expected_kind.element_bytes();
+        let block = index / self.elements_per_backing;
+        let element = index % self.elements_per_backing;
+        let slot = self
+            .blocks
+            .get_mut(block as usize)
+            .ok_or(EIO)?
+            .as_mut()
+            .ok_or(EIO)?;
+        if slot.live == 0 {
+            return Err(EIO);
+        }
+        let backing = slot.backing.as_mut().ok_or(EIO)?;
+        let offset = (element as usize)
+            .checked_mul(element_bytes)
+            .ok_or(EOVERFLOW)?;
+        let end = offset.checked_add(element_bytes).ok_or(EOVERFLOW)?;
+        let base: u64 = backing.weak_pointer().into();
+        let fwva = base.checked_add(offset as u64).ok_or(EOVERFLOW)?;
+        if fwva == 0 {
+            return Err(EIO);
+        }
+        let element = backing.as_mut_slice().get_mut(offset..end).ok_or(EIO)?;
+        Ok((fwva, element))
+    }
+
+    fn mark_free_range(&mut self, start: u32, count: u32) -> Result {
+        let end = start.checked_add(count).ok_or(EOVERFLOW)?;
+        if end > G15_FIRMWARE_RESOURCE_MAX_SLOTS {
+            return Err(EINVAL);
+        }
+
+        for index in start..end {
+            let outer = (index / G15_FIRMWARE_RESOURCE_INNER_BITS) as usize;
+            let inner = index % G15_FIRMWARE_RESOURCE_INNER_BITS;
+            let mask = 1u32 << inner;
+            let word = self.inner_free.get_mut(outer).ok_or(EIO)?;
+            if *word & mask != 0 {
+                return Err(EIO);
+            }
+            *word |= mask;
+            self.outer_free |= 1u64 << outer;
+        }
+        Ok(())
+    }
+
+    fn clear_free_range(&mut self, start: u32, count: u32) -> Result {
+        let end = start.checked_add(count).ok_or(EOVERFLOW)?;
+        if end > G15_FIRMWARE_RESOURCE_MAX_SLOTS {
+            return Err(EINVAL);
+        }
+
+        // A zero-use mode-0 backing must have every element free. Validate the
+        // complete range first so an invariant failure cannot partially mutate
+        // the two-level availability map.
+        for index in start..end {
+            let outer = (index / G15_FIRMWARE_RESOURCE_INNER_BITS) as usize;
+            let inner = index % G15_FIRMWARE_RESOURCE_INNER_BITS;
+            let mask = 1u32 << inner;
+            if self.inner_free.get(outer).ok_or(EIO)? & mask == 0 {
+                return Err(EIO);
+            }
+        }
+
+        for index in start..end {
+            let outer = (index / G15_FIRMWARE_RESOURCE_INNER_BITS) as usize;
+            let inner = index % G15_FIRMWARE_RESOURCE_INNER_BITS;
+            self.inner_free[outer] &= !(1u32 << inner);
+            if self.inner_free[outer] == 0 {
+                self.outer_free &= !(1u64 << outer);
+            }
+        }
+        Ok(())
+    }
+
+    fn create_logical_backing(&mut self, block: usize) -> Result {
+        if self.blocks.get(block).ok_or(EINVAL)?.is_some() {
+            return Err(EIO);
+        }
+        // Exact grow ordering allocates the backing before publishing its slot
+        // and free bits. Any allocation failure therefore leaves the selector
+        // namespace unchanged.
+        let backing = match self.backing_factory.as_ref() {
+            Some(factory) => Some(factory.allocate()?),
+            None => None,
+        };
+        let (start, count) = self.block_range(block)?;
+        self.mark_free_range(start, count)?;
+        // Exact allocateNewBlock() stores `(shrink_mode != 0)` at allocation
+        // +0x00. All five target stacks use shrink mode 0, hence zero here.
+        self.blocks[block] = Some(G15FirmwareResourceBackingSlot {
+            live: 0,
+            backing,
+        });
+        Ok(())
+    }
+
+    /// Exact grow ordering at the bookkeeping layer. Apple reuses the lowest
+    /// empty backing-pointer slot before expanding its pointer array, then marks
+    /// only that backing's global element range free.
+    fn grow_logical_backing(&mut self) -> Result {
+        for block in 0..self.blocks.len() {
+            if self.blocks[block].is_none() {
+                return self.create_logical_backing(block);
+            }
+        }
+        Err(ENOSPC)
+    }
+
+    /// E147 exact two-level lowest-free selector. `trailing_zeros()` is the
+    /// direct semantic equivalent of Apple's rbit/clz sequence.
+    fn select(&mut self) -> Result<(u32, Option<u64>)> {
+        if self.outer_free == 0 {
+            self.grow_logical_backing()?;
+        }
+
+        let outer = self.outer_free.trailing_zeros();
+        if outer as usize >= G15_FIRMWARE_RESOURCE_OUTER_WORDS {
+            return Err(EIO);
+        }
+        let inner_word = self.inner_free[outer as usize];
+        if inner_word == 0 {
+            return Err(EIO);
+        }
+        let inner = inner_word.trailing_zeros();
+        let index = outer
+            .checked_mul(G15_FIRMWARE_RESOURCE_INNER_BITS)
+            .and_then(|v| v.checked_add(inner))
+            .ok_or(EOVERFLOW)?;
+        if index >= G15_FIRMWARE_RESOURCE_MAX_SLOTS {
+            return Err(EIO);
+        }
+
+        let block = index / self.elements_per_backing;
+        let element = index % self.elements_per_backing;
+        let element_bytes = self
+            .backing_factory
+            .as_ref()
+            .map(|factory| factory.kind.element_bytes());
+        let slot = self
+            .blocks
+            .get_mut(block as usize)
+            .ok_or(EIO)?
+            .as_mut()
+            .ok_or(EIO)?;
+        let fwva = match (&slot.backing, element_bytes) {
+            (Some(backing), Some(element_bytes)) => {
+                let base: u64 = backing.weak_pointer().into();
+                let offset = (element as usize)
+                    .checked_mul(element_bytes)
+                    .ok_or(EOVERFLOW)?;
+                Some(base.checked_add(offset as u64).ok_or(EOVERFLOW)?)
+            }
+            (None, None) => None,
+            _ => return Err(EIO),
+        };
+        // Commit the selection only after all mapped-address arithmetic has
+        // succeeded, so an impossible geometry error cannot consume a live
+        // reference while leaving the availability bit set.
+        slot.live = slot.live.checked_add(1).ok_or(EOVERFLOW)?;
+
+        let mask = 1u32 << inner;
+        self.inner_free[outer as usize] &= !mask;
+        if self.inner_free[outer as usize] == 0 {
+            self.outer_free &= !(1u64 << outer);
+        }
+        Ok((index, fwva))
+    }
+
+    /// Exact mode-0 release transaction. Apple first returns the selected bit
+    /// and decrements the backing use-count. If that count reaches zero,
+    /// `releaseAllocationBlockIfPossible(..., false)` removes the entire
+    /// backing and clears all of its availability bits. A later grow may reuse
+    /// the resulting backing-slot hole, but not until the remaining present
+    /// backings have no free elements.
+    fn release(&mut self, index: u32) -> Result {
+        if index >= G15_FIRMWARE_RESOURCE_MAX_SLOTS {
+            return Err(EINVAL);
+        }
+        let outer = (index / G15_FIRMWARE_RESOURCE_INNER_BITS) as usize;
+        let inner = index % G15_FIRMWARE_RESOURCE_INNER_BITS;
+        let mask = 1u32 << inner;
+        if self.inner_free.get(outer).ok_or(EIO)? & mask != 0 {
+            return Err(EINVAL);
+        }
+
+        let block = index / self.elements_per_backing;
+        let block_usize = block as usize;
+        let becomes_zero = {
+            let slot = self
+                .blocks
+                .get_mut(block_usize)
+                .ok_or(EIO)?
+                .as_mut()
+                .ok_or(EINVAL)?;
+            if slot.live == 0 {
+                return Err(EIO);
+            }
+            slot.live -= 1;
+            slot.live == 0
+        };
+
+        self.inner_free[outer] |= mask;
+        self.outer_free |= 1u64 << outer;
+
+        if becomes_zero {
+            let (start, count) = self.block_range(block_usize)?;
+            self.clear_free_range(start, count)?;
+            // Dropping the slot also drops the mapped backing in E150's
+            // dormant mapped mode, matching exact mode-0 freeAllocationBlock().
+            self.blocks[block_usize] = None;
+        }
+        Ok(())
+    }
+}
+
+/// One independently locked device-global firmware resource stack. A lease is
+/// the only public result of selection and returns its exact global index on
+/// drop, preventing future callers from forgetting the release transaction.
+#[derive(Clone)]
+#[allow(dead_code)]
+pub(crate) struct G15FirmwareResourceStackManager(
+    Arc<Mutex<G15FirmwareResourceStackState>>,
+);
+
+#[allow(dead_code)]
+impl G15FirmwareResourceStackManager {
+    fn select(&self) -> Result<G15FirmwareResourceLease> {
+        let (index, fwva) = self.0.lock().select()?;
+        Ok(G15FirmwareResourceLease {
+            manager: self.clone(),
+            index,
+            fwva,
+        })
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) struct G15FirmwareResourceLease {
+    manager: G15FirmwareResourceStackManager,
+    index: u32,
+    fwva: Option<u64>,
+}
+
+#[allow(dead_code)]
+impl G15FirmwareResourceLease {
+    pub(crate) fn index(&self) -> u32 {
+        self.index
+    }
+
+    /// E150 maps each global selection onto the exact element FWVA from its
+    /// real range-7/range-8 backing. E152 makes this present for every live G15
+    /// resource lease.
+    pub(crate) fn mapped_fwva(&self) -> Result<u64> {
+        self.fwva.ok_or(EINVAL)
+    }
+
+    fn put_u16(slot: &mut [u8], offset: usize, value: u16) -> Result {
+        let end = offset.checked_add(2).ok_or(EOVERFLOW)?;
+        slot.get_mut(offset..end)
+            .ok_or(EINVAL)?
+            .copy_from_slice(&value.to_le_bytes());
+        Ok(())
+    }
+
+    fn put_u32(slot: &mut [u8], offset: usize, value: u32) -> Result {
+        let end = offset.checked_add(4).ok_or(EOVERFLOW)?;
+        slot.get_mut(offset..end)
+            .ok_or(EINVAL)?
+            .copy_from_slice(&value.to_le_bytes());
+        Ok(())
+    }
+
+    fn get_u32(slot: &[u8], offset: usize) -> Result<u32> {
+        let end = offset.checked_add(4).ok_or(EOVERFLOW)?;
+        let bytes: [u8; 4] = slot
+            .get(offset..end)
+            .ok_or(EINVAL)?
+            .try_into()
+            .map_err(|_| EINVAL)?;
+        Ok(u32::from_le_bytes(bytes))
+    }
+
+    fn put_u64(slot: &mut [u8], offset: usize, value: u64) -> Result {
+        let end = offset.checked_add(8).ok_or(EOVERFLOW)?;
+        slot.get_mut(offset..end)
+            .ok_or(EINVAL)?
+            .copy_from_slice(&value.to_le_bytes());
+        Ok(())
+    }
+
+    /// Exact ordinary-J615 `AGXTimeStampQueue::resetTimeStampQueueState()`.
+    /// E153 closes the stock producer: the ordinary Metal command queue has
+    /// OpenGL/qos flag false, so setUpdateMode(false) leaves state +0x10 zero.
+    fn reset_timestamp_queue_j615_stock(&self) -> Result<u64> {
+        let mut state = self.manager.0.lock();
+        let (fwva, slot) = state.selected_mapped_element(
+            self.index,
+            G15FirmwareResourceKind::TimestampQueue,
+        )?;
+        for byte in slot.iter_mut() {
+            *byte = 0;
+        }
+        Self::put_u64(slot, 0x08, fwva)?;
+        Self::put_u32(slot, 0x10, 0)?;
+        Ok(fwva)
+    }
+
+    /// Exact normal-J615 `AGXCommandQueue::init()` scheduler-state reset. Apple
+    /// clears only the first 0x38 bytes and preserves the final eight bytes.
+    fn reset_scheduler_state_j615(&self) -> Result<u64> {
+        let mut state = self.manager.0.lock();
+        let (fwva, slot) = state.selected_mapped_element(
+            self.index,
+            G15FirmwareResourceKind::SchedulerState,
+        )?;
+        let reset = slot
+            .get_mut(..fw::workqueue::G15_SCHEDULER_STATE_HOST_RESET_BYTES)
+            .ok_or(EIO)?;
+        for byte in reset.iter_mut() {
+            *byte = 0;
+        }
+        Self::put_u16(slot, 0x00, u16::MAX)?;
+        slot[0x05] = 1;
+        slot[0x22] = 0xff;
+        Self::put_u32(slot, 0x23, 0)?;
+        slot[0x27] = fw::workqueue::G15_J615_SCHEDULER_SHARED_BYTE_27;
+        Ok(fwva)
+    }
+
+    /// Exact J615 CL reset of one selected uncached channel-memory element.
+    /// Apple writes only these six u32 locations and does not bulk-clear 0x2860.
+    fn reset_uncached_channel_memory_j615_cl(&self) -> Result<u64> {
+        let mut state = self.manager.0.lock();
+        let (fwva, slot) = state.selected_mapped_element(
+            self.index,
+            G15FirmwareResourceKind::UncachedChannelMemory,
+        )?;
+        Self::put_u32(slot, 0x00, 0)?;
+        Self::put_u32(slot, 0x10, 0)?;
+        Self::put_u32(slot, 0x20, 0)?;
+        Self::put_u32(slot, 0x30, 0)?;
+        Self::put_u32(slot, 0x40, 0)?;
+        Self::put_u32(
+            slot,
+            0x50,
+            fw::workqueue::G15_J615_CL_UNCACHED_CHANNEL_VALUE_50,
+        )?;
+        Ok(fwva)
+    }
+
+    fn cached_channel_memory_fwva(&self) -> Result<u64> {
+        let mut state = self.manager.0.lock();
+        let (fwva, _slot) = state.selected_mapped_element(
+            self.index,
+            G15FirmwareResourceKind::CachedChannelMemory,
+        )?;
+        Ok(fwva)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn reset_channel_state_j615_cl(
+        &self,
+        uncached_channel_fwva: u64,
+        cached_channel_fwva: u64,
+        timestamp_queue_state_fwva: u64,
+        channel_4c_value: u32,
+        scheduler_state_fwva: u64,
+        effective_priority: u32,
+        queue_qos: u32,
+    ) -> Result<u64> {
+        if uncached_channel_fwva == 0
+            || cached_channel_fwva == 0
+            || timestamp_queue_state_fwva == 0
+            || scheduler_state_fwva == 0
+        {
+            return Err(EINVAL);
+        }
+        let priority = fw::workqueue::g15_j615_cl_priority_image(effective_priority, queue_qos)
+            .ok_or(EINVAL)?;
+        let mut state = self.manager.0.lock();
+        let (fwva, slot) = state.selected_mapped_element(
+            self.index,
+            G15FirmwareResourceKind::ChannelState,
+        )?;
+        let gpu_buf_fwva = fwva
+            .checked_add(fw::workqueue::G15_CHANNEL_STATE_GPU_BUF_OFFSET as u64)
+            .ok_or(EOVERFLOW)?;
+        if gpu_buf_fwva == 0 {
+            return Err(EIO);
+        }
+
+        for byte in slot.iter_mut() {
+            *byte = 0;
+        }
+        Self::put_u64(slot, 0x00, uncached_channel_fwva)?;
+        Self::put_u64(slot, 0x08, cached_channel_fwva)?;
+        Self::put_u64(slot, 0x10, timestamp_queue_state_fwva)?;
+        Self::put_u64(slot, 0x18, gpu_buf_fwva)?;
+        Self::put_u32(slot, 0x2c, u32::MAX)?;
+        Self::put_u32(slot, 0x30, 4)?;
+        Self::put_u32(slot, 0x4c, u32::MAX)?;
+        Self::put_u32(slot, 0x50, channel_4c_value)?;
+        Self::put_u64(slot, 0xa4, scheduler_state_fwva)?;
+        slot[0xac] = fw::workqueue::G15_J615_CDM_BACKOFF_TIMEOUT;
+
+        Self::put_u32(slot, 0x30, priority.class_30)?;
+        Self::put_u32(slot, 0x34, priority.class_30)?;
+        Self::put_u64(slot, 0x38, priority.mask_38)?;
+        Self::put_u32(slot, 0x40, priority.control_40)?;
+        Self::put_u32(slot, 0x44, priority.integer_arg_44)?;
+        Self::put_u32(slot, 0x48, priority.qos_value_48)?;
+        Ok(fwva)
+    }
+}
+
+/// Exact identity consumed by G15 DeviceControl opcode 0x11 when releasing
+/// one selected `_AGFISchedulerState` at command-queue teardown.
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
+pub(crate) struct G15SchedulerReleaseInfo {
+    pub(crate) fwva: u64,
+    pub(crate) ctx_27: u8,
+    pub(crate) ctx_0: u8,
+    pub(crate) ctx_1: u8,
+    pub(crate) ctx_4: u8,
+}
+
+/// Exact command-queue-lifetime resource selections. E147 proves the scheduler
+/// and timestamp namespaces are independent even though both are acquired by
+/// AGXCommandQueue construction.
+#[allow(dead_code)]
+pub(crate) struct G15FirmwareCommandQueueResourceLeases {
+    timestamp_queue: G15FirmwareResourceLease,
+    scheduler_state: G15FirmwareResourceLease,
+}
+
+#[allow(dead_code)]
+impl G15FirmwareCommandQueueResourceLeases {
+    /// Queue-lifetime initialization of the two exact global selections. This
+    /// replaces E127's per-command local backing resets.
+    pub(crate) fn initialize_j615_stock(&self) -> Result {
+        self.timestamp_queue.reset_timestamp_queue_j615_stock()?;
+        self.scheduler_state.reset_scheduler_state_j615()?;
+        Ok(())
+    }
+
+    fn timestamp_queue_fwva(&self) -> Result<u64> {
+        self.timestamp_queue.mapped_fwva()
+    }
+
+    fn scheduler_state_fwva(&self) -> Result<u64> {
+        self.scheduler_state.mapped_fwva()
+    }
+
+    /// E188 exact `AGXCommandQueue::free()` source: selected scheduler FWVA
+    /// plus bytes +0x27/+0x00/+0x01/+0x04, captured before the selection is
+    /// returned to firmware resource stack +0xdb8.
+    pub(crate) fn scheduler_release_info(&self) -> Result<G15SchedulerReleaseInfo> {
+        let lease = &self.scheduler_state;
+        let mut state = lease.manager.0.lock();
+        let (fwva, slot) = state.selected_mapped_element(
+            lease.index,
+            G15FirmwareResourceKind::SchedulerState,
+        )?;
+        if fwva == 0 || Some(fwva) != lease.fwva {
+            return Err(EIO);
+        }
+        Ok(G15SchedulerReleaseInfo {
+            fwva,
+            ctx_27: *slot.get(0x27).ok_or(EIO)?,
+            ctx_0: *slot.first().ok_or(EIO)?,
+            ctx_1: *slot.get(0x01).ok_or(EIO)?,
+            ctx_4: *slot.get(0x04).ok_or(EIO)?,
+        })
+    }
+}
+
+/// Proven initialized view of one selected J615 CL channel-state resource.
+/// The actual lifetime remains owned by `G15FirmwareChannelResourceLeases`;
+/// this token only carries the exact FWVA across the dormant channel owner
+/// graph without reopening a raw-address input boundary.
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
+pub(crate) struct G15ChannelTransportState {
+    pub(crate) doneptr: u32,
+    pub(crate) wptr: u32,
+    pub(crate) ring_size: u32,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
+pub(crate) struct G15InitializedFirmwareChannelResources {
+    channel_state_fwva: u64,
+}
+
+#[allow(dead_code)]
+impl G15InitializedFirmwareChannelResources {
+    pub(crate) fn channel_state_fwva(self) -> u64 {
+        self.channel_state_fwva
+    }
+}
+
+/// Exact AGXChannel-lifetime selections from the three shared channel resource
+/// stacks. E153 initializes these mapped global elements directly and removes
+/// E127's duplicate local backing/index layer.
+#[allow(dead_code)]
+pub(crate) struct G15FirmwareChannelResourceLeases {
+    channel_state: G15FirmwareResourceLease,
+    uncached_channel_memory: G15FirmwareResourceLease,
+    cached_channel_memory: G15FirmwareResourceLease,
+}
+
+#[allow(dead_code)]
+impl G15FirmwareChannelResourceLeases {
+    pub(crate) fn initialize_j615_cl(
+        &self,
+        queue: &G15FirmwareCommandQueueResourceLeases,
+        channel_4c_value: u32,
+        effective_priority: u32,
+        queue_qos: u32,
+    ) -> Result<G15InitializedFirmwareChannelResources> {
+        let timestamp_queue_state_fwva = queue.timestamp_queue_fwva()?;
+        let scheduler_state_fwva = queue.scheduler_state_fwva()?;
+        let uncached_channel_fwva = self
+            .uncached_channel_memory
+            .reset_uncached_channel_memory_j615_cl()?;
+        let cached_channel_fwva = self.cached_channel_memory.cached_channel_memory_fwva()?;
+        let channel_state_fwva = self.channel_state.reset_channel_state_j615_cl(
+            uncached_channel_fwva,
+            cached_channel_fwva,
+            timestamp_queue_state_fwva,
+            channel_4c_value,
+            scheduler_state_fwva,
+            effective_priority,
+            queue_qos,
+        )?;
+        Ok(G15InitializedFirmwareChannelResources {
+            channel_state_fwva,
+        })
+    }
+
+    /// Exact E184 firmware-facing QueueInfo pointer: AGXChannel +0x90 is the
+    /// selected `_AGFIChannelState` base, whose first 0xb0 bytes are QueueInfo.
+    pub(crate) fn transport_queue_info_fwva(&self) -> Result<u64> {
+        let fwva = self.channel_state.mapped_fwva()?;
+        if fwva == 0 {
+            return Err(EIO);
+        }
+        Ok(fwva)
+    }
+
+    /// Read the three exact E184 ring-state words from selected uncached
+    /// channel memory. These are independent of the generic WorkQueue RingState.
+    pub(crate) fn transport_state(&self) -> Result<G15ChannelTransportState> {
+        let mut state = self.uncached_channel_memory.manager.0.lock();
+        let (_fwva, slot) = state.selected_mapped_element(
+            self.uncached_channel_memory.index,
+            G15FirmwareResourceKind::UncachedChannelMemory,
+        )?;
+        let doneptr = G15FirmwareResourceLease::get_u32(slot, 0x00)?;
+        let wptr = G15FirmwareResourceLease::get_u32(slot, 0x40)?;
+        let ring_size = G15FirmwareResourceLease::get_u32(slot, 0x50)?;
+        if ring_size != fw::workqueue::G15_J615_CL_UNCACHED_CHANNEL_VALUE_50
+            || doneptr >= ring_size
+            || wptr >= ring_size
+        {
+            return Err(EIO);
+        }
+        Ok(G15ChannelTransportState {
+            doneptr,
+            wptr,
+            ring_size,
+        })
+    }
+
+    /// Nonblocking Linux form of exact E184 `writeChannelCommandPointer()`.
+    /// The future WorkQueue caller already serializes command insertion; return
+    /// EBUSY rather than spinning if firmware still owns the next slot.
+    pub(crate) fn transport_write_command(&self, command_fwva: u64) -> Result<u32> {
+        if command_fwva == 0 {
+            return Err(EINVAL);
+        }
+        let before = self.transport_state()?;
+        let next = (before.wptr + 1) % before.ring_size;
+        if next == before.doneptr {
+            return Err(EBUSY);
+        }
+
+        {
+            let mut state = self.cached_channel_memory.manager.0.lock();
+            let (_fwva, slot) = state.selected_mapped_element(
+                self.cached_channel_memory.index,
+                G15FirmwareResourceKind::CachedChannelMemory,
+            )?;
+            let offset = (before.wptr as usize)
+                .checked_mul(core::mem::size_of::<u64>())
+                .ok_or(EOVERFLOW)?;
+            G15FirmwareResourceLease::put_u64(slot, offset, command_fwva)?;
+        }
+
+        // Exact host ordering is command pointer -> dmb ish -> CPU wptr.
+        mem::sync();
+
+        {
+            let mut state = self.uncached_channel_memory.manager.0.lock();
+            let (_fwva, slot) = state.selected_mapped_element(
+                self.uncached_channel_memory.index,
+                G15FirmwareResourceKind::UncachedChannelMemory,
+            )?;
+            let current = G15FirmwareResourceLease::get_u32(slot, 0x40)?;
+            let ring_size = G15FirmwareResourceLease::get_u32(slot, 0x50)?;
+            if current != before.wptr || ring_size != before.ring_size {
+                return Err(EBUSY);
+            }
+            G15FirmwareResourceLease::put_u32(slot, 0x40, next)?;
+        }
+        Ok(next)
+    }
+}
+
+#[allow(dead_code)]
+impl Drop for G15FirmwareResourceLease {
+    fn drop(&mut self) {
+        // A lease can only be constructed by a successful selection. Failure
+        // here therefore indicates an internal bookkeeping invariant violation.
+        // Keep Drop infallible; E152 may own a mapped backing, but failed release
+        // must not fabricate a free index or tear down an address still leased.
+        let _ = self.manager.0.lock().release(self.index);
+    }
+}
+
+/// Accelerator/device-global placement of the five exact 23J220 firmware
+/// resource stacks recovered by E147. E152 gives the manager graph their exact
+/// mapped eager backings, but still creates no QueueInfo/WorkQueue/RunCompute
+/// writer and exposes selected FWVAs only through explicit resource leases.
+///
+/// Each manager is constructed at a distinct `new_mutex!` callsite so lockdep
+/// keeps the five independent Apple stack locks as distinct classes.
+#[allow(dead_code)]
+pub(crate) struct G15DeviceFirmwareResourceState {
+    timestamp_queue: G15FirmwareResourceStackManager,
+    scheduler_state: G15FirmwareResourceStackManager,
+    channel_state: G15FirmwareResourceStackManager,
+    uncached_channel_memory: G15FirmwareResourceStackManager,
+    cached_channel_memory: G15FirmwareResourceStackManager,
+}
+
+#[allow(dead_code)]
+impl G15DeviceFirmwareResourceState {
+    pub(crate) fn new_device_global() -> Result<Self> {
+        let timestamp_queue = G15FirmwareResourceStackManager(Arc::pin_init(
+            new_mutex!(
+                G15FirmwareResourceStackState::new(
+                    fw::workqueue::G15_TIMESTAMP_QUEUE_STATES_PER_BACKING as u32,
+                )?,
+                "g15_fw_timestamp_queue"
+            ),
+            GFP_KERNEL,
+        )?);
+        let scheduler_state = G15FirmwareResourceStackManager(Arc::pin_init(
+            new_mutex!(
+                G15FirmwareResourceStackState::new(
+                    fw::workqueue::G15_SCHEDULER_STATES_PER_BACKING as u32,
+                )?,
+                "g15_fw_scheduler_state"
+            ),
+            GFP_KERNEL,
+        )?);
+        let channel_state = G15FirmwareResourceStackManager(Arc::pin_init(
+            new_mutex!(
+                G15FirmwareResourceStackState::new(
+                    fw::workqueue::G15_CHANNEL_STATE_SLOTS_PER_BACKING as u32,
+                )?,
+                "g15_fw_channel_state"
+            ),
+            GFP_KERNEL,
+        )?);
+        let uncached_channel_memory = G15FirmwareResourceStackManager(Arc::pin_init(
+            new_mutex!(
+                G15FirmwareResourceStackState::new(
+                    fw::workqueue::G15_J615_CHANNEL_MEMORY_SLOTS_PER_BACKING as u32,
+                )?,
+                "g15_fw_uncached_channel_memory"
+            ),
+            GFP_KERNEL,
+        )?);
+        let cached_channel_memory = G15FirmwareResourceStackManager(Arc::pin_init(
+            new_mutex!(
+                G15FirmwareResourceStackState::new(
+                    fw::workqueue::G15_J615_CHANNEL_MEMORY_SLOTS_PER_BACKING as u32,
+                )?,
+                "g15_fw_cached_channel_memory"
+            ),
+            GFP_KERNEL,
+        )?);
+
+        Ok(Self {
+            timestamp_queue,
+            scheduler_state,
+            channel_state,
+            uncached_channel_memory,
+            cached_channel_memory,
+        })
+    }
+
+    /// E150/E152 mapped device-global variant. It eagerly allocates one exact
+    /// first backing for each stack, and later growth/release owns real mapped
+    /// blocks behind E149's mode-0 slot transaction. E151 marks those eager
+    /// mappings bootstrap-silent; E152 installs this constructor in the G15
+    /// pre-RTKit manager graph and activates q22 only after firmware_ready.
+    pub(crate) fn new_mapped_device_global(
+        dev: &AsahiDevice,
+        bank1: mmu::G15SharedBank1,
+        mapping_notifier: Arc<Mutex<mmu::G15MappingNotifier>>,
+    ) -> Result<Self> {
+        let timestamp_queue = G15FirmwareResourceStackManager(Arc::pin_init(
+            new_mutex!(
+                G15FirmwareResourceStackState::new_mapped(
+                    dev,
+                    bank1.clone(),
+                    mapping_notifier.clone(),
+                    G15FirmwareResourceKind::TimestampQueue,
+                )?,
+                "g15_fw_timestamp_queue_mapped"
+            ),
+            GFP_KERNEL,
+        )?);
+        let scheduler_state = G15FirmwareResourceStackManager(Arc::pin_init(
+            new_mutex!(
+                G15FirmwareResourceStackState::new_mapped(
+                    dev,
+                    bank1.clone(),
+                    mapping_notifier.clone(),
+                    G15FirmwareResourceKind::SchedulerState,
+                )?,
+                "g15_fw_scheduler_state_mapped"
+            ),
+            GFP_KERNEL,
+        )?);
+        let channel_state = G15FirmwareResourceStackManager(Arc::pin_init(
+            new_mutex!(
+                G15FirmwareResourceStackState::new_mapped(
+                    dev,
+                    bank1.clone(),
+                    mapping_notifier.clone(),
+                    G15FirmwareResourceKind::ChannelState,
+                )?,
+                "g15_fw_channel_state_mapped"
+            ),
+            GFP_KERNEL,
+        )?);
+        let uncached_channel_memory = G15FirmwareResourceStackManager(Arc::pin_init(
+            new_mutex!(
+                G15FirmwareResourceStackState::new_mapped(
+                    dev,
+                    bank1.clone(),
+                    mapping_notifier.clone(),
+                    G15FirmwareResourceKind::UncachedChannelMemory,
+                )?,
+                "g15_fw_uncached_channel_memory_mapped"
+            ),
+            GFP_KERNEL,
+        )?);
+        let cached_channel_memory = G15FirmwareResourceStackManager(Arc::pin_init(
+            new_mutex!(
+                G15FirmwareResourceStackState::new_mapped(
+                    dev,
+                    bank1,
+                    mapping_notifier,
+                    G15FirmwareResourceKind::CachedChannelMemory,
+                )?,
+                "g15_fw_cached_channel_memory_mapped"
+            ),
+            GFP_KERNEL,
+        )?);
+
+        Ok(Self {
+            timestamp_queue,
+            scheduler_state,
+            channel_state,
+            uncached_channel_memory,
+            cached_channel_memory,
+        })
+    }
+
+    pub(crate) fn select_timestamp_queue(&self) -> Result<G15FirmwareResourceLease> {
+        self.timestamp_queue.select()
+    }
+
+    pub(crate) fn select_scheduler_state(&self) -> Result<G15FirmwareResourceLease> {
+        self.scheduler_state.select()
+    }
+
+    pub(crate) fn select_channel_state(&self) -> Result<G15FirmwareResourceLease> {
+        self.channel_state.select()
+    }
+
+    pub(crate) fn select_uncached_channel_memory(&self) -> Result<G15FirmwareResourceLease> {
+        self.uncached_channel_memory.select()
+    }
+
+    pub(crate) fn select_cached_channel_memory(&self) -> Result<G15FirmwareResourceLease> {
+        self.cached_channel_memory.select()
+    }
+
+    pub(crate) fn select_command_queue_resources(
+        &self,
+    ) -> Result<G15FirmwareCommandQueueResourceLeases> {
+        let timestamp_queue = self.select_timestamp_queue()?;
+        let scheduler_state = self.select_scheduler_state()?;
+        Ok(G15FirmwareCommandQueueResourceLeases {
+            timestamp_queue,
+            scheduler_state,
+        })
+    }
+
+    pub(crate) fn select_channel_resources(&self) -> Result<G15FirmwareChannelResourceLeases> {
+        let channel_state = self.select_channel_state()?;
+        let uncached_channel_memory = self.select_uncached_channel_memory()?;
+        let cached_channel_memory = self.select_cached_channel_memory()?;
+        Ok(G15FirmwareChannelResourceLeases {
+            channel_state,
+            uncached_channel_memory,
+            cached_channel_memory,
+        })
+    }
+}
+
+/// Exact normal-J615 shared Compute UMAPool priority class.
+///
+/// AGXChannel::init() derives the shared-pool class as 0 only for context
+/// priority types 0 or 5 and as 1 otherwise. Exact IOGPU command-queue state
+/// starts at type 3 and the ordinary runtime branches select types 1 or 2, so
+/// the normal CL/Compute path always selects class 1.
+pub(crate) const G15_J615_NORMAL_COMPUTE_POOL_PRIORITY_CLASS: u32 = 1;
+
+/// Exact J615 `AGXShared` command-buffer-state sequence geometry.
+///
+/// `AGXAccelerator::configureDevice()` copies the exact qword
+/// `0x0000003f00000040` to accelerator `+0x680`. `AGXShared::init()` copies
+/// those two u32 values to `+0x164/+0x168`, so the shared host event ring has
+/// 0x40 entries and index 0x3f is the reserved entry skipped by
+/// `AGXCommandBuffer::nextCommandBufferState()`.
+pub(crate) const G15_J615_SHARED_STATE_EVENT_COUNT: u32 = 0x40;
+pub(crate) const G15_J615_SHARED_STATE_RESERVED_INDEX: u32 = 0x3f;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) struct G15UmaPoolIdentity(u64);
+
+#[allow(dead_code)]
+impl G15UmaPoolIdentity {
+    fn value(self) -> u64 {
+        self.0
+    }
+}
+
+/// One logically weak shared-pool slot in the client-address-space container.
+///
+/// E142 stores the Rust pool owner only as implementation backing for an
+/// explicit lifetime state machine: the slot itself contributes no logical pool
+/// reference, and the owner is removed/dropped as soon as the modeled direct +
+/// active references reach zero. This is not a strong `Option<Pool>` lifetime.
+#[allow(dead_code)]
+struct G15ClientUmaPoolSlotState {
+    pool: Option<G15SharedComputeUmaPoolOwner>,
+    direct_refs: u32,
+    active_channels: u32,
+}
+
+#[allow(dead_code)]
+impl G15ClientUmaPoolSlotState {
+    const fn empty() -> Self {
+        Self {
+            pool: None,
+            direct_refs: 0,
+            active_channels: 0,
+        }
+    }
+
+    fn identity(&self) -> Option<G15UmaPoolIdentity> {
+        self.pool.as_ref().map(|pool| pool.pool_identity)
+    }
+
+    fn is_live(&self) -> bool {
+        self.pool.is_some() && self.direct_refs != 0 && self.active_channels != 0
+    }
+
+    fn is_empty(&self) -> bool {
+        self.pool.is_none() && self.direct_refs == 0 && self.active_channels == 0
+    }
+}
+
+/// Client-address-space-scoped shared UMAPool selection state recovered from
+/// exact J615/23J220 `AGXUMASharedPoolContainer` ownership.
+///
+/// E139/E140 place this object at client-VM lifetime. E141 closes the safe
+/// identity-only nonzero-promotion/reference state. E142 couples that state to
+/// the actual shared Compute pool owner without giving the slot an independent
+/// logical retain: pool construction/replacement happens while this mutex is
+/// held, and final logical release removes the owner before the slot can be
+/// reused.
+///
+/// The object remains unreachable from Queue creation in E142, so none of these
+/// methods can allocate a pool in the live driver yet.
+#[allow(dead_code)]
+pub(crate) struct G15ClientUmaPoolContainerState {
+    // Linux's client-address-space analogue already carries the weak
+    // AGXShared-owned UMAPool slots. E173 co-locates the separate AGXShared
+    // +0x160 command-buffer-state sequence here so all Queues sharing this
+    // client address space observe one unmasked sequence. This is host-only;
+    // no firmware-visible object is added.
+    command_buffer_state_sequence: u32,
+    slots: [G15ClientUmaPoolSlotState; 4],
+}
+
+/// Host-only direct-channel reference to one logically live shared Compute
+/// UMAPool. The reference owns the client-container `Arc`, matching Apple's
+/// requirement that a live shared pool cannot outlive its container. Pool access
+/// is available only after identity validation under the same container mutex.
+#[allow(dead_code)]
+pub(crate) struct G15ClientUmaComputeChannelRef {
+    container: Arc<Mutex<G15ClientUmaPoolContainerState>>,
+    slot_index: usize,
+    identity: G15UmaPoolIdentity,
+}
+
+#[allow(dead_code)]
+impl G15ClientUmaComputeChannelRef {
+    pub(crate) fn pool_id(&self) -> u64 {
+        self.identity.value()
+    }
+
+    pub(crate) fn with_pool<R>(
+        &self,
+        f: impl FnOnce(&mut G15SharedComputeUmaPoolOwner) -> Result<R>,
+    ) -> Result<R> {
+        let mut guard = self.container.lock();
+        let slot = guard.slots.get_mut(self.slot_index).ok_or(EINVAL)?;
+        if slot.identity() != Some(self.identity) || !slot.is_live() {
+            return Err(EINVAL);
+        }
+        f(slot.pool.as_mut().ok_or(EINVAL)?)
+    }
+
+    pub(crate) fn dispatch_state_snapshot(&self) -> Result<(u32, u32, u32, u32)> {
+        self.with_pool(|pool| pool.dispatch_state_snapshot())
+    }
+
+    /// Return the next dependency-free stock-empty command-buffer-state
+    /// sequence after validating that this channel still names the live pool.
+    ///
+    /// Exact Apple can skip additional sequence values when its separate
+    /// AGXShared 0x40-event ring still carries dependencies. Linux deliberately
+    /// represents command retirement with the E096 JobFence guards instead of
+    /// reproducing that raw IOGPU event ring. For the dormant stock-empty path
+    /// there are no such shared-ring dependencies, so the exact remaining rule
+    /// is to advance monotonically while skipping reserved low-six-bit index
+    /// 0x3f. The unmasked value is what event-control `+0x08` receives.
+    pub(crate) fn next_stock_empty_state_sequence(&self) -> Result<u32> {
+        let mut guard = self.container.lock();
+        {
+            let slot = guard.slots.get(self.slot_index).ok_or(EINVAL)?;
+            if slot.identity() != Some(self.identity) || !slot.is_live() {
+                return Err(EINVAL);
+            }
+        }
+        Ok(guard.next_stock_empty_state_sequence())
+    }
+}
+
+#[allow(dead_code)]
+impl Drop for G15ClientUmaComputeChannelRef {
+    fn drop(&mut self) {
+        let retired_pool = {
+            self.container
+                .lock()
+                .release_compute_channel(self.slot_index, self.identity)
+        };
+        // Do not run FList/GPU-allocation destructors while holding the
+        // client-container selection mutex.
+        core::mem::drop(retired_pool);
+    }
+}
+
+#[allow(dead_code)]
+impl G15ClientUmaPoolContainerState {
+    pub(crate) fn new_client_address_space() -> Self {
+        Self {
+            command_buffer_state_sequence: 0,
+            slots: [
+                G15ClientUmaPoolSlotState::empty(),
+                G15ClientUmaPoolSlotState::empty(),
+                G15ClientUmaPoolSlotState::empty(),
+                G15ClientUmaPoolSlotState::empty(),
+            ],
+        }
+    }
+
+    fn next_stock_empty_state_sequence(&mut self) -> u32 {
+        loop {
+            let sequence = self.command_buffer_state_sequence;
+            self.command_buffer_state_sequence = sequence.wrapping_add(1);
+            if sequence & (G15_J615_SHARED_STATE_EVENT_COUNT - 1)
+                != G15_J615_SHARED_STATE_RESERVED_INDEX
+            {
+                return sequence;
+            }
+        }
+    }
+
+    fn compute_slot_index(priority_class: u32) -> Result<usize> {
+        if priority_class > 1 {
+            return Err(EINVAL);
+        }
+        Ok(2 + priority_class as usize)
+    }
+
+    /// Select/promote an existing Compute pool or create its replacement under
+    /// one client-container transaction.
+    ///
+    /// Exact AGXChannel::init() keeps `AGXUMASharedPoolContainer +0x40` locked
+    /// across failed try-retain, `halNewUMAPool()`, UMAPool initialization,
+    /// accelerator-list insertion and weak-slot publication. Calling `create`
+    /// while this Rust mutex guard is held preserves that serialization and
+    /// prevents two racing callers from consuming independent global pool IDs.
+    pub(crate) fn select_or_create_compute_channel<F>(
+        container: &Arc<Mutex<Self>>,
+        priority_class: u32,
+        create: F,
+    ) -> Result<G15ClientUmaComputeChannelRef>
+    where
+        F: FnOnce() -> Result<G15SharedComputeUmaPoolOwner>,
+    {
+        let slot_index = Self::compute_slot_index(priority_class)?;
+        let identity = {
+            let mut guard = container.lock();
+            let slot = &mut guard.slots[slot_index];
+
+            if slot.is_live() {
+                let identity = slot.identity().ok_or(EINVAL)?;
+                let direct_refs = slot.direct_refs.checked_add(1).ok_or(EOVERFLOW)?;
+                let active_channels = slot.active_channels.checked_add(1).ok_or(EOVERFLOW)?;
+                slot.direct_refs = direct_refs;
+                slot.active_channels = active_channels;
+                identity
+            } else {
+                // A dead owner must have been removed by final release. Refuse
+                // to paper over a broken internal lifetime invariant.
+                if !slot.is_empty() {
+                    return Err(EINVAL);
+                }
+
+                // Deliberately execute pool/FList construction with the
+                // container transaction still held, matching the exact host.
+                let pool = create()?;
+                if pool.priority_class != priority_class {
+                    return Err(EINVAL);
+                }
+                let identity = pool.pool_identity;
+                slot.pool = Some(pool);
+                // The construction reference becomes the first channel-direct
+                // reference; 0 -> 1 active_channels represents the separate
+                // aggregate active-epoch retain.
+                slot.direct_refs = 1;
+                slot.active_channels = 1;
+                identity
+            }
+        };
+
+        Ok(G15ClientUmaComputeChannelRef {
+            container: container.clone(),
+            slot_index,
+            identity,
+        })
+    }
+
+    fn release_compute_channel(
+        &mut self,
+        slot_index: usize,
+        identity: G15UmaPoolIdentity,
+    ) -> Option<G15SharedComputeUmaPoolOwner> {
+        let slot = self.slots.get_mut(slot_index)?;
+        if slot.identity() != Some(identity) || slot.direct_refs == 0 || slot.active_channels == 0 {
+            return None;
+        }
+
+        // Apple removes the accelerator-active contribution before dropping the
+        // channel's direct +0x188 reference.
+        slot.active_channels -= 1;
+        slot.direct_refs -= 1;
+
+        if slot.direct_refs == 0 && slot.active_channels == 0 && slot.identity() == Some(identity) {
+            // Taking the owner here makes physical Rust ownership follow the
+            // modeled last-reference boundary. The returned pool is dropped by
+            // the caller only after the container mutex has been released.
+            slot.pool.take()
+        } else {
+            None
+        }
+    }
+}
+
+#[allow(dead_code)]
+impl G15DeviceUmaOwnerState {
+    pub(crate) fn new_device_global() -> Result<Self> {
+        Ok(Self {
+            hardware_buffer_ids: G15HardwareBufferIdManager::new()?,
+            // Exact kernel-image initial value of the global pool-ID counter.
+            next_pool_id: 0,
+        })
+    }
+
+    /// Exact AGXUMAPool::init() creation-order transition: increment globally,
+    /// then publish the new value as pool +0x80. A failed later pool/FList
+    /// construction may therefore consume an ID, matching the Apple ordering.
+    fn allocate_pool_identity(&mut self) -> Result<G15UmaPoolIdentity> {
+        let id = self.next_pool_id.checked_add(1).ok_or(EOVERFLOW)?;
+        self.next_pool_id = id;
+        Ok(G15UmaPoolIdentity(id))
+    }
+
+    fn hardware_buffer_ids(&self) -> G15HardwareBufferIdManager {
+        self.hardware_buffer_ids.clone()
+    }
+}
+
+/// FList-side sticky HardwareBuffer ownership. This is the host object boundary
+/// corresponding to AGXHardwareBufferBase +0x10: it retains the binding across
+/// zero-reference periods so the manager can reuse the same dormant ID until it
+/// is stolen. `prepare_reference()` / `complete_reference()` return the exact
+/// callback transition booleans; E080 does not execute those callbacks itself.
+#[allow(dead_code)]
+pub(crate) struct G15FListHardwareBufferOwner {
+    manager: G15HardwareBufferIdManager,
+    binding: G15HardwareBufferBinding,
+}
+
+#[allow(dead_code)]
+impl G15FListHardwareBufferOwner {
+    pub(crate) fn new(manager: G15HardwareBufferIdManager, owner_cookie: u64) -> Result<Self> {
+        Ok(Self {
+            manager,
+            binding: G15HardwareBufferBinding::new(owner_cookie)?,
+        })
+    }
+
+    pub(crate) fn sticky_id(&self) -> Option<u32> {
+        self.binding.hardware_buffer_id()
+    }
+
+    pub(crate) fn prepare_reference(&mut self) -> Result<G15HardwareBufferLease> {
+        self.manager.acquire(&mut self.binding)
+    }
+
+    pub(crate) fn complete_reference(&self, hardware_buffer_id: u32) -> Result<bool> {
+        self.manager.complete(&self.binding, hardware_buffer_id)
+    }
+}
+
+/// Exact AGXUMAFList persistent-resource geometry recovered from 23J220.
+///
+/// `max_pool_bytes` is Apple AGXUMAPool +0x48 (`M`), `block_bytes` is +0x50
+/// (`B`), and `host_page_bytes` is the host page size (`P`). E077 proved the
+/// formulas below but did not mechanically close J615's override-sensitive M/B
+/// values, so this type requires them from a future proven producer instead of
+/// baking in the 2-GiB/4-MiB fallback values.
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
+pub(crate) struct G15FListGeometry {
+    pub(crate) max_pool_bytes: u64,
+    pub(crate) block_bytes: u64,
+    pub(crate) host_page_bytes: u64,
+    pub(crate) page_pool_list_bytes: u64,
+    pub(crate) page_pool_list_entries: u32,
+    pub(crate) backup_page_list_bytes: u64,
+}
+
+#[allow(dead_code)]
+impl G15FListGeometry {
+    /// Exact 23J220 J615 defaults. E083 proves the accelerator override fields
+    /// +0x1e80/+0x1e78 remain allocation-zero, so the G15G getters return
+    /// these fallback values on the target machine.
+    pub(crate) const J615_MAX_POOL_BYTES: u64 = 0x8000_0000;
+    pub(crate) const J615_BLOCK_BYTES: u64 = 0x0040_0000;
+    pub(crate) const J615_HOST_PAGE_BYTES: u64 = mmu::UAT_PGSZ as u64;
+    pub(crate) const J615_PAGE_POOL_LIST_BYTES: u64 = 0x0040_0000;
+    pub(crate) const J615_PAGE_POOL_LIST_ENTRIES: u32 = 0x0008_0000;
+    pub(crate) const J615_BACKUP_PAGE_LIST_BYTES: u64 = 0x0000_8000;
+
+    pub(crate) const PAGE_POOL_LIST_ENTRY_BYTES: u64 = 8;
+    pub(crate) const BACKUP_PAGE_LIST_ENTRY_BYTES: u64 = 8;
+    pub(crate) const PAGE_POOL_STATE_BYTES: usize =
+        core::mem::size_of::<buffer::raw::G15UMAPagePoolState>();
+    pub(crate) const FW_UNCACHED_STATE_BYTES: usize =
+        core::mem::size_of::<buffer::raw::G15UMAFWUncachedState>();
+
+    fn align_up(value: u64, align: u64) -> Result<u64> {
+        if align == 0 || !align.is_power_of_two() {
+            return Err(EINVAL);
+        }
+        Ok(value
+            .checked_add(align - 1)
+            .ok_or(EOVERFLOW)?
+            & !(align - 1))
+    }
+
+    /// Exact target geometry for J615 / G15G on 23J220.
+    pub(crate) fn j615() -> Result<Self> {
+        let geometry = Self::new(
+            Self::J615_MAX_POOL_BYTES,
+            Self::J615_BLOCK_BYTES,
+            Self::J615_HOST_PAGE_BYTES,
+        )?;
+        if geometry.page_pool_list_bytes != Self::J615_PAGE_POOL_LIST_BYTES
+            || geometry.page_pool_list_entries != Self::J615_PAGE_POOL_LIST_ENTRIES
+            || geometry.backup_page_list_bytes != Self::J615_BACKUP_PAGE_LIST_BYTES
+        {
+            return Err(EIO);
+        }
+        Ok(geometry)
+    }
+
+    pub(crate) fn new(max_pool_bytes: u64, block_bytes: u64, host_page_bytes: u64) -> Result<Self> {
+        if max_pool_bytes == 0 || block_bytes == 0 {
+            return Err(EINVAL);
+        }
+
+        // Exact AGXUMAFList::init(): align_up(M >> 9, P).
+        let page_pool_list_bytes = Self::align_up(max_pool_bytes >> 9, host_page_bytes)?;
+        if page_pool_list_bytes == 0
+            || page_pool_list_bytes % Self::PAGE_POOL_LIST_ENTRY_BYTES != 0
+        {
+            return Err(EINVAL);
+        }
+        let page_pool_list_entries_u64 =
+            page_pool_list_bytes / Self::PAGE_POOL_LIST_ENTRY_BYTES;
+        let page_pool_list_entries: u32 = page_pool_list_entries_u64
+            .try_into()
+            .map_err(|_| EOVERFLOW)?;
+
+        // Exact AGXUMAFList::init(): align_up((M / B) * 64, P).
+        let backup_unaligned = max_pool_bytes
+            .checked_div(block_bytes)
+            .ok_or(EINVAL)?
+            .checked_mul(64)
+            .ok_or(EOVERFLOW)?;
+        let backup_page_list_bytes = Self::align_up(backup_unaligned, host_page_bytes)?;
+        if backup_page_list_bytes == 0
+            || backup_page_list_bytes % Self::BACKUP_PAGE_LIST_ENTRY_BYTES != 0
+        {
+            return Err(EINVAL);
+        }
+
+        Ok(Self {
+            max_pool_bytes,
+            block_bytes,
+            host_page_bytes,
+            page_pool_list_bytes,
+            page_pool_list_entries,
+            backup_page_list_bytes,
+        })
+    }
+}
+
+const _: [(); 0x70] = [(); G15FListGeometry::PAGE_POOL_STATE_BYTES];
+const _: [(); 0x08] = [(); G15FListGeometry::FW_UNCACHED_STATE_BYTES];
+const _: [(); G15_HARDWARE_BUFFER_ID_COUNT] = [(); 0x100];
+const _: [(); 0x4000] = [(); G15FListGeometry::J615_HOST_PAGE_BYTES as usize];
+const _: [(); 0x400000] = [(); (G15FListGeometry::J615_MAX_POOL_BYTES >> 9) as usize];
+const _: [(); 0x80000] = [(); (G15FListGeometry::J615_PAGE_POOL_LIST_BYTES
+    / G15FListGeometry::PAGE_POOL_LIST_ENTRY_BYTES) as usize];
+const _: [(); 0x8000] = [(); ((G15FListGeometry::J615_MAX_POOL_BYTES
+    / G15FListGeometry::J615_BLOCK_BYTES) * 64) as usize];
+
+/// Complete host-side *plan* for one G15 FList's persistent ownership. This
+/// combines the exact symbolic resource geometry with the synchronized sticky
+/// HardwareBuffer owner but deliberately owns no GPU allocation object.
+///
+/// E082 closes the Page/Backup List mapping class as exact range-5 compact
+/// option 0x300 (`PROT_G15_RANGE5_FLIST_LIST`). E083 closes J615's exact M/B/P
+/// producers and therefore the 4-MiB / 32-KiB list geometry. The plan still
+/// owns no allocator/GPU object, does not call any range allocator, and cannot
+/// publish Page-Pool State to RunCompute.
+#[allow(dead_code)]
+pub(crate) struct G15FListResourcePlan {
+    geometry: G15FListGeometry,
+    hardware: G15FListHardwareBufferOwner,
+}
+
+#[allow(dead_code)]
+impl G15FListResourcePlan {
+    /// Side-effect-free exact J615 plan. This still creates no GPU allocation.
+    pub(crate) fn new_j615(
+        manager: G15HardwareBufferIdManager,
+        owner_cookie: u64,
+    ) -> Result<Self> {
+        Ok(Self {
+            geometry: G15FListGeometry::j615()?,
+            hardware: G15FListHardwareBufferOwner::new(manager, owner_cookie)?,
+        })
+    }
+
+    pub(crate) fn new(
+        manager: G15HardwareBufferIdManager,
+        owner_cookie: u64,
+        max_pool_bytes: u64,
+        block_bytes: u64,
+        host_page_bytes: u64,
+    ) -> Result<Self> {
+        Ok(Self {
+            geometry: G15FListGeometry::new(max_pool_bytes, block_bytes, host_page_bytes)?,
+            hardware: G15FListHardwareBufferOwner::new(manager, owner_cookie)?,
+        })
+    }
+
+    pub(crate) fn geometry(&self) -> G15FListGeometry {
+        self.geometry
+    }
+
+    /// Exact 23J220 PTE class for both persistent range-5 list backings.
+    pub(crate) fn range5_list_prot(&self) -> mmu::Prot {
+        mmu::PROT_G15_RANGE5_FLIST_LIST
+    }
+
+    pub(crate) fn sticky_hardware_buffer_id(&self) -> Option<u32> {
+        self.hardware.sticky_id()
+    }
+
+    pub(crate) fn prepare_reference(&mut self) -> Result<G15HardwareBufferLease> {
+        self.hardware.prepare_reference()
+    }
+
+    pub(crate) fn complete_reference(&self, hardware_buffer_id: u32) -> Result<bool> {
+        self.hardware.complete_reference(hardware_buffer_id)
+    }
+}
+
+/// Dynamic host inputs consumed by the first exact FList firmware-state
+/// population. Every field below has a proven 23J220 producer; values that are
+/// workload/pool dependent stay explicit instead of being guessed for J615.
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
+pub(crate) struct G15FListPopulationInputs {
+    /// AGXUMAPool +0xa2.
+    pub(crate) async_grow_enabled: bool,
+    /// AGXUMAPool +0xa4 (_AGFIUMAPoolPriorityType).
+    pub(crate) priority: u32,
+    /// FList +0x68 before populatePagePool(); must be 4-KiB-page aligned.
+    pub(crate) current_allocated_bytes: u64,
+    /// FList +0xc0 compact Backup Page List entry count, rounded to 8.
+    pub(crate) backup_page_list_entry_count: u32,
+    /// Exact pool+a0 ? pool+a1 : 0 result; nonzero only for shared CL pools.
+    pub(crate) shared_compute_pool: bool,
+}
+
+/// Persistent backing allocations owned by one exact J615/G15 FList.
+///
+/// E086 created the four objects at the AGXUMAFList::init() boundary. E099 adds
+/// only the exact HardwareBuffer-reference and post-populatePagePool firmware-
+/// state population boundary. The object remains compile-only/unreachable and
+/// exposes no Page-Pool-State FWVA to a work command.
+///
+/// The actual Page Pool List / Backup Page List contents and chained backing
+/// mappings remain a separate activation prerequisite; this type must not be
+/// wired into Queue/GpuManager until that producer is represented exactly.
+#[allow(dead_code)]
+pub(crate) struct G15FListResourceOwner {
+    plan: G15FListResourcePlan,
+    // Rust drops struct fields in declaration order. Match exact 23J220
+    // AGXUMAFList::free(): Page-Pool State (+0x1c0), FW-Uncached State
+    // (+0x1b0), Page Pool List (+0x50), then Backup Page List (+0xb0).
+    // Construction still uses the already-created locals below, so this changes
+    // teardown ordering only and does not alter allocation/publication order.
+    page_pool_state: alloc::G15SharedGpuArray<buffer::raw::G15UMAPagePoolState>,
+    fw_uncached_state: alloc::G15SharedGpuArray<buffer::raw::G15UMAFWUncachedState>,
+    page_pool_list: GpuArray<U64>,
+    backup_page_list: GpuArray<U64>,
+    firmware_state_initialized: bool,
+}
+
+#[allow(dead_code)]
+impl G15FListResourceOwner {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_j615_unprepared(
+        dev: &crate::driver::AsahiDevice,
+        manager: G15HardwareBufferIdManager,
+        owner_cookie: u64,
+        pool_id: u64,
+        range5_list_alloc: &mut alloc::DefaultAllocator,
+        bank1: mmu::G15SharedBank1,
+        notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
+    ) -> Result<Self> {
+        let plan = G15FListResourcePlan::new_j615(manager, owner_cookie)?;
+        let geometry = plan.geometry();
+
+        // Exact range-5 persistent list backings. The supplied per-VM allocator
+        // must be the cached/FList class (PROT_G15_RANGE5_FLIST_LIST); E082
+        // proves that class is bit-identical to the existing cached range-5
+        // arena while retaining distinct FList semantics here.
+        let page_pool_list = range5_list_alloc.array_empty_tagged::<U64>(
+            geometry.page_pool_list_entries as usize,
+            b"UPPL",
+        )?;
+        let backup_entries: usize = (geometry.backup_page_list_bytes
+            / G15FListGeometry::BACKUP_PAGE_LIST_ENTRY_BYTES)
+            .try_into()
+            .map_err(|_| EOVERFLOW)?;
+        let backup_page_list =
+            range5_list_alloc.array_empty_tagged::<U64>(backup_entries, b"UBPL")?;
+
+        // Exact fixed FList objects in accelerator-shared bank 1. Their
+        // constructors hard-wire the independently proven range-7 FList and
+        // range-8 Page-Pool-State protection classes. E085 makes the shared
+        // q22 notifier encode range-8 map/unmap as special-aperture 3/2.
+        let mut fw_uncached_alloc = alloc::G15SharedBank1Allocator::new_range7_flist(
+            dev,
+            bank1.clone(),
+            mmu::UAT_PGSZ,
+            true,
+            notifier.clone(),
+        );
+        let fw_uncached_state = fw_uncached_alloc
+            .array_empty_tagged::<buffer::raw::G15UMAFWUncachedState>(1, b"UFUS")?;
+
+        let mut page_pool_state_alloc = alloc::G15SharedBank1Allocator::new_range8(
+            dev,
+            bank1,
+            mmu::UAT_PGSZ,
+            true,
+            notifier,
+        );
+        let mut page_pool_state = page_pool_state_alloc
+            .array_empty_tagged::<buffer::raw::G15UMAPagePoolState>(1, b"UPPS")?;
+
+        // Exact AGXUMAFList::init() seed. The rest remains zero until the
+        // future prepareBufferResources()/populateFirmwareState() boundary.
+        let state = &mut page_pool_state.as_mut_slice()[0];
+        state.pool_id = U64(pool_id);
+        state.hardware_buffer_id = U32(u32::MAX);
+
+        // Keep compile-time/resource-size assertions local to the ownership
+        // point so a future ABI edit cannot silently change the allocations.
+        if page_pool_list.len() != G15FListGeometry::J615_PAGE_POOL_LIST_ENTRIES as usize
+            || backup_page_list.len()
+                != (G15FListGeometry::J615_BACKUP_PAGE_LIST_BYTES
+                    / G15FListGeometry::BACKUP_PAGE_LIST_ENTRY_BYTES) as usize
+            || fw_uncached_state.len() != 1
+            || page_pool_state.len() != 1
+        {
+            return Err(EIO);
+        }
+
+        Ok(Self {
+            plan,
+            page_pool_state,
+            fw_uncached_state,
+            page_pool_list,
+            backup_page_list,
+            firmware_state_initialized: false,
+        })
+    }
+
+    /// Acquire one exact HardwareBuffer reference. The returned transition bit
+    /// is Apple's prepareBufferResources(bool) argument; this method performs
+    /// no state population or command publication by itself.
+    fn prepare_reference(&mut self) -> Result<G15HardwareBufferLease> {
+        self.plan.prepare_reference()
+    }
+
+    /// Populate the exact 0x70 firmware image after the caller has completed
+    /// the separately-gated populatePagePool() backing-list work for the first
+    /// initialized epoch. This intentionally accepts a previously acquired
+    /// lease instead of allocating an ID internally, so failure cannot hide a
+    /// HardwareBuffer reference transition.
+    fn populate_first_initialized_epoch(
+        &mut self,
+        lease: G15HardwareBufferLease,
+        inputs: G15FListPopulationInputs,
+    ) -> Result {
+        if self.firmware_state_initialized || !lease.first_reference {
+            return Err(EINVAL);
+        }
+        if lease.hardware_buffer_id as usize >= G15_HARDWARE_BUFFER_ID_COUNT
+            || self.plan.sticky_hardware_buffer_id() != Some(lease.hardware_buffer_id)
+        {
+            return Err(EINVAL);
+        }
+        if inputs.current_allocated_bytes & 0xfff != 0
+            || inputs.current_allocated_bytes > self.plan.geometry().max_pool_bytes
+        {
+            return Err(EINVAL);
+        }
+
+        let page_count_u64 = inputs.current_allocated_bytes >> 12;
+        let page_count: u32 = page_count_u64.try_into().map_err(|_| EOVERFLOW)?;
+        let capacity = self.plan.geometry().page_pool_list_entries;
+        if capacity == 0 || page_count > capacity || page_count >= (1 << 22) {
+            return Err(EINVAL);
+        }
+
+        let backup_capacity: u32 = self
+            .backup_page_list
+            .len()
+            .try_into()
+            .map_err(|_| EOVERFLOW)?;
+        if inputs.backup_page_list_entry_count > backup_capacity
+            || inputs.backup_page_list_entry_count & 7 != 0
+        {
+            return Err(EINVAL);
+        }
+
+        let page_pool_list_fwva: u64 = self.page_pool_list.weak_pointer().into();
+        let backup_page_list_fwva: u64 = self.backup_page_list.weak_pointer().into();
+        let fw_uncached_state_fwva: u64 = self.fw_uncached_state.weak_item_pointer(0).into();
+        let fw_uncached_mirror = self.fw_uncached_state[0].coherency_value;
+
+        // Exact populateFirmwareState() host writes. +0x3c remains untouched
+        // and therefore stays construction-zero. The page-list contents are a
+        // separate prerequisite and this helper exposes no Page-Pool-State FWVA.
+        let state = &mut self.page_pool_state.as_mut_slice()[0];
+        state.hardware_buffer_id = U32(lease.hardware_buffer_id);
+        state.async_grow_enabled = U32(inputs.async_grow_enabled as u32);
+        state.priority = U32(inputs.priority);
+        state.page_pool_list_fwva = U64(page_pool_list_fwva);
+        state.page_pool_list_capacity = U32(capacity);
+        state.ring_cursor_20 = U32(0);
+        state.ring_cursor_24 = U32(page_count % capacity);
+        state.ring_state_bit_28 = U32(0);
+        state.page_count = U32(page_count);
+        state.lifecycle_state_30 = U32(0);
+        state.backup_page_list_fwva = U64(backup_page_list_fwva);
+        state.backup_page_list_entry_count = U32(inputs.backup_page_list_entry_count);
+        state.fw_uncached_state_fwva = U64(fw_uncached_state_fwva);
+        state.fw_uncached_state_mirror = fw_uncached_mirror;
+        state.shared_compute_pool = U32(inputs.shared_compute_pool as u32);
+        state.shared_compute_dispatch_seq_5c = U32(0);
+        state.host_zero_60 = U64(0);
+        state.host_zero_68 = U64(0);
+        self.firmware_state_initialized = true;
+        Ok(())
+    }
+
+    /// Exact stock-empty 23J220 first-activation image.
+    ///
+    /// E100 correlates the exact prepareLocked() growth path with the stock
+    /// type-5 UMA accounting oracle: a successful empty Compute command leaves
+    /// every pool +0x38/+0x40 accounting qword at zero, so no pool-memory
+    /// growth occurs. populatePagePool() therefore sees no chained allocation,
+    /// leaves both list backings zero, and produces page_count/cursors and
+    /// Backup extent count zero. The CL pool itself is shared/reusable and
+    /// async-grow enabled; priority remains a real queue-derived input.
+    fn populate_stock_empty_first_epoch(
+        &mut self,
+        lease: G15HardwareBufferLease,
+        priority: u32,
+    ) -> Result {
+        if priority > 1 {
+            return Err(EINVAL);
+        }
+
+        // Keep this path mechanically tied to the exact empty-list oracle. If
+        // a future caller mutates either backing before activation, fail closed
+        // instead of silently publishing a non-empty state under empty rules.
+        if self.page_pool_list.as_slice().iter().any(|entry| entry.0 != 0)
+            || self.backup_page_list.as_slice().iter().any(|entry| entry.0 != 0)
+        {
+            return Err(EBUSY);
+        }
+
+        self.populate_first_initialized_epoch(
+            lease,
+            G15FListPopulationInputs {
+                async_grow_enabled: true,
+                priority,
+                current_allocated_bytes: 0,
+                backup_page_list_entry_count: 0,
+                shared_compute_pool: true,
+            },
+        )
+    }
+
+    /// Acquire one stock-empty command reference and initialize the firmware
+    /// state on the first-ever active epoch. If first-epoch population fails,
+    /// drop the just-acquired manager reference before returning the error.
+    pub(crate) fn prepare_stock_empty_reference(
+        &mut self,
+        priority: u32,
+    ) -> Result<G15HardwareBufferLease> {
+        let lease = self.prepare_reference()?;
+        if !self.firmware_state_initialized {
+            if !lease.first_reference {
+                let _ = self.complete_reference(lease.hardware_buffer_id);
+                return Err(EIO);
+            }
+            if let Err(err) = self.populate_stock_empty_first_epoch(lease, priority) {
+                let final_reference = self.complete_reference(lease.hardware_buffer_id)?;
+                if !final_reference {
+                    return Err(EIO);
+                }
+                return Err(err);
+            }
+        }
+        Ok(lease)
+    }
+
+    /// FWVA is usable only after the first exact firmware-state population.
+    /// E109 keeps this accessor definition-only and returns it solely into an
+    /// unpublished command-assets token, never directly to RunCompute.
+    pub(crate) fn initialized_page_pool_state_fwva(&self) -> Result<u64> {
+        if !self.firmware_state_initialized {
+            return Err(EINVAL);
+        }
+        Ok(self.page_pool_state.weak_item_pointer(0).into())
+    }
+
+    /// E364 observation-only snapshot of the firmware-active shared-Compute
+    /// dispatch state. Exact 23J220 increments only the low byte at +0x5c when
+    /// a shared CL/Compute pool crosses the scheduler dispatch boundary.
+    pub(crate) fn dispatch_state_snapshot(&self) -> Result<(u32, u32, u32, u32)> {
+        if !self.firmware_state_initialized {
+            return Err(EINVAL);
+        }
+
+        let state = &self.page_pool_state.as_slice()[0];
+        let hardware_buffer_id =
+            unsafe { core::ptr::read_volatile(core::ptr::addr_of!(state.hardware_buffer_id.0)) };
+        let lifecycle =
+            unsafe { core::ptr::read_volatile(core::ptr::addr_of!(state.lifecycle_state_30.0)) };
+        let shared_compute =
+            unsafe { core::ptr::read_volatile(core::ptr::addr_of!(state.shared_compute_pool.0)) };
+        let dispatch_seq = unsafe {
+            core::ptr::read_volatile(core::ptr::addr_of!(state.shared_compute_dispatch_seq_5c.0))
+        };
+
+        Ok((hardware_buffer_id, lifecycle, shared_compute, dispatch_seq))
+    }
+
+    pub(crate) fn complete_reference(&self, hardware_buffer_id: u32) -> Result<bool> {
+        self.plan.complete_reference(hardware_buffer_id)
+    }
+}
+
+/// One reusable J615 shared Compute UMAPool/FList owner.
+///
+/// E135 proves normal CL channels do not own a unique FList. They select one of
+/// two Compute slots in AGXUMASharedPoolContainer by priority class, retain that
+/// pool, and share the accelerator-global UMAPool HardwareBuffer-ID namespace.
+/// This type represents the pool-side lifetime only; event-control, HWMetrics,
+/// channel-state, SKU and command resources deliberately remain elsewhere.
+///
+/// Construction is definition-only and can only allocate its firmware-visible
+/// pool identity through `G15DeviceUmaOwnerState`, preserving the global
+/// creation-order boundary rather than accepting an arbitrary raw pool ID.
+#[allow(dead_code)]
+pub(crate) struct G15SharedComputeUmaPoolOwner {
+    priority_class: u32,
+    pool_identity: G15UmaPoolIdentity,
+    flist: G15FListResourceOwner,
+}
+
+#[allow(dead_code)]
+impl G15SharedComputeUmaPoolOwner {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_j615_unprepared(
+        dev: &crate::driver::AsahiDevice,
+        device_uma: &mut G15DeviceUmaOwnerState,
+        priority_class: u32,
+        range5_list_alloc: &mut alloc::DefaultAllocator,
+        bank1: mmu::G15SharedBank1,
+        notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
+    ) -> Result<Self> {
+        if priority_class > 1 {
+            return Err(EINVAL);
+        }
+
+        // Apple assigns pool +0x80 before constructing/initializing the FList.
+        // Do not roll this counter back if a later allocation fails.
+        let pool_identity = device_uma.allocate_pool_identity()?;
+        // `owner_cookie` is Linux-only sticky-ID bookkeeping, not Apple ABI.
+        // The globally ordered pool identity is already unique/nonzero and is
+        // therefore the exact lifetime identity to reuse for this host cookie.
+        let flist = G15FListResourceOwner::new_j615_unprepared(
+            dev,
+            device_uma.hardware_buffer_ids(),
+            pool_identity.value(),
+            pool_identity.value(),
+            range5_list_alloc,
+            bank1,
+            notifier,
+        )?;
+
+        Ok(Self {
+            priority_class,
+            pool_identity,
+            flist,
+        })
+    }
+
+    pub(crate) fn prepare_stock_empty_reference(
+        &mut self,
+        priority_class: u32,
+    ) -> Result<G15HardwareBufferLease> {
+        if priority_class != self.priority_class {
+            return Err(EINVAL);
+        }
+        self.flist.prepare_stock_empty_reference(priority_class)
+    }
+
+    pub(crate) fn initialized_page_pool_state_fwva(&self) -> Result<u64> {
+        self.flist.initialized_page_pool_state_fwva()
+    }
+
+    pub(crate) fn dispatch_state_snapshot(&self) -> Result<(u32, u32, u32, u32)> {
+        self.flist.dispatch_state_snapshot()
+    }
+
+    pub(crate) fn complete_reference(&self, hardware_buffer_id: u32) -> Result<bool> {
+        self.flist.complete_reference(hardware_buffer_id)
+    }
+
+    pub(crate) fn pool_id(&self) -> u64 {
+        self.pool_identity.value()
+    }
+}
+
+/// Apple G15 parameter-management device configuration recovered from
+/// `AGXAcceleratorG15::halGetPMConfig()`.
+///
+/// This is deliberately kept separate from the firmware-visible parameter-buffer
+/// ABI above.  The values control host-side PM bookkeeping/allocation geometry;
+/// they do not justify enabling G15 PM register emission by themselves.
+struct G15PmDeviceConfig {
+    usage_page_granule: usize,
+    scene_pages_per_entry: usize,
+    scene_header_bytes: usize,
+    scene_entry_bytes: usize,
+    scene_alignment: usize,
+}
+
+const G15_PM_DEVICE_CONFIG: G15PmDeviceConfig = G15PmDeviceConfig {
+    usage_page_granule: 4,
+    scene_pages_per_entry: 0x1800,
+    scene_header_bytes: 8,
+    scene_entry_bytes: 8,
+    scene_alignment: 0x10,
+};
+
+/// J615 has one MGPU, so Apple's multi-MGPU extra-entry term is absent from
+/// `AGXParameterManagementVirtual::setupSceneState()`.
+///
+/// Base `AGXAccelerator::configureDevice()` writes the packed dword pair
+/// `{0x24, 0x24}` at accelerator +0x678/+0x67c. G15 overwrites only +0x678
+/// with 0x50, so the normal J615 PM record count is 80 and scene group count
+/// remains 36. The optional +0x2420/+0x2424 overrides stay zero in the
+/// analyzed normal path.
+pub(crate) const G15_J615_PM_RECORD_COUNT: usize = 0x50;
+const G15_J615_PM_SCENE_GROUP_COUNT: usize = 0x24;
+/// G15G/C0 sets accelerator +0x1dd8, so Apple reserves one additional
+/// shared scene slice after the 36 modulo-selected per-record slices.
+const G15_J615_PM_EXTRA_SCENE_SLICES: usize = 1;
+
+/// Total J615 Parameter Scene Allocations backing: 36 modulo-selected 0x30
+/// slices plus the one G15G/C0 common slice. Apple allocates this in
+/// eGartRange 5. Exact AGXGart::returnGartRange() places that range above the
+/// current Linux 39-bit user aperture, so allocation stays blocked until the
+/// G15 VA contract is implemented.
+pub(crate) const G15_J615_PM_SCENE_ALLOC_BYTES: usize =
+    (G15_J615_PM_SCENE_GROUP_COUNT + G15_J615_PM_EXTRA_SCENE_SLICES) * 0x30;
+
+/// G15 TA-channel object-payload resource geometry. Apple's
+/// `AGXTAChannelG15::getObjectPayloadBufferSize()` computes
+/// `q = (num_gps << 17) / num_mgpus`, returns `num_mgpus * q` bytes, and
+/// stores `q >> 10` in the channel for register 0x1ca48. J615 has four GPS
+/// and one MGPU, so the exact allocation is 0x80000 bytes and the packed
+/// high field is 0x200. The resource is a normal eGartRange-5, option-0x3
+/// kernel resource and therefore uses the uncached G15 range-5 PTE class.
+const fn g15_ta_object_payload_bytes(num_gps: usize, num_mgpus: usize) -> usize {
+    let q = (num_gps << 17) / num_mgpus;
+    num_mgpus * q
+}
+
+const fn g15_ta_object_payload_units(num_gps: u64, num_mgpus: u64) -> u64 {
+    ((num_gps << 17) / num_mgpus) >> 10
+}
+
+pub(crate) const G15_J615_TA_OBJECT_PAYLOAD_BYTES: usize =
+    g15_ta_object_payload_bytes(4, 1);
+pub(crate) const G15_J615_TA_OBJECT_PAYLOAD_UNITS: u64 =
+    g15_ta_object_payload_units(4, 1);
+
+/// Exact G15 TA 0x1ca48 value. `bindAndRetainMeshRenderingBuffers()` uses the
+/// mapped kernel-resource base plus AGXResource +0x48. For `newKernelResource`
+/// the inherited placement wrapper forces that field to zero, so J615 uses the
+/// allocation GPUVA directly. The low 10 bits are discarded and the channel's
+/// payload-unit field is inserted at bit 48.
+pub(crate) const fn g15_ta_object_payload_reg_1ca48(gpuva: u64, units: u64) -> u64 {
+    (gpuva & !0x3ff) | (units << 48)
+}
+
+/// Host-side G15 parameter-management record layout. Apple allocates these at
+/// an exact 0x80-byte stride and publishes one record pointer per PM slot.
+///
+/// Only mechanically proven fields are named. In particular, +0x30 points to
+/// the same extra scene-allocation slice for every record when accelerator
+/// +0x1dd8 is set; no stronger semantic role is assumed here.
+#[repr(C)]
+pub(crate) struct G15PmRecord {
+    page_metrics_gpuva: u64,
+    page_metrics_fwva: u64,
+    // setupSceneState() initially zeroes these qwords, but normal Fragment
+    // completion later consumes the low dwords at +0x10 and +0x18. Keep the
+    // names direction-neutral until their producer is recovered.
+    completion_stat_10: u32,
+    opaque_14: u32,
+    completion_stat_18: u32,
+    opaque_1c: u32,
+    zero_20: u64,
+    scene_slice_gpuva: u64,
+    shared_scene_slice_gpuva: u64,
+    opaque_38: u64,
+    scene_stats_fwva: u64,
+    // RTKit adds +0x10 + +0x18 into this persistent low-dword accumulator on
+    // every normal Fragment completion, then max-tracks it in scene statistics.
+    completion_accumulator_48: u32,
+    opaque_4c: [u8; 0x34],
+}
+
+/// The upper 0x40-byte half of Apple's exact 0x80-byte
+/// "Firmware Page List Entries, Parameter Scene statistics" resource.
+/// Normal Fragment completion accesses it through G15PmRecord +0x40.
+#[repr(C)]
+struct G15PmSceneStats {
+    max_record_accumulator_00: u32,
+    max_info_completion_stat_04: u32,
+    reset_cleared_08: u32,
+    reset_cleared_0c: u32,
+    opaque_10: [u8; 0x10],
+    // A nonzero value causes RTKit to clear +0/+4/+8/+0xc and this field
+    // before applying the current completion update.
+    reset_request_20: u32,
+    opaque_24: [u8; 0x1c],
+}
+
+impl Default for G15PmRecord {
+    fn default() -> Self {
+        Self {
+            page_metrics_gpuva: 0,
+            page_metrics_fwva: 0,
+            completion_stat_10: 0,
+            opaque_14: 0,
+            completion_stat_18: 0,
+            opaque_1c: 0,
+            zero_20: 0,
+            scene_slice_gpuva: 0,
+            shared_scene_slice_gpuva: 0,
+            opaque_38: 0,
+            scene_stats_fwva: 0,
+            completion_accumulator_48: 0,
+            opaque_4c: [0; 0x34],
+        }
+    }
+}
+
+impl G15PmRecord {
+    /// Construct one J615 GPU-facing PM record from the mechanically proven
+    /// range-5 scene pointers and range-7 PM resources. Apple initializes the
+    /// remaining completion/tail fields to zero here; their later producers
+    /// remain independently unresolved.
+    pub(crate) fn new_with_resources(
+        scene_slice_gpuva: u64,
+        shared_scene_slice_gpuva: u64,
+        page_metrics_gpuva: u64,
+        scene_stats_fwva: u64,
+    ) -> Self {
+        Self {
+            page_metrics_gpuva,
+            page_metrics_fwva: page_metrics_gpuva,
+            scene_slice_gpuva,
+            shared_scene_slice_gpuva,
+            scene_stats_fwva,
+            ..Default::default()
+        }
+    }
+}
+
+const _: [(); 0x80] = [(); core::mem::size_of::<G15PmRecord>()];
+const _: [(); 0x00] = [(); core::mem::offset_of!(G15PmRecord, page_metrics_gpuva)];
+const _: [(); 0x08] = [(); core::mem::offset_of!(G15PmRecord, page_metrics_fwva)];
+const _: [(); 0x10] = [(); core::mem::offset_of!(G15PmRecord, completion_stat_10)];
+const _: [(); 0x18] = [(); core::mem::offset_of!(G15PmRecord, completion_stat_18)];
+const _: [(); 0x20] = [(); core::mem::offset_of!(G15PmRecord, zero_20)];
+const _: [(); 0x28] = [(); core::mem::offset_of!(G15PmRecord, scene_slice_gpuva)];
+const _: [(); 0x30] = [(); core::mem::offset_of!(G15PmRecord, shared_scene_slice_gpuva)];
+const _: [(); 0x40] = [(); core::mem::offset_of!(G15PmRecord, scene_stats_fwva)];
+const _: [(); 0x48] = [(); core::mem::offset_of!(G15PmRecord, completion_accumulator_48)];
+const _: [(); 0x40] = [(); core::mem::size_of::<G15PmSceneStats>()];
+const _: [(); 0x00] = [(); core::mem::offset_of!(G15PmSceneStats, max_record_accumulator_00)];
+const _: [(); 0x04] = [(); core::mem::offset_of!(G15PmSceneStats, max_info_completion_stat_04)];
+const _: [(); 0x20] = [(); core::mem::offset_of!(G15PmSceneStats, reset_request_20)];
+
+/// `AGXParameterManagement::init()` allocates the record pool as
+/// `(record_count * 0x80) | 0x40`. Since every record starts on a 0x80
+/// boundary, the final OR reserves one trailing 0x40-byte state region. The
+/// GPUVA immediately after the records is retained at PM +0xb8 and exported
+/// through the G15 3D work-command header at +0x38. J615 also
+/// allocates a separate eight-byte-per-record "Firmware Page List Entries"
+/// resource and an exact 0x80-byte
+/// "Firmware Page List Entries, Parameter Scene statistics" resource.
+/// Record +0x40 is the FWVA of the latter resource at offset +0x40, i.e. the
+/// Parameter Scene statistics half. These remain allocation geometry only.
+const G15_PM_RECORD_BYTES: usize = 0x80;
+/// Exact GPU-facing range-5 PM record resource: 80 records at a 0x80 stride.
+/// This deliberately excludes the separate 0x40 PM tail/state bookkeeping.
+pub(crate) const G15_J615_PM_GPU_RECORD_BYTES: usize =
+    G15_J615_PM_RECORD_COUNT * G15_PM_RECORD_BYTES;
+const G15_PM_STATE_BYTES: usize = 0x40;
+const G15_PM_FW_PAGE_LIST_ENTRY_BYTES: usize = 8;
+pub(crate) const G15_PM_PAGE_LIST_STATS_BYTES: usize = 0x80;
+const G15_PM_SCENE_STATS_OFFSET: usize = 0x40;
+
+const fn g15_pm_state_offset(record_count: usize) -> usize {
+    record_count * G15_PM_RECORD_BYTES
+}
+
+const fn g15_pm_record_pool_bytes(record_count: usize) -> usize {
+    g15_pm_state_offset(record_count) | G15_PM_STATE_BYTES
+}
+
+const fn g15_pm_fw_page_list_bytes(record_count: usize) -> usize {
+    record_count * G15_PM_FW_PAGE_LIST_ENTRY_BYTES
+}
+
+/// Apple keeps the selected PM record index at AGXParameterManagement +0x2c.
+/// processRenderSetup() increments it before loading the command descriptor and
+/// wraps it modulo the configured record count (0x50 on J615).  The PM object
+/// itself is owned by AGX3DWorkQueue (+0x1f8) and may be explicitly shared by
+/// another work queue, so this index is queue/PM state rather than a TVB slot.
+pub(crate) const fn g15_j615_pm_next_record_index(current: u32) -> u32 {
+    let next = current + 1;
+    if next >= G15_J615_PM_RECORD_COUNT as u32 {
+        0
+    } else {
+        next
+    }
+}
+
+/// setupSceneState() precomputes record[i]+0x28 as scene_base +
+/// 0x30 * (i % 36) on J615.  This returns only the mechanically proven offset;
+/// allocation/base-address wiring remains deliberately separate.
+pub(crate) const fn g15_j615_pm_scene_slice_offset(record_index: u32) -> usize {
+    (record_index as usize % G15_J615_PM_SCENE_GROUP_COUNT)
+        * g15_j615_pm_scene_stride(0x3366_0000)
+}
+
+/// Common G15G/C0 scene slice shared by every PM record.
+pub(crate) const fn g15_j615_pm_shared_scene_slice_offset() -> usize {
+    G15_J615_PM_SCENE_GROUP_COUNT * g15_j615_pm_scene_stride(0x3366_0000)
+}
+
+/// Selected GPU record offset inside the exact 0x2800 range-5 record backing.
+pub(crate) const fn g15_j615_pm_record_offset(record_index: u32) -> usize {
+    (record_index as usize % G15_J615_PM_RECORD_COUNT) * G15_PM_RECORD_BYTES
+}
+
+/// `AGXArmFirmware::allocFirmwareData()` sizes one PMPageMetricsBuffer resource
+/// element as `align(record_count * 4, 0x40)`. Each PM record then receives a
+/// distinct four-byte slot within that element at `base + 4 * record_index`.
+/// Linux now models one requested element directly in shared bank 1; Apple's
+/// resource-stack backing/growth policy remains a separate pooling detail.
+const G15_PM_PAGE_METRICS_SLOT_BYTES: usize = 4;
+const G15_PM_PAGE_METRICS_ALIGNMENT: usize = 0x40;
+
+const fn g15_pm_page_metrics_bytes(record_count: usize) -> usize {
+    let bytes = record_count * G15_PM_PAGE_METRICS_SLOT_BYTES;
+    (bytes + G15_PM_PAGE_METRICS_ALIGNMENT - 1) & !(G15_PM_PAGE_METRICS_ALIGNMENT - 1)
+}
+
+/// Exact J615 PMPageMetricsBuffer resource element size.
+pub(crate) const G15_J615_PM_PAGE_METRICS_BYTES: usize =
+    g15_pm_page_metrics_bytes(G15_J615_PM_RECORD_COUNT);
+
+/// Offset of one record's four-byte PMPageMetricsBuffer slot.
+pub(crate) const fn g15_j615_pm_page_metrics_slot_offset(record_index: u32) -> usize {
+    (record_index as usize % G15_J615_PM_RECORD_COUNT) * G15_PM_PAGE_METRICS_SLOT_BYTES
+}
+
+/// Exact G15 TA register 0x1c910 encoding of a selected PMPageMetricsBuffer
+/// slot GPUVA. Apple places this resource in eGartRange 7. The transform folds
+/// source address bit 42 into result bit 39 and sets bit 0 as the enable bit.
+/// RegisterArray emission remains fail-closed with the rest of the G15 list,
+/// but the value is now fully constructible from the compile-only resource.
+pub(crate) const fn g15_pm_page_metrics_reg_1c910(gpuva: u64) -> u64 {
+    let prefix = if gpuva & 0x400_0000_0000 != 0 {
+        0
+    } else {
+        0x70_0000_0000
+    };
+
+    ((gpuva >> 3) & 0x80_0000_0000) | ((prefix + gpuva) & 0x7f_ffff_fffe) | 1
+}
+
+const fn g15_j615_pm_scene_stride(pb_max_size: usize) -> usize {
+    let pages = (pb_max_size + PAGE_SIZE - 1) / PAGE_SIZE;
+    let entries = (pages + G15_PM_DEVICE_CONFIG.scene_pages_per_entry - 1)
+        / G15_PM_DEVICE_CONFIG.scene_pages_per_entry;
+    let bytes = G15_PM_DEVICE_CONFIG.scene_header_bytes
+        + entries * G15_PM_DEVICE_CONFIG.scene_entry_bytes;
+    (bytes + G15_PM_DEVICE_CONFIG.scene_alignment - 1)
+        & !(G15_PM_DEVICE_CONFIG.scene_alignment - 1)
+}
+
+// Apple G15's device config is {4, 0x1800, 8, 8, 0x10}.  Linux's existing
+// 16-GiB-class PB maximum is exactly Apple's 0x33660000 default, giving five
+// 0x1800-page groups and therefore a 0x30-byte per-scene PM slice.
+const _: [(); 4] = [(); G15_PM_DEVICE_CONFIG.usage_page_granule];
+const _: [(); 0x80000] = [(); G15_J615_TA_OBJECT_PAYLOAD_BYTES];
+const _: [(); 0x200] = [(); G15_J615_TA_OBJECT_PAYLOAD_UNITS as usize];
+const _: [(); 0x0200] = [();
+    (g15_ta_object_payload_reg_1ca48(0, G15_J615_TA_OBJECT_PAYLOAD_UNITS) >> 48) as usize
+];
+const _: [(); 0x50] = [(); G15_J615_PM_RECORD_COUNT];
+const _: [(); 0x24] = [(); G15_J615_PM_SCENE_GROUP_COUNT];
+const _: [(); 0x2800] = [(); g15_pm_state_offset(G15_J615_PM_RECORD_COUNT)];
+const _: [(); 0x2800] = [(); G15_J615_PM_GPU_RECORD_BYTES];
+const _: [(); 0x2840] = [(); g15_pm_record_pool_bytes(G15_J615_PM_RECORD_COUNT)];
+const _: [(); 0x280] = [(); g15_pm_fw_page_list_bytes(G15_J615_PM_RECORD_COUNT)];
+const _: [(); 0x80] = [(); G15_PM_PAGE_LIST_STATS_BYTES];
+const _: [(); 0x40] = [(); G15_PM_SCENE_STATS_OFFSET];
+const _: [(); 0x140] = [(); G15_J615_PM_PAGE_METRICS_BYTES];
+const _: [(); 0] = [(); g15_j615_pm_page_metrics_slot_offset(0)];
+const _: [(); 0x13c] = [(); g15_j615_pm_page_metrics_slot_offset(79)];
+const _: [(); 0] = [(); g15_j615_pm_page_metrics_slot_offset(80)];
+const _: [(); 0xa0] = [(); (g15_pm_page_metrics_reg_1c910(0xffff_fc20_0000_0000) >> 32) as usize];
+const _: [(); 0x4001] = [(); (g15_pm_page_metrics_reg_1c910(0xffff_fc20_0000_4000) & 0xffff) as usize];
+const _: [(); 0x30] = [(); g15_j615_pm_scene_stride(0x3366_0000)];
+const _: [(); 0x6c0] = [(); G15_J615_PM_SCENE_GROUP_COUNT
+    * g15_j615_pm_scene_stride(0x3366_0000)];
+const _: [(); 0x6f0] = [(); G15_J615_PM_SCENE_ALLOC_BYTES];
+const _: [(); 0x6f0] = [(); (G15_J615_PM_SCENE_GROUP_COUNT
+    + G15_J615_PM_EXTRA_SCENE_SLICES)
+    * g15_j615_pm_scene_stride(0x3366_0000)];
+// PM +0x2c starts at zero, but processRenderSetup() advances before
+// descriptor selection, so the first ordinary record is index 1.
+const _: [(); 1] = [(); g15_j615_pm_next_record_index(0) as usize];
+const _: [(); 0] = [(); g15_j615_pm_next_record_index(0x4f) as usize];
+const _: [(); 0x30] = [(); g15_j615_pm_scene_slice_offset(1)];
+const _: [(); 0] = [(); g15_j615_pm_scene_slice_offset(36)];
+const _: [(); 0x150] = [(); g15_j615_pm_scene_slice_offset(79)];
+const _: [(); 0x6c0] = [(); g15_j615_pm_shared_scene_slice_offset()];
+const _: [(); 0x80] = [(); g15_j615_pm_record_offset(1)];
+const _: [(); 0x2780] = [(); g15_j615_pm_record_offset(79)];
+const _: [(); 0] = [(); g15_j615_pm_record_offset(80)];
 
 /// Metadata about the tiling configuration for a scene. This is computed in the `render` module.
 /// based on dimensions, tile size, and other info.
@@ -122,6 +2688,10 @@ pub(crate) struct Scene {
     object: GpuObject<buffer::Scene::ver>,
     slot: u32,
     rebind: bool,
+    // Host-owned lifetime anchor for the G15 ContextSwitcherGen3 render scratch
+    // allocation. Older generations keep this as None.
+    #[allow(dead_code)]
+    g15_ctxswitch: Option<GpuArray<u8>>,
     preempt2_off: usize,
     preempt3_off: usize,
     // Note: these are dead code only on some version variants.
@@ -196,6 +2766,12 @@ impl Scene::ver {
     /// Returns the GPU pointer to the Tail Pointer Cache buffer.
     pub(crate) fn tpc_pointer(&self) -> GpuPointer<'_, &'_ [u8]> {
         self.object.tpc.gpu_pointer()
+    }
+
+    /// Returns the GPU pointer to the G15 ContextSwitcherGen3 render scratch region.
+    #[allow(dead_code)]
+    pub(crate) fn g15_ctxswitch_pointer(&self) -> Option<GpuPointer<'_, &'_ [u8]>> {
+        self.g15_ctxswitch.as_ref().map(|buf| buf.gpu_pointer())
     }
 
     /// Returns the GPU pointer to the first preemption scratch buffer.
@@ -336,6 +2912,7 @@ impl Buffer::ver {
         let max_blocks = max_size / BLOCK_SIZE;
         let max_blocks_nomemless = max_size_nomemless / BLOCK_SIZE;
         let max_pages = max_blocks * PAGES_PER_BLOCK;
+        #[allow(unused_variables)] // G15's compact Info has no legacy max-pages tail.
         let max_pages_nomemless = max_blocks_nomemless * PAGES_PER_BLOCK;
 
         let num_clusters = gpu.get_dyncfg().id.num_clusters as usize;
@@ -355,7 +2932,7 @@ impl Buffer::ver {
                 let ualloc_priv = &ualloc_priv;
                 try_init!(buffer::Info::ver {
                     block_ctl: shared.new_default::<buffer::BlockControl>()?,
-                    counter: shared.new_default::<buffer::Counter>()?,
+                    counter: shared.new_default::<buffer::Counter::ver>()?,
                     page_list: ualloc_priv.lock().array_empty_tagged(max_pages, b"PLST")?,
                     block_list: ualloc_priv
                         .lock()
@@ -382,20 +2959,51 @@ impl Buffer::ver {
                     block_list: inner.block_list.gpu_pointer(),
                     block_ctl: inner.block_ctl.gpu_pointer(),
                     last_page: AtomicU32::new(0),
-                    gpu_page_ptr1: 0x0,
-                    gpu_page_ptr2: 0x0,
-                    unk_58: 0x0,
-                    block_size: BLOCK_SIZE as u32,
-                    unk_60: U64(0x0),
+                    #[ver(G == G15)]
+                    g15_unk_4c: 0,
+                    #[ver(G == G15)]
+                    g15_completion_stat_50: U64(0),
+                    #[ver(G == G15)]
                     counter: inner.counter.gpu_pointer(),
+                    #[ver(G == G15)]
+                    g15_unk_60: U64(0),
+                    #[ver(G == G15)]
+                    g15_unk_68: U64(0),
+                    #[ver(G == G15)]
+                    g15_unk_70: 0,
+                    #[ver(G == G15)]
+                    g15_unk_74: 0,
+                    #[ver(G == G15)]
+                    g15_unk_78: U64(0),
+                    #[ver(G != G15)]
+                    gpu_page_ptr1: 0x0,
+                    #[ver(G != G15)]
+                    gpu_page_ptr2: 0x0,
+                    #[ver(G != G15)]
+                    unk_58: 0x0,
+                    #[ver(G != G15)]
+                    block_size: BLOCK_SIZE as u32,
+                    #[ver(G != G15)]
+                    unk_60: U64(0x0),
+                    #[ver(G != G15)]
+                    counter: inner.counter.gpu_pointer(),
+                    #[ver(G != G15)]
                     unk_70: 0x0,
+                    #[ver(G != G15)]
                     unk_74: 0x0,
+                    #[ver(G != G15)]
                     unk_78: 0x0,
+                    #[ver(G != G15)]
                     unk_7c: 0x0,
+                    #[ver(G != G15)]
                     unk_80: 0x1,
+                    #[ver(G != G15)]
                     max_pages: max_pages.try_into()?,
+                    #[ver(G != G15)]
                     max_pages_nomemless: max_pages_nomemless.try_into()?,
+                    #[ver(G != G15)]
                     unk_8c: 0x0,
+                    #[ver(G != G15)]
                     unk_90: Default::default(),
                 })
             },
@@ -583,6 +3191,16 @@ impl Buffer::ver {
             b"PRMT",
         )?;
 
+        // ContextSwitcherGen3::setupRenderCommand() allocates exactly 0x8e0
+        // bytes for G15 TA context switching. Keep it Scene-owned so both the
+        // register list and command body can reference one allocation for the
+        // full render-job lifetime.
+        #[ver(G == G15)]
+        let g15_ctxswitch = inner
+            .ualloc
+            .lock()
+            .array_empty_tagged(G15_RENDER_CTXSWITCH_BYTES, b"CTSW")?;
+
         let tpc = match inner.tpc.as_ref() {
             Some(buf) if buf.len() >= tpc_size => buf.clone(),
             _ => {
@@ -652,14 +3270,14 @@ impl Buffer::ver {
                 tpc: tpc,
                 clustering: clustering,
                 preempt_buf: preempt_buf,
-                #[ver(G >= G14X)]
+                #[ver(G >= G14X || G == G15)]
                 control_word: _gpu.array_empty_tagged(1, b"CWRD")?,
             }),
             |inner, _p| {
                 try_init!(buffer::raw::Scene::ver {
-                    #[ver(G >= G14X)]
+                    #[ver(G >= G14X || G == G15)]
                     control_word: inner.control_word.gpu_pointer(),
-                    #[ver(G >= G14X)]
+                    #[ver(G >= G14X || G == G15)]
                     control_word2: inner.control_word.gpu_pointer(),
                     pass_page_count: AtomicU32::new(0),
                     unk_4: 0,
@@ -667,14 +3285,18 @@ impl Buffer::ver {
                     unk_10: U64(0),
                     user_buffer: inner.user_buffer.gpu_pointer(),
                     unk_20: 0,
+                    #[ver(G == G15)]
+                    g15_unk_34: 0,
                     #[ver(V >= V13_3)]
                     unk_28: U64(0),
                     stats: stats_pointer,
                     total_page_count: AtomicU32::new(0),
-                    #[ver(G < G14X)]
+                    #[ver(G < G14X && G != G15)]
                     unk_30: U64(0),
-                    #[ver(G < G14X)]
+                    #[ver(G < G14X && G != G15)]
                     unk_38: U64(0),
+                    #[ver(G == G15)]
+                    g15_tail: Default::default(),
                 })
             },
         )?;
@@ -702,6 +3324,10 @@ impl Buffer::ver {
             object: scene,
             slot: inner.active_slot.as_ref().unwrap().slot(),
             rebind,
+            #[ver(G == G15)]
+            g15_ctxswitch: Some(g15_ctxswitch),
+            #[ver(G != G15)]
+            g15_ctxswitch: None,
             preempt2_off: inner.preempt1_size,
             preempt3_off: inner.preempt1_size + inner.preempt2_size,
             meta1_off: clmeta_size,

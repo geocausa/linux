@@ -790,6 +790,15 @@ enum drm_asahi_render_flags {
 	DRM_ASAHI_RENDER_NO_VERTEX_CLUSTERING = (1U << 2),
 
 	/**
+	 * @DRM_ASAHI_RENDER_HAS_LOAD_CLEAR: At least one attachment is cleared
+	 * by the initial render operation.
+	 *
+	 * This is distinct from @DRM_ASAHI_RENDER_PROCESS_EMPTY_TILES: a clear
+	 * may be present even when empty tiles do not need to be processed.
+	 */
+	DRM_ASAHI_RENDER_HAS_LOAD_CLEAR = (1U << 3),
+
+	/**
 	 * @DRM_ASAHI_RENDER_DBIAS_IS_INT: Use integer depth bias formula.
 	 *
 	 * Graphics specifications contain two alternate formulas for depth
@@ -1107,6 +1116,28 @@ struct drm_asahi_cmd_render {
 
 	/** @ts_frag: Timestamps for the fragment portion of the render */
 	struct drm_asahi_timestamps ts_frag;
+
+	/**
+	 * @depth_level_offset: Byte offset of the selected mip level within the
+	 * depth image plane, excluding any array-layer offset.
+	 */
+	__u64 depth_level_offset;
+
+	/**
+	 * @stencil_level_offset: Byte offset of the selected mip level within the
+	 * stencil image plane, excluding any array-layer offset.
+	 */
+	__u64 stencil_level_offset;
+
+	/**
+	 * @eot_state_loader: GPU address of the end-of-tile state-loader program.
+	 *
+	 * Newer GPU generations can execute a small I/O-to-register state-loader
+	 * program before the EOT USC program. The address is 64-byte aligned.
+	 * Older generations ignore this field. Since render commands are
+	 * size-versioned, older userspace that omits it is read as zero.
+	 */
+	__u64 eot_state_loader;
 };
 
 /**

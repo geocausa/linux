@@ -230,6 +230,11 @@ impl DeviceControlChannel::ver {
         self.ch.ring.to_raw()
     }
 
+    /// Returns the split G15 TX channel descriptor.
+    pub(crate) fn to_raw_g15(&self) -> raw::G15TxChannelRing {
+        self.ch.ring.to_raw_g15_tx()
+    }
+
     /// Submits a Device Control command.
     pub(crate) fn send(&mut self, msg: &DeviceControlMsg::ver) -> u32 {
         cls_dev_dbg!(DeviceControlCh, self.dev, "DeviceControl: {:?}\n", msg);
@@ -267,10 +272,36 @@ impl PipeChannel::ver {
         self.ch.ring.to_raw()
     }
 
-    /// Submits a Pipe kick command to the firmware.
-    pub(crate) fn send(&mut self, msg: &PipeMsg::ver) {
+    /// Returns the split G15 TX channel descriptor.
+    pub(crate) fn to_raw_g15(&self) -> raw::G15TxChannelRing {
+        self.ch.ring.to_raw_g15_tx()
+    }
+
+    /// Submits a Pipe kick command to the firmware and returns the TX ring
+    /// position that firmware must consume. Normal submission ignores the
+    /// token; bounded bring-up probes use it to prove the queue-registration
+    /// handler has returned before any backing object can be retired.
+    pub(crate) fn send(&mut self, msg: &PipeMsg::ver) -> u32 {
         cls_dev_dbg!(PipeCh, self.dev, "Pipe: {:?}\n", msg);
-        self.ch.put(msg);
+        self.ch.put(msg)
+    }
+
+    pub(crate) fn wait_for(&mut self, wptr: u32) -> Result {
+        self.ch.wait_for(wptr, 1000)
+    }
+
+    /// Snapshot the exact G15 TX channel state as
+    /// (read_ptr, write_ptr_shadow, write_ptr, host_wptr).
+    pub(crate) fn g15_state(&self) -> (u32, u32, u32, u32) {
+        self.ch.ring.state.with(|raw, _inner| {
+            (
+                raw.read_ptr.load(core::sync::atomic::Ordering::Acquire),
+                raw.write_ptr_shadow
+                    .load(core::sync::atomic::Ordering::Acquire),
+                raw.write_ptr.load(core::sync::atomic::Ordering::Acquire),
+                self.ch.wptr,
+            )
+        })
     }
 }
 
@@ -363,13 +394,23 @@ impl EventChannel::ver {
 
                     cls_dev_dbg!(EventCh, self.dev, "Event: {:?}\n", msg);
                     match msg {
-                        EventMsg::Fault => match self.gpu.as_ref() {
-                            Some(gpu) => gpu.handle_fault(),
-                            None => {
-                                dev_crit!(
-                                    self.dev.as_ref(),
-                                    "EventChannel: No GPU manager available!\n"
-                                )
+                        EventMsg::Fault => {
+                            #[ver(G == G15)]
+                            {
+                                // Exact RTKit-2419 G15 Apple host behavior: event tag 0
+                                // dispatches AGXArmFirmware::handleFirmwareControllerEvent(),
+                                // whose G15 implementation is an empty `bti; ret`. Do not
+                                // inherit the pre-G15 GPU-fault/recovery action here.
+                            }
+                            #[ver(G != G15)]
+                            match self.gpu.as_ref() {
+                                Some(gpu) => gpu.handle_fault(),
+                                None => {
+                                    dev_crit!(
+                                        self.dev.as_ref(),
+                                        "EventChannel: No GPU manager available!\n"
+                                    )
+                                }
                             }
                         },
                         EventMsg::Timeout {

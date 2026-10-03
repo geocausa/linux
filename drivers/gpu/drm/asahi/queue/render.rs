@@ -40,6 +40,226 @@ const DEBUG_CLASS: DebugFlags = DebugFlags::Render;
 /// cluster.
 const TILECTL_DISABLE_CLUSTERING: u32 = 1u32 << 0;
 
+// Apple G15 uses the same raw Render mode selector in TA and Fragment
+// register generation. Mode 2 suppresses the contribution, mode 3 selects
+// the lower value, and every other byte value selects the default/high value.
+// Keep the raw byte explicit until its userspace semantic is recovered.
+const fn g15_render_mode_selector(mode: u8, lower: u64, default: u64) -> u64 {
+    if mode == 2 {
+        0
+    } else if mode == 3 {
+        lower
+    } else {
+        default
+    }
+}
+
+// Exact Apple G15 value for hardware register 0x10039. RTM +0x98 is the
+// layer-count dimension; raw Render +0x618 is the process-empty-tiles byte;
+// raw +0x619/+0x61a are unresolved cross-engine mode selectors.
+const fn g15_fragment_tile_config(
+    layers: u32,
+    process_empty_tiles: bool,
+    raw_mode_619: u8,
+    raw_mode_61a: u8,
+) -> u64 {
+    (if layers > 1 { 1 } else { 0 })
+        | (if process_empty_tiles { 0x1_0000 } else { 0 })
+        | g15_render_mode_selector(raw_mode_619, 0x100, 0x200)
+        | g15_render_mode_selector(raw_mode_61a, 0x40, 0x80)
+}
+
+// Linux has historically exposed only the normal/default tiler mode (`unk1=false`).
+// On G14X that means TA 0x10141 = 0x200 and Fragment 0x10039 contributes
+// 0x280.  Exact G15 splits those contributions across raw +0x619/+0x61a;
+// their default/high branches reproduce the same Linux-visible state.  Modes 2/3
+// are private Apple extensions and need a future UAPI semantic before Linux can
+// request them.
+const G15_LINUX_TILER_MODE_10141: u64 = 0x200;
+
+// G15 Fragment 0x1a0a9 (and TA 0x1a099) comes from raw Render +0x638.
+// Apple packs an initial-render "any attachment loadAction=CLEAR" boolean in
+// byte 0 and native in-render resolve state in byte 1. Honeykrisp performs
+// resolves as a separate control stream, so byte 1 is zero for Linux. The
+// remaining producer is an explicit has-load-clear semantic that the current
+// render UAPI does not expose; keep only the exact formula here until it does.
+const fn g15_render_clear_state(has_load_clear: bool) -> u64 {
+    if has_load_clear { 1 } else { 0 }
+}
+
+const _: [(); 0] = [(); g15_render_clear_state(false) as usize];
+const _: [(); 1] = [(); g15_render_clear_state(true) as usize];
+
+const fn g15_fragment_tile_config_linux(layers: u32, process_empty_tiles: bool) -> u64 {
+    (if layers > 1 { 1 } else { 0 })
+        | (if process_empty_tiles { 0x1_0000 } else { 0 })
+        | 0x280
+}
+
+// Exact J615/G15G C0 value formula for hardware register 0x16068, with
+// no unresolved accelerator state: base configureDevice() clears accelerator
+// +0x650 bit 21 with mask 0xfffffe0c2287 and G15/G15G never set it again, so
+// Apple's result-bit-20 accelerator contribution is exactly zero here.
+const fn g15_fragment_tilecfg(
+    utile_config: u32,
+    layers: u32,
+    te_screen: u32,
+    raw_mode_619: u8,
+) -> u64 {
+    ((utile_config as u64 & 0xf000) << 28)
+        | ((if layers > 1 { 1u64 } else { 0 }) << 32)
+        | (g15_render_mode_selector(raw_mode_619, 0x100, 0x200) << 28)
+        | ((te_screen as u64 & 0x1ff) << 44)
+        | ((te_screen as u64 & 0x1ff000) << 41)
+        | 0x3617f
+}
+
+const fn g15_fragment_tilecfg_linux(utile_config: u32, layers: u32, te_screen: u32) -> u64 {
+    ((utile_config as u64 & 0xf000) << 28)
+        | ((if layers > 1 { 1u64 } else { 0 }) << 32)
+        | 0x20_00000000
+        | ((te_screen as u64 & 0x1ff) << 44)
+        | ((te_screen as u64 & 0x1ff000) << 41)
+        | 0x3617f
+}
+
+// G15 TA 0x10169 is layer-count state plus the raw +0x618 process-empty-tiles
+// mode. Apple then derives 0x1c9e8 by masking this value with 0x47ff.
+const fn g15_ta_render_target_max(layers: u32, process_empty_tiles: bool) -> u32 {
+    let mut value = (layers - 1) | 0x8000;
+    if layers > 1 {
+        value |= 0x4000 | if process_empty_tiles { 0x2000 } else { 0x1000 };
+    }
+    value
+}
+
+const _: [(); 0x8000] = [(); g15_ta_render_target_max(1, false) as usize];
+const _: [(); 0xd001] = [(); g15_ta_render_target_max(2, false) as usize];
+const _: [(); 0xe001] = [(); g15_ta_render_target_max(2, true) as usize];
+
+// processRenderSetup() splits raw Render +0x148 into zero-extended low/high
+// dwords at TA descriptor +0x1178/+0x1180. The G15 register generator then
+// reconstructs 0x101c8 with this exact transform. For Linux's non-native-
+// resolve path, raw +0x148 is the selected depth mip-level byte offset.
+const fn g15_ta_depth_level_reg(level_offset: u64) -> u64 {
+    let low = level_offset & 0xffff_ffff;
+    let high = level_offset >> 32;
+
+    (low & 0xffff_ffff_ffe0_ffff) | (high << 16)
+}
+
+// Raw Render +0x150 is the stencil counterpart. processRenderSetup() exports
+// its low dword at descriptor +0x1188 and G15 writes that value to 0xd470.
+const fn g15_ta_stencil_level_reg(level_offset: u64) -> u64 {
+    level_offset & 0xffff_ffff
+}
+
+// G15G/C0 obtains this 32-bit register number from accelerator vslot +0x1088
+// (base 0x10798). The register is constant 0xff0000 when the low dword of the
+// depth mip-level offset is zero. Otherwise Apple folds RenderContext +0x5e4
+// into bits 16..31 and forces bit 24. +0x5e4 is the render encoder's
+// globalTraceObjectID; shader-sampling code explicitly exposes the same value
+// as the GRC_ENCODER_ID counter and may replace it with a local monotonic
+// sampling ID. This is an encoder/correlation tag, not JobMeta.uuid. Linux's
+// global submission ID provides the same independent monotonically increasing
+// identity without coupling it to the command-descriptor UUID namespace.
+const fn g15_ta_dynamic_reg_10799(level_offset: u64, encoder_id: u32) -> u32 {
+    if (level_offset as u32) == 0 {
+        0x00ff_0000
+    } else {
+        encoder_id.wrapping_shl(16) | 0x0100_0000
+    }
+}
+
+// G15 duplicates the stencil CompressionMetadata base/stride into raw Render
+// +0x1a8/+0x1b0. The TA generator folds that pair into one 64-bit register.
+const fn g15_ta_stencil_comp_packed_reg(comp_base: u64, comp_stride: u32) -> u64 {
+    (comp_base & !0x1f) | ((comp_stride as u64) << 32)
+}
+
+// ContextSwitcherGen3::setupRenderCommand() allocates one 0x8e0-byte G15
+// render context-switch region. raw Render +0x68 is its 32-byte-aligned base
+// and raw +0x60 is the same base +0x280. TA mirrors each as a 32/64-bit pair.
+// Keep this address transform separate from the legacy deflake/preempt layout.
+// Scene owns the dedicated backing; RegisterArray emission remains blocked with
+// the rest of the G15 runtime path.
+const G15_RENDER_CTXSWITCH_SECONDARY_OFFSET: u64 = 0x280;
+const G15_RENDER_CTXSWITCH_GPUVA_MASK: u64 = 0x0000_00ff_ffff_ffe0;
+
+const fn g15_ta_ctxswitch_primary_reg(base: u64) -> u64 {
+    base & G15_RENDER_CTXSWITCH_GPUVA_MASK
+}
+
+const fn g15_ta_ctxswitch_secondary_reg(base: u64) -> u64 {
+    base
+        .wrapping_add(G15_RENDER_CTXSWITCH_SECONDARY_OFFSET)
+        & G15_RENDER_CTXSWITCH_GPUVA_MASK
+}
+
+const _: [(); 0x10000] = [(); g15_ta_depth_level_reg(0x1_0000_0000) as usize];
+const _: [(); 0x80] = [(); g15_ta_depth_level_reg(0x10_0080) as usize];
+const _: [(); 0x42] = [(); g15_ta_stencil_level_reg(0x1_0000_0042) as usize];
+const _: [(); 0x00ff_0000] = [(); g15_ta_dynamic_reg_10799(0, 0x1234) as usize];
+const _: [(); 0x0142_0000] = [(); g15_ta_dynamic_reg_10799(0x80, 0x42) as usize];
+const _: [(); 0x1234_0000_6780] =
+    [(); g15_ta_stencil_comp_packed_reg(0x0000_0000_0000_6780, 0x1234) as usize];
+const _: [(); 0x8e0] = [(); buffer::G15_RENDER_CTXSWITCH_BYTES];
+const _: [(); 0x1234_5000] =
+    [(); g15_ta_ctxswitch_primary_reg(0x1234_501f) as usize];
+const _: [(); 0x1234_5280] =
+    [(); g15_ta_ctxswitch_secondary_reg(0x1234_5000) as usize];
+
+// Exact ordinary J615/G15G C0 TA RegisterArray order, including the mandatory
+// seed and both G15G dynamic register IDs. The conditional depth seed 0x17e1
+// is inserted immediately after 0x1748 when low32(depth_level_offset) != 0.
+// The default-disabled AGXPerfCtrSampler trio (0x1ca10/0x14a1/0xa349) is not
+// part of this ordinary list. This is a compile-time geometry lock only; the
+// The TA list is populated compile-time below; gpu_gen7 runtime remains fail-closed.
+const G15_TA_OPTIONAL_DEPTH_SEED_REGISTER: u32 = 0x17e1;
+const G15_TA_ORDINARY_REGISTERS: [u32; 59] = [
+    0x1748, 0x10141, 0x1c039, 0x1c9c8, 0x1c0a1, 0x1c031, 0x1c9c0, 0x1c051, 0x1c061,
+    0x10149, 0x10139, 0x10111, 0x1c9b0, 0x10119, 0x1c9b8, 0x1c958, 0x1c950, 0x1c930,
+    0x1c880, 0x1c898, 0x1c079, 0x1c9d8, 0x10151, 0x1c199, 0x1c1a1, 0x1c1a9, 0x1c1b1,
+    0x1c1b9, 0x1c8f8, 0x1c0b1, 0x1c850, 0x10131, 0x10121, 0x10129, 0x101b9, 0x1c069,
+    0x1c071, 0x1c081, 0x1c0a9, 0x10171, 0x10169, 0x12099, 0x101e1, 0x1c9e8, 0x1a099,
+    0x1a0a1, 0x1a069, 0x1a071, 0x1a0c9, 0x1a0d1, 0x101c9, 0x0d471, 0x1a0f1, 0x10799,
+    0x1ca48, 0x1c830, 0x1ca30, 0x16c39, 0x1c910,
+];
+
+const fn g15_ta_ordinary_register_count(depth_level_offset: u64) -> usize {
+    G15_TA_ORDINARY_REGISTERS.len()
+        + if (depth_level_offset as u32) != 0 {
+            1
+        } else {
+            0
+        }
+}
+
+const _: [(); 0x17e1] = [(); G15_TA_OPTIONAL_DEPTH_SEED_REGISTER as usize];
+const _: [(); 59] = [(); g15_ta_ordinary_register_count(0)];
+const _: [(); 60] = [(); g15_ta_ordinary_register_count(0x80)];
+const _: [(); 0x2c4] =
+    [(); 59 * core::mem::size_of::<fw::job::raw::Register>()];
+const _: [(); 0x2d0] =
+    [(); 60 * core::mem::size_of::<fw::job::raw::Register>()];
+
+// Default/zero raw mode reduces 0x10039 to Linux's historical tile_config
+// composition. These constants also pin the non-default selector branches.
+const _: [(); 0x280] = [(); g15_fragment_tile_config(1, false, 0, 0) as usize];
+const _: [(); 0x10281] = [(); g15_fragment_tile_config(2, true, 0, 0) as usize];
+const _: [(); 0x280] = [(); g15_fragment_tile_config_linux(1, false) as usize];
+const _: [(); 0x10281] = [(); g15_fragment_tile_config_linux(2, true) as usize];
+const _: [(); 0] = [(); g15_fragment_tile_config(1, false, 2, 2) as usize];
+const _: [(); 0x140] = [(); g15_fragment_tile_config(1, false, 3, 3) as usize];
+
+// For a 32x32 utile (utile_config high bits 0xa000), one layer and zero tile
+// counts, raw mode 0 supplies the same historical 0x20_00000000 mode bit,
+// while G15 changes the fixed low constant from 0x36011 to exact 0x3617f.
+const _: [(); 0xa200003617f] =
+    [(); g15_fragment_tilecfg(0xa000, 1, 0, 0) as usize];
+const _: [(); 0xa200003617f] =
+    [(); g15_fragment_tilecfg_linux(0xa000, 1, 0) as usize];
+
 #[versions(AGX)]
 impl super::QueueInner::ver {
     /// Get the appropriate tiling parameters for a given userspace command buffer.
@@ -198,10 +418,29 @@ impl super::QueueInner::ver {
             & !(uapi::drm_asahi_render_flags_DRM_ASAHI_RENDER_VERTEX_SCRATCH
                 | uapi::drm_asahi_render_flags_DRM_ASAHI_RENDER_PROCESS_EMPTY_TILES
                 | uapi::drm_asahi_render_flags_DRM_ASAHI_RENDER_NO_VERTEX_CLUSTERING
+                | uapi::drm_asahi_render_flags_DRM_ASAHI_RENDER_HAS_LOAD_CLEAR
                 | uapi::drm_asahi_render_flags_DRM_ASAHI_RENDER_DBIAS_IS_INT) as u32
             != 0
         {
             cls_pr_debug!(Errors, "Invalid flags ({:#x})\n", cmdbuf.flags);
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        let g15_has_load_clear = cmdbuf.flags
+            & uapi::drm_asahi_render_flags_DRM_ASAHI_RENDER_HAS_LOAD_CLEAR as u32
+            != 0;
+
+        #[ver(G == G15)]
+        if cmdbuf.eot_state_loader == 0
+            || cmdbuf.eot_state_loader
+                != (cmdbuf.eot_state_loader & 0x0000_ffff_ffff_ffc0)
+        {
+            cls_pr_debug!(
+                Errors,
+                "Invalid G15 EOT state-loader GPUVA ({:#x})\n",
+                cmdbuf.eot_state_loader
+            );
             return Err(EINVAL);
         }
 
@@ -253,7 +492,7 @@ impl super::QueueInner::ver {
             clustering = false;
         }
 
-        #[ver(G != G14)]
+        #[ver(G != G14 && G != G15)]
         let tiling_control = {
             let render_cfg = gpu.get_cfg().render;
             let mut tiling_control = render_cfg.tiling_control;
@@ -270,6 +509,8 @@ impl super::QueueInner::ver {
         // This sequence number increases per new client/VM? assigned to some slot,
         // but it's unclear *which* slot...
         let slot_client_seq: u8 = (self.id & 0xff) as u8;
+        #[ver(G == G15)]
+        let _ = slot_client_seq;
 
         let tile_info = Self::get_tiling_params(&cmdbuf, if clustering { nclusters } else { 1 })?;
 
@@ -305,6 +546,44 @@ impl super::QueueInner::ver {
 
         let scene = Arc::new(buffer.new_scene(kalloc, &tile_info)?, GFP_KERNEL)?;
 
+        // Apple AGXCommandQueue::processRenderSetup() advances the selected
+        // AGXParameterManagement +0x2c record index after command validation and
+        // before descriptor loading. The PM object is AGX3DWorkQueue-owned, which
+        // matches this QueueInner lifetime. The range-5/range-7 PM resources are
+        // now reconstructed; only G15 RegisterArray emission remains disabled.
+        #[ver(G == G15)]
+        let g15_pm_record_index = {
+            let current = self
+                .g15_pm_record_index
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                    Some(buffer::g15_j615_pm_next_record_index(current))
+                })
+                .expect("G15 PM record update is unconditional");
+            buffer::g15_j615_pm_next_record_index(current)
+        };
+        #[ver(G == G15)]
+        let g15_pm_scene_slice_offset =
+            buffer::g15_j615_pm_scene_slice_offset(g15_pm_record_index);
+        #[ver(G == G15)]
+        let g15_pm_scene_slice_gpuva: u64 = self
+            .g15_pm_scene_alloc
+            .gpu_offset_pointer(g15_pm_scene_slice_offset)
+            .into();
+        #[ver(G == G15)]
+        let g15_ta_object_payload_gpuva: u64 = self.g15_ta_object_payload.gpu_pointer().into();
+        #[ver(G == G15)]
+        let g15_pm_record_gpuva: u64 = self
+            .g15_pm_records
+            .gpu_offset_pointer(g15_pm_record_index as usize)
+            .into();
+        #[ver(G == G15)]
+        let g15_pm_page_metrics_gpuva: u64 = self
+            ._g15_pm_page_metrics
+            .gpu_offset_pointer(buffer::g15_j615_pm_page_metrics_slot_offset(
+                g15_pm_record_index,
+            ))
+            .into();
+
         let vm_bind = job.vm_bind.clone();
 
         mod_dev_dbg!(
@@ -332,8 +611,16 @@ impl super::QueueInner::ver {
             ev_frag.value.next(),
         );
 
+        #[ver(G != G15)]
         let uuid_3d = 0;
+        #[ver(G != G15)]
         let uuid_ta = 0;
+        // Apple allocates the 3D descriptor before the TA descriptor and both
+        // consume the same global command-descriptor ID sequence.
+        #[ver(G == G15)]
+        let uuid_3d = common::next_g15_command_uuid();
+        #[ver(G == G15)]
+        let uuid_ta = common::next_g15_command_uuid();
 
         mod_dev_dbg!(
             self.dev,
@@ -353,11 +640,13 @@ impl super::QueueInner::ver {
 
         mod_dev_dbg!(self.dev, "[Submission {}] Create Barrier\n", id);
         let barrier = kalloc.private.new_init(
-            pin_init::zeroed::<fw::workqueue::Barrier>(),
+            pin_init::zeroed::<fw::workqueue::Barrier::ver>(),
             |_inner, _p| {
-                try_init!(fw::workqueue::raw::Barrier {
+                try_init!(fw::workqueue::raw::Barrier::ver {
                     tag: fw::workqueue::CommandType::Barrier,
                     wait_stamp: ev_vtx.fw_stamp_pointer,
+                    #[ver(G == G15)]
+                    wait_stamp_2: ev_vtx.fw_stamp_pointer,
                     wait_value: ev_vtx.value.next(),
                     wait_slot: ev_vtx.slot,
                     stamp_self: ev_frag.value.next(),
@@ -379,18 +668,23 @@ impl super::QueueInner::ver {
 
         let unk1 = false;
 
-        let mut tile_config: u64 = 0;
-        if !unk1 {
-            tile_config |= 0x280;
-        }
-        if cmdbuf.layers > 1 {
-            tile_config |= 1;
-        }
-        if cmdbuf.flags & uapi::drm_asahi_render_flags_DRM_ASAHI_RENDER_PROCESS_EMPTY_TILES as u32
-            != 0
-        {
-            tile_config |= 0x10000;
-        }
+        #[ver(G != G15)]
+        let tile_config: u64 = {
+            let mut tile_config = 0;
+            if !unk1 {
+                tile_config |= 0x280;
+            }
+            if cmdbuf.layers > 1 {
+                tile_config |= 1;
+            }
+            if cmdbuf.flags
+                & uapi::drm_asahi_render_flags_DRM_ASAHI_RENDER_PROCESS_EMPTY_TILES as u32
+                != 0
+            {
+                tile_config |= 0x10000;
+            }
+            tile_config
+        };
 
         let samples_log2 = match cmdbuf.samples {
             1 => 0,
@@ -408,11 +702,16 @@ impl super::QueueInner::ver {
 
         // Calculate the number of 2KiB blocks to allocate per utile. This is
         // just a bit of dimensional analysis.
+        #[ver(G != G15)]
         let pixels_per_utile: u32 =
             (cmdbuf.utile_width_px as u32) * (cmdbuf.utile_height_px as u32);
+        #[ver(G != G15)]
         let samples_per_utile: u32 = pixels_per_utile << samples_log2;
+        #[ver(G != G15)]
         let utile_size_bytes: u32 = (cmdbuf.sample_size_B as u32) * samples_per_utile;
+        #[ver(G != G15)]
         let block_size_bytes: u32 = 2048;
+        #[ver(G != G15)]
         let blocks_per_utile: u32 = utile_size_bytes.div_ceil(block_size_bytes);
 
         #[ver(G >= G14X)]
@@ -424,6 +723,9 @@ impl super::QueueInner::ver {
             | ((utile_config as u64 & 0xf000) << 28);
 
         // TODO: check
+        // Normal Apple G15 AGX3DWorkQueue::submitCommand() invokes the 3D
+        // channel submitBuffer() first and the TA channel submitBuffer() second.
+        // Both consume AGXCommandQueue +0x5c8, so reserve Fragment n then TA n+1.
         #[ver(V >= V13_0B4)]
         let count_frag = self.counter.fetch_add(2, Ordering::Relaxed);
         #[ver(V >= V13_0B4)]
@@ -431,20 +733,21 @@ impl super::QueueInner::ver {
 
         // Unknowns handling
 
-        #[ver(G >= G14)]
+        #[ver(G >= G14 && G != G15)]
         let g14_unk = 0x4040404;
         #[ver(G < G14)]
         let g14_unk = 0;
-        #[ver(G < G14X)]
+        #[ver(G < G14X && G != G15)]
         let frg_unk_140 = 0x8c60;
         let frg_unk_158 = 0x1c;
         #[ver(G >= G14)]
         let load_bgobjvals = cmdbuf.isp_bgobjvals as u64;
         #[ver(G < G14)]
         let load_bgobjvals = cmdbuf.isp_bgobjvals as u64 | 0x400;
+        #[ver(G != G15)]
         let reload_zlsctrl = cmdbuf.zls_ctrl;
-        let iogpu_unk54 = 0x3a0012006b0003;
-        let iogpu_unk56 = 1;
+        let iogpu_unk54: u64 = 0x3a0012006b0003;
+        let iogpu_unk56: u64 = 1;
         #[ver(G < G14)]
         let tiling_control_2 = 0;
         #[ver(G >= G14X)]
@@ -453,13 +756,16 @@ impl super::QueueInner::ver {
         let vtx_unk_f0 = 0x1c;
         #[ver(G < G14)]
         let vtx_unk_f0 = 0x1c + (align(tile_info.meta1_blocks, 4) as u64);
-        let vtx_unk_118 = 0x1c;
+        #[ver(G != G15)]
+        let vtx_unk_118: u64 = 0x1c;
 
         // DRM_ASAHI_RENDER_DBIAS_IS_INT chosen to match hardware bit.
+        #[ver(G != G15)]
         let isp_ctl = 0xc000u32
             | (cmdbuf.flags & uapi::drm_asahi_render_flags_DRM_ASAHI_RENDER_DBIAS_IS_INT as u32);
 
         // Always allow preemption at the UAPI level
+        #[ver(G != G15)]
         let no_preemption = false;
 
         mod_dev_dbg!(self.dev, "[Submission {}] Create Frag\n", id);
@@ -482,13 +788,13 @@ impl super::QueueInner::ver {
 
                         let start_frag = builder.add(microseq::StartFragment::ver {
                             header: microseq::op::StartFragment::HEADER,
-                            #[ver(G < G14X)]
+                            #[ver(G < G14X && G != G15)]
                             job_params2: Some(inner_weak_ptr!(ptr, job_params2)),
-                            #[ver(G < G14X)]
+                            #[ver(G < G14X && G != G15)]
                             job_params1: Some(inner_weak_ptr!(ptr, job_params1)),
-                            #[ver(G >= G14X)]
+                            #[ver(G >= G14X || G == G15)]
                             job_params1: None,
-                            #[ver(G >= G14X)]
+                            #[ver(G >= G14X || G == G15)]
                             job_params2: None,
                             #[ver(G >= G14X)]
                             registers: inner_weak_ptr!(ptr, registers),
@@ -496,7 +802,10 @@ impl super::QueueInner::ver {
                             stats,
                             busy_flag: inner_weak_ptr!(ptr, busy_flag),
                             tvb_overflow_count: inner_weak_ptr!(ptr, tvb_overflow_count),
+                            #[ver(G != G15)]
                             unk_pointer: inner_weak_ptr!(ptr, unk_pointee),
+                            #[ver(G == G15)]
+                            unk_pointer: inner_weak_ptr!(ptr, g15_raw_render_4b6_nonzero_ba0),
                             work_queue: ev_frag.info_ptr,
                             work_item: ptr,
                             vm_slot: vm_bind.slot(),
@@ -506,8 +815,14 @@ impl super::QueueInner::ver {
                             sync_grow: 0,
                             event_seq: U64(ev_frag.event_seq),
                             unk_68: 0,
+                            #[ver(G != G15)]
                             unk_758_flag: inner_weak_ptr!(ptr, unk_758_flag),
+                            #[ver(G == G15)]
+                            unk_758_flag: inner_weak_ptr!(ptr, g15_zero_a48),
+                            #[ver(G != G15)]
                             unk_job_buf: inner_weak_ptr!(ptr, unk_buf_0),
+                            #[ver(G == G15)]
+                            unk_job_buf: inner_weak_ptr!(ptr, g15_zero_bd8),
                             #[ver(V >= V13_3)]
                             unk_7c_0: U64(0),
                             unk_7c: 0,
@@ -522,6 +837,7 @@ impl super::QueueInner::ver {
                             notifier_buf: inner_weak_ptr!(notifier.weak_pointer(), state.unk_buf),
                         })?;
 
+                        #[ver(G != G15)]
                         if frg_user_timestamps.any() {
                             builder.add(microseq::Timestamp::ver {
                                 header: microseq::op::Timestamp::new(true),
@@ -546,6 +862,7 @@ impl super::QueueInner::ver {
                             header: microseq::op::WaitForIdle2::HEADER,
                         })?;
 
+                        #[ver(G != G15)]
                         if frg_user_timestamps.any() {
                             builder.add(microseq::Timestamp::ver {
                                 header: microseq::op::Timestamp::new(false),
@@ -573,13 +890,19 @@ impl super::QueueInner::ver {
                             buffer: scene.weak_buffer_pointer(),
                             unk_2c: U64(1),
                             stats,
+                            #[ver(G != G15)]
                             unk_pointer: inner_weak_ptr!(ptr, unk_pointee),
+                            #[ver(G == G15)]
+                            unk_pointer: inner_weak_ptr!(ptr, g15_raw_render_4b6_nonzero_ba0),
                             busy_flag: inner_weak_ptr!(ptr, busy_flag),
                             work_queue: ev_frag.info_ptr,
                             work_item: ptr,
                             vm_slot: vm_bind.slot(),
                             unk_60: 0,
+                            #[ver(G != G15)]
                             unk_758_flag: inner_weak_ptr!(ptr, unk_758_flag),
+                            #[ver(G == G15)]
+                            unk_758_flag: inner_weak_ptr!(ptr, g15_zero_a48),
                             #[ver(V >= V13_3)]
                             unk_6c_0: U64(0),
                             unk_6c: U64(0),
@@ -610,7 +933,9 @@ impl super::QueueInner::ver {
                 })
             },
             |inner, _ptr| {
+                #[ver(G != G15)]
                 let vm_slot = vm_bind.slot();
+                #[ver(G != G15)]
                 let aux_fb_info = fw::fragment::raw::AuxFBInfo::ver {
                     isp_ctl: isp_ctl,
                     unk2: 0,
@@ -624,26 +949,79 @@ impl super::QueueInner::ver {
                     tag: fw::workqueue::CommandType::RunFragment,
                     #[ver(V >= V13_0B4)]
                     counter: U64(count_frag),
+                    #[ver(G != G15)]
                     vm_slot,
+                    #[ver(G == G15)]
+                    g15_context_id_c: 0,
+                    #[ver(G != G15)]
                     unk_8: 0,
+                    #[ver(G != G15)]
                     microsequence: inner.micro_seq.gpu_pointer(),
+                    #[ver(G != G15)]
                     microsequence_size: inner.micro_seq.len() as u32,
+                    #[ver(G == G15)]
+                    g15_pad_10: Default::default(),
+                    #[ver(G != G15)]
                     notifier: inner.notifier.gpu_pointer(),
+                    #[ver(G != G15)]
                     buffer: inner.scene.buffer_pointer(),
+                    #[ver(G != G15)]
                     scene: inner.scene.gpu_pointer(),
+                    #[ver(G != G15)]
                     unk_buffer_buf: inner.scene.kernel_buffer_pointer(),
+                    #[ver(G == G15)]
+                    g15_cmd_buffer_state_398_20: U64(0),
+                    #[ver(G == G15)]
+                    g15_buffer_fwva_28: U64(inner.scene.buffer_pointer().into()),
+                    #[ver(G == G15)]
+                    g15_pm_record_fwva_30: U64(g15_pm_record_gpuva),
+                    #[ver(G == G15)]
+                    g15_pm_state_fwva_38: U64(0),
+                    #[ver(G != G15)]
                     tvb_tilemap: inner.scene.tvb_tilemap_pointer(),
+                    #[ver(G != G15)]
                     ppp_multisamplectl: U64(cmdbuf.ppp_multisamplectl),
+                    #[ver(G != G15)]
                     samples: cmdbuf.samples as u32,
+                    #[ver(G != G15)]
                     tiles_per_mtile_y: tile_info.tiles_per_mtile_y as u16,
+                    #[ver(G != G15)]
                     tiles_per_mtile_x: tile_info.tiles_per_mtile_x as u16,
+                    #[ver(G != G15)]
                     unk_50: U64(0),
+                    #[ver(G != G15)]
                     unk_58: U64(0),
+                    #[ver(G != G15)]
                     isp_merge_upper_x: F32::from_bits(cmdbuf.isp_merge_upper_x),
+                    #[ver(G != G15)]
                     isp_merge_upper_y: F32::from_bits(cmdbuf.isp_merge_upper_y),
+                    #[ver(G != G15)]
                     unk_68: U64(0),
+                    #[ver(G != G15)]
                     tile_count: U64(tile_info.tiles as u64),
-                    #[ver(G < G14X)]
+                    #[ver(G == G15)]
+                    g15_rtm_298_addr_40: U64(0),
+                    #[ver(G == G15)]
+                    g15_rtm_b0_48: U64(0),
+                    #[ver(G == G15)]
+                    g15_rtm_b8_50: 0,
+                    #[ver(G == G15)]
+                    g15_rtm_bc_54: 0,
+                    #[ver(G == G15)]
+                    g15_rtm_20_low_58: 0,
+                    #[ver(G == G15)]
+                    g15_pad_5c: 0,
+                    #[ver(G == G15)]
+                    g15_rtm_c0_cc_60: Default::default(),
+                    #[ver(G == G15)]
+                    g15_rtm_d0_d4_70: Default::default(),
+                    #[ver(G == G15)]
+                    g15_rtm_118_78: 0,
+                    #[ver(G == G15)]
+                    g15_pad_7c: 0,
+                    #[ver(G == G15)]
+                    _g15_lifetime: core::marker::PhantomData,
+                    #[ver(G < G14X && G != G15)]
                     job_params1 <- try_init!(fw::fragment::raw::JobParameters1::ver {
                         utile_config,
                         unk_4: 0,
@@ -698,7 +1076,7 @@ impl super::QueueInner::ver {
                         #[ver(V < V13_0B4)]
                         __pad1: Default::default(),
                     }),
-                    #[ver(G < G14X)]
+                    #[ver(G < G14X && G != G15)]
                     job_params2 <- try_init!(fw::fragment::raw::JobParameters2 {
                         eot_rsrc_spec: cmdbuf.eot.rsrc_spec,
                         eot_usc: cmdbuf.eot.usc,
@@ -809,6 +1187,264 @@ impl super::QueueInner::ver {
                             */
                         }
                     ),
+                    #[ver(G == G15)]
+                    registers: fw::job::raw::RegisterArray::new(
+                        inner_weak_ptr!(_ptr, registers.registers),
+                        |r| {
+                            // Exact G15G/C0 normal 3D register-list geometry and producers
+                            // are closed and emitted below. Apple also has three optional
+                            // G15 registers gated by AGXPerfCtrSampler state; fresh/inactive
+                            // sampler state makes that outer gate false, so they are not part
+                            // of the base render list and stay absent until G15 perf sampling
+                            // has its own independently correct lifecycle.
+                            // PM register 0x1ca28 is constructed from the reconstructed
+                            // per-slot Parameter Scene Allocations resource. RTM/common formulas
+                            // independently match existing kernel-owned geometry producers.
+                            let g15_isp_mtile_size: u64 = (tile_info.utiles_per_mtile_y
+                                | (tile_info.utiles_per_mtile_x << 16))
+                                .into();
+                            let g15_te_screen: u64 = tile_info.params.te_screen.into();
+                            // Stable hardware-register semantics independently match the
+                            // pre-G15 m1n1 map, while Apple G15 emits these sources unchanged.
+                            let g15_fb_dimensions: u64 =
+                                ((cmdbuf.height_px as u64) << 32) | cmdbuf.width_px as u64;
+                            let g15_pixels_per_utile = (cmdbuf.utile_width_px as u32)
+                                * (cmdbuf.utile_height_px as u32);
+                            let g15_samples_per_utile = g15_pixels_per_utile << samples_log2;
+                            let g15_blocks_per_utile =
+                                ((cmdbuf.sample_size_B as u32) * g15_samples_per_utile)
+                                    .div_ceil(2048);
+                            let g15_aux_fb: u64 = inner.aux_fb.gpu_pointer().into();
+                            let g15_rgn_stride: u64 = (tile_info.params.rgn_size as u64) << 26;
+                            // Exact Apple selectors include private modes 2/3, but Linux's
+                            // existing render ABI exposes only the historical normal tiler mode
+                            // (`unk1=false`).  That closes the Linux producers at 0x280 /
+                            // 0x20_00000000 without guessing private Apple mode semantics.
+                            let g15_process_empty_tiles = cmdbuf.flags
+                                & uapi::drm_asahi_render_flags_DRM_ASAHI_RENDER_PROCESS_EMPTY_TILES
+                                    as u32
+                                != 0;
+                            let g15_tile_config = g15_fragment_tile_config_linux(
+                                cmdbuf.layers as u32,
+                                g15_process_empty_tiles,
+                            );
+                            let g15_tilecfg = g15_fragment_tilecfg_linux(
+                                utile_config,
+                                cmdbuf.layers as u32,
+                                tile_info.params.te_screen,
+                            );
+                            let g15_pm_scene_reg_1ca28 = g15_pm_scene_slice_gpuva & !0xf;
+                            // G15 Fragment 0x1a0a9 is the initial-load-clear state.
+                            // Apple keeps this separate from process-empty-tiles; the UAPI
+                            // mirrors that distinction explicitly. Native resolve is absent
+                            // from Honeykrisp's separate-resolve path, so its second byte is 0.
+                            let g15_clear_reg_1a0a9 =
+                                g15_render_clear_state(g15_has_load_clear);
+                            // Apple userspace G15G C0 initializes the raw Render command
+                            // with bzero(0x870).  The late +0x648/+0x650/+0x658 fields are
+                            // only populated when an MTLRasterizationRateMap implementation
+                            // exists; current Asahi UAPI/Mesa expose no such state and Mesa
+                            // explicitly disables fragment-shading-rate support.  Raw +0x660
+                            // has no normal Render writer after the same zero initialization.
+                            // Keep these exact Linux-normal values type-checked while the
+                            // complete G15 RegisterArray remains deliberately non-emitting.
+                            // Apple raw Render +0x640 is the memoryless-render state:
+                            // isMemorylessRender returns framebuffer +0xf75 exactly, and the
+                            // only end-pass override (+0x8f3c) is initialized zero with no
+                            // producer in the analyzed G15G userspace path. Linux Asahi does
+                            // not support memoryless render targets, so the exact current-Linux
+                            // value for Fragment 0x1a0b1 (and shared TA 0x1a0a1) is zero.
+                            // The raw +0x450/+0x454/+0x458 extension is another
+                            // rasterization-rate-map cluster. assignRenderRegisters()
+                            // publishes framebuffer +0x1488/+0x1490 only when the same
+                            // +0x147c VRS gate is active; current Linux has no such path.
+                            // Hence 0x101c1/0x0d469 are zero, while dynamic 0x10791 takes
+                            // the normal desc+0x6a1==0 gate branch and equals 0xff0200.
+                            // Normal G15 Render leaves raw +0x4bc zero. The
+                            // apparent setDepthStencilState() writer is an internal
+                            // RenderContext cache at impl+0x9620, not the raw command.
+                            // Firmware therefore selects 0x8860; J615 MGPU=1 means
+                            // the >=5-MGPU |0x1c contribution is absent.
+                            let g15_reg_100b8: u64 = 0x8860;
+                            // Raw Render +0x2e8 is the native-resolve auxiliary buffer.
+                            // Apple only allocates framebuffer +0x1500 when its native
+                            // in-render resolve state (+0x7ca) is active, then publishes it
+                            // here conditionally. Honeykrisp resolves in a separate control
+                            // stream, so the exact current-Linux value for G15 0x15231 is 0.
+                            let g15_native_resolve_reg_15231: u64 = 0;
+                            // Raw Render +0x5f0 is covered by the same 0x870-byte bzero.
+                            // No AGXRenderCommandRec producer writes it; apparent +0x5f0
+                            // stores target framebuffer/program/geometry argument objects.
+                            // G15 masks descriptor +0x3a8 (raw +0x5f0) with ~0xff for 0x16058.
+                            let g15_raw5f0_reg_16058: u64 = 0;
+                            // G15 raw Render +0x388/+0x398 also remain at the command bzero
+                            // default. Apparent userspace writers at these literal offsets
+                            // target framebuffer/geometry/compute state objects, not the raw
+                            // AGXRenderCommandRec. Firmware forwards them as 0x15021/0x15049.
+                            let g15_aux_reg_15021: u64 = 0;
+                            let g15_aux_reg_15049: u64 = 0;
+                            // G15 framebuffer +0xfa0/+0xfa8 are the normal depth texture
+                            // GPUVA masked to 128-byte alignment; +0xfb0 is the equivalent
+                            // stencil GPUVA. Native resolve only patches +0xfa8/+0xfb8, and
+                            // Honeykrisp resolves separately, so existing attachment bases close
+                            // 0x15221/0x15239/0x15229 without a new userspace producer.
+                            let g15_depth_aux_reg_15221: u64 = cmdbuf.depth.base & !0x7f;
+                            let g15_depth_aux_reg_15239: u64 = cmdbuf.depth.base & !0x7f;
+                            let g15_stencil_aux_reg_15229: u64 = cmdbuf.stencil.base & !0x7f;
+                            // Raw Render +0x600 survives the 0x870-byte command bzero.
+                            // All apparent +0x600 writers in Apple userspace target
+                            // RenderContext/ThreadedRenderPass/FramebufferConfig objects;
+                            // no AGXRenderCommandRec producer writes this field. Firmware
+                            // masks it with 0x1f for both G15 0x120a1 and G15G 0x101e9.
+                            let g15_raw600_reg_120a1: u64 = 0;
+                            let g15_raw600_reg_101e9: u64 = 0;
+                            let g15_vrs_reg_101c1: u64 = 0;
+                            let g15_vrs_reg_0d469: u64 = 0;
+                            let g15_vrs_reg_10791: u64 = 0xff0200;
+                            let g15_memoryless_reg_1a0b1: u64 = 0;
+                            let g15_vrs_reg_1a079: u64 = 0;
+                            let g15_vrs_reg_1a081: u64 = 0;
+                            let g15_vrs_reg_1a0d9: u64 = 0;
+                            let g15_vrs_reg_1a0e1: u64 = 0;
+                            // Apple copies the sampled-render flag (only 0/1) to raw
+                            // Render +0x674. G15 0x1a0f9 masks that dword with
+                            // 0xfffffff8, so its exact value is zero in both cases.
+                            let g15_sampled_reg_1a0f9: u64 = 0;
+                            // Exact G15 EOT 0x15351 is the GPUVA of the
+                            // userspace-generated I/O-to-register ESL bytecode.
+                            // Apple inserts address bits 6..47 and leaves the
+                            // remaining bits zero on the ordinary 24G84 path.
+                            // Honeykrisp now owns the command-lifetime ESL allocation and
+                            // the UAPI validation above guarantees the exact 64-byte-aligned
+                            // 48-bit GPUVA form consumed by the ordinary G15 register.
+                            let g15_eot_state_loader_reg_15351: u64 =
+                                cmdbuf.eot_state_loader;
+                            // Exact normal G15G/C0 Fragment list. The initial 0x1739 seed
+                            // is outside the 74 helper-emitted entries in the Apple trace.
+                            // The conditional 0x17e1 VRS seed is absent because current Linux
+                            // has no rasterization-rate-map producer (g15_vrs_reg_101c1 == 0).
+                            r.add(0x1739, 1);
+                            r.add(0x10009, utile_config.into());
+                            r.add(0x15379, cmdbuf.eot.rsrc_spec.into());
+                            r.add(0x15381, cmdbuf.eot.usc.into());
+                            r.add(0x15369, cmdbuf.bg.rsrc_spec.into());
+                            r.add(0x15371, cmdbuf.bg.usc.into());
+                            r.add(0x15131, cmdbuf.isp_merge_upper_x.into());
+                            r.add(0x15139, cmdbuf.isp_merge_upper_y.into());
+                            r.add(0x100a1, 0);
+                            r.add(0x15069, 0);
+                            r.add(0x15071, 0);
+                            r.add(0x16058, g15_raw5f0_reg_16058);
+                            r.add(0x10019, cmdbuf.ppp_multisamplectl);
+                            r.add(0x100b1, g15_isp_mtile_size);
+                            r.add(0x16030, g15_isp_mtile_size);
+                            r.add(0x100d9, g15_te_screen);
+                            r.add(0x10791, g15_vrs_reg_10791);
+                            r.add(0x16098, inner.scene.tvb_heapmeta_pointer().into());
+                            r.add(0x15109, cmdbuf.isp_scissor_base & !0x3);
+                            r.add(0x15101, cmdbuf.isp_dbias_base & !0x3);
+                            r.add(0x15021, g15_aux_reg_15021);
+                            r.add(0x15211, g15_fb_dimensions);
+                            r.add(0x15049, g15_aux_reg_15049);
+                            r.add(0x10051, g15_blocks_per_utile.into());
+                            r.add(0x15321, cmdbuf.isp_zls_pixels.into());
+                            r.add(0x15301, cmdbuf.isp_bgobjdepth.into());
+                            r.add(0x15309, load_bgobjvals);
+                            r.add(0x15311, cmdbuf.isp_oclqry_base & !0xf);
+                            r.add(0x15319, cmdbuf.zls_ctrl);
+                            r.add(0x15349, 0);
+                            r.add(0x15351, g15_eot_state_loader_reg_15351);
+                            r.add(0x15329, cmdbuf.depth.base);
+                            r.add(0x15331, cmdbuf.depth.base);
+                            r.add(0x15339, cmdbuf.stencil.base);
+                            r.add(0x15341, cmdbuf.stencil.base);
+                            r.add(0x15231, g15_native_resolve_reg_15231);
+                            r.add(0x15221, g15_depth_aux_reg_15221);
+                            r.add(0x15239, g15_depth_aux_reg_15239);
+                            r.add(0x15229, g15_stencil_aux_reg_15229);
+                            r.add(0x15401, cmdbuf.depth.stride as u64);
+                            r.add(0x15421, cmdbuf.depth.stride as u64);
+                            r.add(0x15409, cmdbuf.stencil.stride as u64);
+                            r.add(0x15429, cmdbuf.stencil.stride as u64);
+                            r.add(0x153c1, cmdbuf.depth.comp_base);
+                            r.add(0x15411, cmdbuf.depth.comp_stride as u64);
+                            r.add(0x153c9, cmdbuf.depth.comp_base);
+                            r.add(0x15431, cmdbuf.depth.comp_stride as u64);
+                            r.add(0x153d1, cmdbuf.stencil.comp_base);
+                            r.add(0x15419, cmdbuf.stencil.comp_stride as u64);
+                            r.add(0x153d9, cmdbuf.stencil.comp_base);
+                            r.add(0x15439, cmdbuf.stencil.comp_stride as u64);
+                            r.add(0x16429, inner.scene.tvb_tilemap_pointer().into());
+                            r.add(0x16060, inner.scene.tvb_layermeta_pointer().into());
+                            r.add(0x16431, g15_rgn_stride);
+                            r.add(0x10039, g15_tile_config);
+                            r.add(0x16020, 0);
+                            r.add(0x16451, 0);
+                            r.add(0x15359, 0);
+                            r.add(0x100b8, g15_reg_100b8);
+                            r.add(0x16461, g15_aux_fb);
+                            r.add(0x16090, g15_aux_fb);
+                            r.add(0x120a1, g15_raw600_reg_120a1);
+                            r.add(0x101e9, g15_raw600_reg_101e9);
+                            r.add(0x16068, g15_tilecfg);
+                            r.add(0x1a0a9, g15_clear_reg_1a0a9);
+                            r.add(0x1a0b1, g15_memoryless_reg_1a0b1);
+                            r.add(0x1a079, g15_vrs_reg_1a079);
+                            r.add(0x1a081, g15_vrs_reg_1a081);
+                            r.add(0x1a0d9, g15_vrs_reg_1a0d9);
+                            r.add(0x1a0e1, g15_vrs_reg_1a0e1);
+                            r.add(0x101c1, g15_vrs_reg_101c1);
+                            r.add(0x0d469, g15_vrs_reg_0d469);
+                            r.add(0x1a0f9, g15_sampled_reg_1a0f9);
+                            r.add(0x1c838, 0xffff_ffff);
+                            r.add(0x1ca28, g15_pm_scene_reg_1ca28);
+
+                            let _ = (
+                                g15_fb_dimensions,
+                                g15_blocks_per_utile,
+                                g15_aux_fb,
+                                frg_unk_158,
+                                utile_config,
+                                g15_isp_mtile_size,
+                                g15_te_screen,
+                                g15_rgn_stride,
+                                g15_tile_config,
+                                g15_tilecfg,
+                                g15_pm_record_index,
+                                g15_pm_scene_slice_offset,
+                                g15_pm_scene_slice_gpuva,
+                                g15_pm_scene_reg_1ca28,
+                                g15_clear_reg_1a0a9,
+                                g15_reg_100b8,
+                                g15_native_resolve_reg_15231,
+                                g15_raw5f0_reg_16058,
+                                g15_aux_reg_15021,
+                                g15_aux_reg_15049,
+                                g15_depth_aux_reg_15221,
+                                g15_depth_aux_reg_15239,
+                                g15_stencil_aux_reg_15229,
+                                g15_raw600_reg_120a1,
+                                g15_raw600_reg_101e9,
+                                g15_vrs_reg_101c1,
+                                g15_vrs_reg_0d469,
+                                g15_vrs_reg_10791,
+                                g15_memoryless_reg_1a0b1,
+                                g15_vrs_reg_1a079,
+                                g15_vrs_reg_1a081,
+                                g15_vrs_reg_1a0d9,
+                                g15_vrs_reg_1a0e1,
+                                g15_sampled_reg_1a0f9,
+                                g15_eot_state_loader_reg_15351,
+                                g15_pm_record_gpuva,
+                                g15_pm_page_metrics_gpuva,
+                                load_bgobjvals,
+                                inner.scene.tvb_tilemap_pointer(),
+                                inner.scene.tvb_heapmeta_pointer(),
+                                inner.scene.tvb_layermeta_pointer(),
+                            );
+                        },
+                    ),
+                    #[ver(G != G15)]
                     job_params3 <- try_init!(fw::fragment::raw::JobParameters3::ver {
                         isp_dbias_base: fw::fragment::raw::ArrayAddr {
                             ptr: U64(cmdbuf.isp_dbias_base),
@@ -871,12 +1507,26 @@ impl super::QueueInner::ver {
                         unk_390_0: U64(0x0),
                         isp_zls_pixels: U64(cmdbuf.isp_zls_pixels as u64),
                     }),
+                    #[ver(G == G15)]
+                    g15_job_params3: Default::default(),
+                    #[ver(G != G15)]
                     unk_758_flag: 0,
+                    #[ver(G != G15)]
                     unk_75c_flag: 0,
+                    #[ver(G == G15)]
+                    g15_zero_a48: 0,
+                    #[ver(G == G15)]
+                    g15_pad_a4c: 0,
+                    #[ver(G != G15)]
                     unk_buf: Default::default(),
+                    #[ver(G == G15)]
+                    g15_raw_render_2d8_a50: U64(0),
+                    #[ver(G == G15)]
+                    g15_zero_a58: Default::default(),
                     busy_flag: 0,
                     tvb_overflow_count: 0,
                     unk_878: 0,
+                    #[ver(G != G15)]
                     encoder_params <- try_init!(fw::job::raw::EncoderParams {
                         // Maybe set when reloading z/s?
                         unk_8: 0,
@@ -889,16 +1539,44 @@ impl super::QueueInner::ver {
                         sampler_count: cmdbuf.sampler_count as u32,
                         sampler_max: (cmdbuf.sampler_count as u32) + 1,
                     }),
+                    #[ver(G == G15)]
+                    g15_encoder_state <- try_init!(fw::fragment::raw::G15EncoderState {
+                        zero_b6c: 0,
+                        zero_b70: 0,
+                        zero_b74: 0,
+                        zero_b78: 0,
+                        // Apple sources below are exact; Linux has no G15 raw producer yet.
+                        raw_render_2dd_b7c: 0,
+                        raw_render_1c0_nonzero_b80: 0,
+                        raw_render_60c_b84: 0,
+                        raw_render_608_610_b88: U64(0),
+                        raw_render_614_b90: 0,
+                    }),
+                    #[ver(G != G15)]
                     process_empty_tiles: (cmdbuf.flags
                         & uapi::drm_asahi_render_flags_DRM_ASAHI_RENDER_PROCESS_EMPTY_TILES as u32
                         != 0) as u32,
+                    #[ver(G != G15)]
                     // TODO: needs to be investigated
                     no_clear_pipeline_textures: 1,
+                    #[ver(G != G15)]
                     // TODO: needs to be investigated
                     msaa_zs: 0,
+                    #[ver(G != G15)]
                     unk_pointee: 0,
-                    #[ver(V >= V13_3)]
+                    #[ver(G == G15)]
+                    g15_raw_render_618_b94: 0,
+                    #[ver(G == G15)]
+                    g15_raw_render_5d8_b98: 0,
+                    #[ver(G == G15)]
+                    g15_raw_render_5d9_b9c: 0,
+                    #[ver(G == G15)]
+                    g15_raw_render_4b6_nonzero_ba0: 0,
+                    #[ver(V >= V13_3 && G != G15)]
                     unk_v13_3: 0,
+                    #[ver(G == G15)]
+                    g15_raw_render_4b8_ba4: U32(0),
+                    #[ver(G != G15)]
                     meta <- try_init!(fw::job::raw::JobMeta {
                         unk_0: 0,
                         unk_2: 0,
@@ -912,27 +1590,88 @@ impl super::QueueInner::ver {
                         uuid: uuid_3d,
                         event_seq: ev_frag.event_seq as u32,
                     }),
+                    #[ver(G == G15)]
+                    meta <- try_init!(fw::job::raw::G15JobMeta {
+                        // J615/G15G C0 Apple submission writes raw Render
+                        // byte +0x4c0 != 0 to command +0xba8. The accelerator
+                        // gate is fixed enabled (+0x1dd8=1), while +0x1dd9
+                        // remains zero from zeroed allocation through setup.
+                        // Linux has no G15 raw producer yet: fail closed.
+                        engine_state: U32(0),
+                        stamp: ev_frag.stamp_pointer,
+                        fw_stamp: ev_frag.fw_stamp_pointer,
+                        stamp_value: ev_frag.value.next(),
+                        stamp_slot: ev_frag.slot,
+                        evctl_index: 0, // fixed
+                        flush_stamps: flush_stamps as u32,
+                        uuid: uuid_3d,
+                        event_seq: ev_frag.event_seq as u32,
+                    }),
+                    #[ver(G != G15)]
                     unk_after_meta: unk1.into(),
+                    #[ver(G == G15)]
+                    g15_raw_render_619_eq_2_bd4: U32(0),
+                    #[ver(G != G15)]
                     unk_buf_0: U64(0),
+                    #[ver(G != G15)]
                     unk_buf_8: U64(0),
-                    #[ver(G < G14X)]
+                    #[ver(G < G14X && G != G15)]
                     unk_buf_10: U64(1),
-                    #[ver(G >= G14X)]
+                    #[ver(G >= G14X && G != G15)]
                     unk_buf_10: U64(0),
+                    #[ver(G == G15)]
+                    g15_zero_bd8: U64(0),
+                    #[ver(G == G15)]
+                    g15_zero_be0: U64(0),
+                    #[ver(G == G15)]
+                    g15_zero_be8: U64(0),
+                    #[ver(G != G15)]
                     command_time: U64(0),
+                    #[ver(G == G15)]
+                    g15_zero_bf0: U64(0),
+                    #[ver(G != G15)]
                     timestamp_pointers <- try_init!(fw::job::raw::TimestampPointers {
                         start_addr: Some(inner_ptr!(inner.timestamps.gpu_pointer(), frag.start)),
                         end_addr: Some(inner_ptr!(inner.timestamps.gpu_pointer(), frag.end)),
                     }),
+                    #[ver(G != G15)]
                     user_timestamp_pointers: inner.user_timestamps.pointers()?,
+                    #[ver(G == G15)]
+                    g15_segment_resource_list_fwva_bf8: U64(0),
+                    #[ver(G == G15)]
+                    g15_block_fence_time0_fwva_c00: U64(0),
+                    #[ver(G == G15)]
+                    g15_mtl_counter_fw_token_0_c08: U64(0),
+                    #[ver(G == G15)]
+                    g15_mtl_counter_fw_token_1_c10: U64(0),
+                    #[ver(G != G15)]
                     client_sequence: slot_client_seq,
+                    #[ver(G != G15)]
                     pad_925: Default::default(),
+                    #[ver(G != G15)]
                     unk_928: 0,
+                    #[ver(G != G15)]
                     unk_92c: 0,
-                    #[ver(V >= V13_0B4)]
+                    #[ver(V >= V13_0B4 && G != G15)]
                     unk_ts: U64(0),
-                    #[ver(V >= V13_0B4)]
+                    #[ver(V >= V13_0B4 && G != G15)]
                     unk_92d_8: Default::default(),
+                    #[ver(G == G15)]
+                    g15_pad_c18: Default::default(),
+                    #[ver(G == G15)]
+                    g15_uma_page_pool_state_fwva_c1e: U64(0),
+                    #[ver(G == G15)]
+                    g15_uma_prepared_c26: 0,
+                    #[ver(G == G15)]
+                    g15_uma_min_pool_size_c27: U64(0),
+                    #[ver(G == G15)]
+                    g15_uma_ideal_pool_size_c2f: U64(0),
+                    #[ver(G == G15)]
+                    g15_uma_metrics_fwva_c37: U64(0),
+                    #[ver(G == G15)]
+                    g15_context_id_generation_c3f: 0,
+                    #[ver(G == G15)]
+                    g15_sku_timing_c40: Default::default(),
                 })
             },
         )?;
@@ -995,13 +1734,13 @@ impl super::QueueInner::ver {
 
                         let start_vtx = builder.add(microseq::StartVertex::ver {
                             header: microseq::op::StartVertex::HEADER,
-                            #[ver(G < G14X)]
+                            #[ver(G < G14X && G != G15)]
                             tiling_params: Some(inner_weak_ptr!(ptr, tiling_params)),
-                            #[ver(G < G14X)]
+                            #[ver(G < G14X && G != G15)]
                             job_params1: Some(inner_weak_ptr!(ptr, job_params1)),
-                            #[ver(G >= G14X)]
+                            #[ver(G >= G14X || G == G15)]
                             tiling_params: None,
-                            #[ver(G >= G14X)]
+                            #[ver(G >= G14X || G == G15)]
                             job_params1: None,
                             #[ver(G >= G14X)]
                             registers: inner_weak_ptr!(ptr, registers),
@@ -1017,7 +1756,10 @@ impl super::QueueInner::ver {
                             event_seq: U64(ev_vtx.event_seq),
                             unk_50: 0,
                             unk_pointer: inner_weak_ptr!(ptr, unk_pointee),
+                            #[ver(G != G15)]
                             unk_job_buf: inner_weak_ptr!(ptr, unk_buf_0),
+                            #[ver(G == G15)]
+                            unk_job_buf: inner_weak_ptr!(ptr, g15_barrier_state_890),
                             unk_64: 0x0, // fixed
                             unk_68: unk1.into(),
                             uuid: uuid_ta,
@@ -1033,6 +1775,7 @@ impl super::QueueInner::ver {
                             unk_178: (!clustering) as u32,
                         })?;
 
+                        #[ver(G != G15)]
                         if vtx_user_timestamps.any() {
                             builder.add(microseq::Timestamp::ver {
                                 header: microseq::op::Timestamp::new(true),
@@ -1057,6 +1800,7 @@ impl super::QueueInner::ver {
                             header: microseq::op::WaitForIdle2::HEADER,
                         })?;
 
+                        #[ver(G != G15)]
                         if vtx_user_timestamps.any() {
                             builder.add(microseq::Timestamp::ver {
                                 header: microseq::op::Timestamp::new(false),
@@ -1117,6 +1861,17 @@ impl super::QueueInner::ver {
                 let vm_slot = vm_bind.slot();
                 #[ver(G < G14)]
                 let core_masks = gpu.core_masks_packed();
+                #[ver(G == G15)]
+                let g15_ctxswitch_base: u64 = inner
+                    .scene
+                    .g15_ctxswitch_pointer()
+                    .expect("G15 Scene missing context-switch backing")
+                    .into();
+                #[ver(G == G15)]
+                let g15_ta_ctxswitch_primary = g15_ta_ctxswitch_primary_reg(g15_ctxswitch_base);
+                #[ver(G == G15)]
+                let g15_ta_ctxswitch_secondary =
+                    g15_ta_ctxswitch_secondary_reg(g15_ctxswitch_base);
 
                 try_init!(fw::vertex::raw::RunVertex::ver {
                     tag: fw::workqueue::CommandType::RunVertex,
@@ -1131,7 +1886,7 @@ impl super::QueueInner::ver {
                     scene: inner.scene.gpu_pointer(),
                     unk_buffer_buf: inner.scene.kernel_buffer_pointer(),
                     unk_34: 0,
-                    #[ver(G < G14X)]
+                    #[ver(G < G14X && G != G15)]
                     job_params1 <- try_init!(fw::vertex::raw::JobParameters1::ver {
                         unk_0: U64(if unk1 { 0 } else { 0x200 }), // sometimes 0
                         unk_8: f32!(1e-20),                       // fixed
@@ -1189,7 +1944,7 @@ impl super::QueueInner::ver {
                         unk_118: vtx_unk_118 as u32, // fixed
                         __pad: Default::default(),
                     }),
-                    #[ver(G < G14X)]
+                    #[ver(G < G14X && G != G15)]
                     tiling_params: tile_info.params,
                     #[ver(G >= G14X)]
                     registers: fw::job::raw::RegisterArray::new(
@@ -1299,6 +2054,308 @@ impl super::QueueInner::ver {
                             */
                         }
                     ),
+                    #[ver(G == G15)]
+                    registers: fw::job::raw::RegisterArray::new(
+                        inner_weak_ptr!(_ptr, registers.registers),
+                        |r| {
+                            // The ordinary J615/G15G C0 producer set and exact list
+                            // geometry are now closed. Populate the generation-specific
+                            // RegisterArray in Apple order while gpu_gen7 runtime remains
+                            // independently fail-closed.
+                            // Apple TA descriptor +0xe58 is RTM +0x2a8, the same TVB
+                            // heap-metadata address used by Fragment 0x16098. Its
+                            // 0x1c031/0x1c9c0 tag is controlled by accelerator +0x650
+                            // bit 21. Base configureDevice() clears that bit and G15/G15G
+                            // never set it, so exact J615 keeps the high-bit tag set.
+                            // Apple seeds every G15 TA list with encoded register 0x1748 = 1.
+                            // It adds encoded 0x17e1 = 1 exactly when descriptor +0x1178,
+                            // the zero-extended low dword of the selected depth mip-level
+                            // offset, is nonzero. Keep both list-header producers explicit.
+                            let g15_ta_seed_1748: u64 = 1;
+                            let g15_ta_seed_17e1: Option<u64> =
+                                if (cmdbuf.depth_level_offset as u32) != 0 {
+                                    Some(1)
+                                } else {
+                                    None
+                                };
+                            let g15_ta_tiler_mode_10141 = G15_LINUX_TILER_MODE_10141;
+                            let g15_ta_tilemap: u64 = inner.scene.tvb_tilemap_pointer().into();
+                            let g15_ta_layermeta: u64 =
+                                inner.scene.tvb_layermeta_pointer().into();
+                            let g15_ta_rgn_size: u64 = tile_info.params.rgn_size.into();
+                            // RTM +0xf0 independently reconstructs the same utile/sample
+                            // encoding as Linux `utile_config`. RTM +0xf8 is packed from
+                            // the same AGXSampleOffsetRec as Fragment RTM +0xb0, making
+                            // TA 0x10139 the same PPP_MULTISAMPLECTL value.
+                            let g15_ta_utile_config: u64 = utile_config.into();
+                            let g15_ta_ppp_multisamplectl = cmdbuf.ppp_multisamplectl;
+                            // Apple beginRenderPass() publishes raw Render +0x000
+                            // as the GPUVA of the VDM stream cursor: RenderContext +0x40 is
+                            // the CPU write cursor and +0x50 is its GPUVA translation delta.
+                            // The G15 TA generator clears the low two address bits for 0x1c880.
+                            let g15_ta_vdm_ctrl_stream_base =
+                                cmdbuf.vdm_ctrl_stream_base & !0x3;
+                            // Apple G15 synthesizes 0x10121 (PPP_CTRL) from private raw
+                            // Render fields plus accelerator feature state.  For normal J615
+                            // that yields 0x202, exactly matching Mesa's named W-clamp +
+                            // fixed-point-format value.  Linux UAPI already carries the final
+                            // hardware PPP_CTRL value, as it does for earlier generations, so
+                            // the Linux-side producer is the existing raw register value.
+                            // Apple-only exceptional 0x600e/0x800 modes remain documented
+                            // separately and do not need to be invented by the kernel.
+                            let g15_ta_ppp_ctrl: u64 = cmdbuf.ppp_ctrl.into();
+                            // Exact G15 RTM geometry maps back onto Linux TilingParameters.
+                            let g15_ta_ppp_screen: u64 = tile_info.params.x_max as u64
+                                | ((tile_info.params.y_max as u64) << 16);
+                            let g15_ta_te_screen: u64 = tile_info.params.te_screen.into();
+                            let g15_ta_te_mtile1: u64 = tile_info.params.te_mtile1.into();
+                            let g15_ta_te_mtile2: u64 = tile_info.params.te_mtile2.into();
+                            let g15_ta_tiles_per_mtile: u64 =
+                                tile_info.params.tiles_per_mtile.into();
+                            let g15_ta_tpc_stride: u64 = tile_info.params.tpc_stride.into();
+                            // Apple G15 desc +0xe18 is the first GTP-only RTM subregion.
+                            // Its size is 0x80 * utiles_per_mtile * layers * MGPUs,
+                            // algebraically matching Linux TPC storage, and the established
+                            // G14X RegisterArray maps the same 0x1c0a1 register to TE_TPC_ADDR.
+                            // This is the exact G15 producer for 0x1c0a1.
+                            let g15_ta_tpc_pointer: u64 = inner.scene.tpc_pointer().into();
+                            let g15_ta_geom_const_88: u64 = 0x88;
+                            let g15_ta_geom_const_100: u64 = 0x100;
+                            let g15_ta_process_empty_tiles = cmdbuf.flags
+                                & uapi::drm_asahi_render_flags_DRM_ASAHI_RENDER_PROCESS_EMPTY_TILES
+                                    as u32
+                                != 0;
+                            let g15_ta_render_target_max = g15_ta_render_target_max(
+                                cmdbuf.layers as u32,
+                                g15_ta_process_empty_tiles,
+                            );
+                            let g15_ta_render_target_max_masked =
+                                g15_ta_render_target_max & 0x47ff;
+                            let g15_ta_heapmeta_tagged: u64 = inner
+                                .scene
+                                .tvb_heapmeta_pointer()
+                                .or(0x8000_0000_0000_0000)
+                                .into();
+                            // G15 no longer inherits the legacy iogpu_unk54/56 register
+                            // pair verbatim. The raw Render command is bzeroed at pass start
+                            // and no normal G15 writer touches +0xa0, so TA 0x1c051 is zero.
+                            // endRenderPassCommon() writes the literal qword
+                            // 0x003a0012006b0003 to raw +0xa8; processRenderSetup exports
+                            // its low word at desc +0xdc8, making TA 0x1c061 exactly 3.
+                            let g15_ta_iogpu_reg_1c051: u64 = 0;
+                            let g15_ta_iogpu_reg_1c061: u64 = 3;
+                            // The version-expanded G15 build does not instantiate the legacy
+                            // RegisterArray branch below, so explicitly consume its shared
+                            // locals here without using them as G15 producers.
+                            let _g15_legacy_iogpu_pair = (iogpu_unk54, iogpu_unk56);
+                            // Apple G15 setupRenderCommand() uses the dedicated Scene-owned
+                            // 0x8e0-byte context-switch allocation above and publishes its
+                            // base/+0x280 pair at raw +0x68/+0x60. The inherited preempt
+                            // accessors remain compiled only for shared Scene layout coverage;
+                            // they are not G15 TA producers.
+                            let _g15_legacy_preempt_layout = (
+                                inner.scene.preempt_buf_1_pointer(),
+                                inner.scene.preempt_buf_2_pointer(),
+                                inner.scene.preempt_buf_3_pointer(),
+                            );
+                            // Apple endRenderPassCommon() explicitly zeros raw Render
+                            // +0x1b8 on the current command before submission. The G15 TA
+                            // generator masks its low five bits into both 0x12099 and the
+                            // G15G/C0 dynamic encoded register 0x101e1.
+                            let g15_ta_raw1b8_reg_12099: u64 = 0;
+                            let g15_ta_raw1b8_reg_101e1: u64 = 0;
+                            // Apple FramebufferGen3_2 publishes the stencil ZLS
+                            // tuple into raw TA +0x170..+0x190. Exact constructor tracing
+                            // identifies framebuffer +0x9c8 as the stencil texture and
+                            // Texture +0x1f8 as G15 CompressionMetadata. The five raw fields
+                            // are selected mip-level offset, layer stride, compression-metadata
+                            // base, compression-metadata layer stride, and stencil base. Host
+                            // processRenderSetup copies them verbatim to descriptor +0xd10..
+                            // +0xd30; G15 TA then masks all five to 256-byte granularity for
+                            // 0x1c199/0x1c1a1/0x1c1a9/0x1c1b1/0x1c1b9. Honeykrisp's ZLS
+                            // UAPI already carries exactly these semantics. Apple may rewrite
+                            // store-side state for native in-render resolve; Linux resolves in
+                            // a separate control stream, so the common UAPI tuple is exact.
+                            let g15_ta_stencil_level_reg_1c199 =
+                                cmdbuf.stencil_level_offset & !0xff;
+                            let g15_ta_stencil_stride_reg_1c1a1 =
+                                (cmdbuf.stencil.stride as u64) & !0xff;
+                            let g15_ta_stencil_comp_base_reg_1c1a9 =
+                                cmdbuf.stencil.comp_base & !0xff;
+                            let g15_ta_stencil_comp_stride_reg_1c1b1 =
+                                (cmdbuf.stencil.comp_stride as u64) & !0xff;
+                            let g15_ta_stencil_base_reg_1c1b9 =
+                                cmdbuf.stencil.base & !0xff;
+                            // Framebuffer construction stores the same stencil
+                            // CompressionMetadata base at +0xff0/+0xff8 and the same metadata
+                            // stride at +0x1008/+0x1018. assignRenderRegisters publishes the
+                            // latter duplicate pair at raw +0x1a8/+0x1b0; G15 TA packs it into
+                            // 0x1c950. This register is therefore not the legacy third preempt
+                            // buffer on G15.
+                            let g15_ta_stencil_comp_packed_reg_1c950 =
+                                g15_ta_stencil_comp_packed_reg(
+                                    cmdbuf.stencil.comp_base,
+                                    cmdbuf.stencil.comp_stride,
+                                );
+                            // TA 0x10151 is gated by descriptor +0xd10, the
+                            // 128-byte-aligned selected stencil mip-level offset. Descriptor
+                            // +0xd38 is zero-initialized and has no TA-path writer, reducing
+                            // Apple's `(d38 << 8) | 1` branch to a boolean enable.
+                            let g15_ta_stencil_level_enable_10151: u64 =
+                                if (cmdbuf.stencil_level_offset & !0x7f) != 0 { 1 } else { 0 };
+                            // Normal beginRenderPass() zeroes the entire 0x870-byte raw body.
+                            // Raw +0x1c4 has no Render-command writer afterwards; the only
+                            // userspace stores at displacement 0x1c4 belong to unrelated
+                            // ProgramVariant objects. processRenderSetup copies this zero byte
+                            // to descriptor +0xf49. J615 has one MGPU, so G15's alternate
+                            // `| 0x1c` multi-GPU term is absent and 0x1c8f8 is exactly 0x8860.
+                            let g15_ta_mode_reg_1c8f8: u64 = 0x8860;
+                            // The direct raw +0x640..+0x660 extension is shared with
+                            // Fragment. +0x640 is Apple's memoryless-render bit, unsupported
+                            // by current Linux; +0x648/+0x650/+0x658 are VRS/rasterization-
+                            // rate-map state behind an absent UAPI path; +0x660 stays bzero.
+                            let g15_ta_memoryless_reg_1a0a1: u64 = 0;
+                            let g15_ta_vrs_reg_1a069: u64 = 0;
+                            let g15_ta_vrs_reg_1a071: u64 = 0;
+                            let g15_ta_vrs_reg_1a0c9: u64 = 0;
+                            let g15_ta_vrs_reg_1a0d1: u64 = 0;
+                            // Raw +0x670 is written as a low dword plus sampled-render byte
+                            // at +0x674 (0/1). TA 0x1a0f1 consumes the high dword masked
+                            // with ~7, so both ordinary and sampled paths produce zero.
+                            let g15_ta_sampled_reg_1a0f1: u64 = 0;
+                            // Apple userspace initializes framebuffer +0x1038/+0x1040 from
+                            // Texture::getLevelOffset(); assignRenderRegisters() publishes
+                            // those values to raw Render +0x148/+0x150. parseAndValidate()
+                            // copies them to wrapper +0x130/+0x138, and processRenderSetup()
+                            // splits them into TA descriptor +0x1178/+0x1180/+0x1188.
+                            // Honeykrisp supplies the same semantic AIL mip-level offsets.
+                            // Feed the exact 0x101c9/0xd471 producers into the G15 list.
+                            let g15_ta_depth_level_reg_101c9 =
+                                g15_ta_depth_level_reg(cmdbuf.depth_level_offset);
+                            let g15_ta_stencil_level_reg_d471 =
+                                g15_ta_stencil_level_reg(cmdbuf.stencil_level_offset);
+                            // Dynamic G15G/C0 0x10799 gates on descriptor +0x1178, i.e.
+                            // the low dword of the same depth level state. Its nonzero branch
+                            // consumes raw +0x670 low32, Apple's render encoder correlation ID.
+                            // Keep this namespace independent from JobMeta.uuid just as Apple
+                            // does; the driver-global submission ID is the Linux encoder tag.
+                            let g15_ta_dynamic_reg_10799 = g15_ta_dynamic_reg_10799(
+                                cmdbuf.depth_level_offset,
+                                id as u32,
+                            );
+                            // Normal Apple G15 beginRenderPass() sets raw +0x1c8, so TA
+                            // 0x1ca48 is part of the ordinary list. AGXTAChannel owns one
+                            // option-0x3 range-5 payload resource; J615 topology yields an
+                            // exact 0x80000-byte allocation and channel payload field 0x200.
+                            // The inherited kernel-resource placement offset is exactly zero,
+                            // making the bound address the allocation GPUVA itself.
+                            let g15_ta_object_payload_reg_1ca48 =
+                                buffer::g15_ta_object_payload_reg_1ca48(
+                                    g15_ta_object_payload_gpuva,
+                                    buffer::G15_J615_TA_OBJECT_PAYLOAD_UNITS,
+                                );
+                            // Apple accelerator +0x29c0 is literally named
+                            // "ParamBuffer" and is initialized with 0x7f slots. Its owner is
+                            // the active AGXHWParamBufferManager (PM +0x20), whose inherited
+                            // AGXHardwareBufferBase ID starts at -1. The manager assigns fresh
+                            // IDs 0,1,2,... and retains them opportunistically across idle
+                            // periods. Linux's existing 127-slot BufferManager implements the
+                            // same persistent-Buffer/sticky-slot contract, so the exact G15 TA
+                            // 0x1c830 producer is the scene's already-assigned buffer slot.
+                            let g15_ta_param_buffer_id_1c830 = inner.scene.slot() as u64;
+                            // The optional 0x1ca10/0x14a1/0xa349 group is gated by the same
+                            // AGXPerfCtrSampler state as the already-proven Fragment perf tail.
+                            // Fresh/default sampler +0x34/+0x54 are zero, so ordinary Linux
+                            // rendering must omit these entries entirely. If G15 performance
+                            // sampling is implemented later, Apple packs
+                            // (u64(raw_render_u32[+0x608]) << 32) | JobMeta.uuid into all three.
+                            let g15_ta_perf_feature_value: Option<u64> = None;
+                            // TA 0x1a099 shares the exact raw +0x638 initial-clear source
+                            // with Fragment 0x1a0a9. The explicit UAPI flag deliberately
+                            // does not alias PROCESS_EMPTY_TILES.
+                            let g15_ta_clear_reg_1a099 =
+                                g15_render_clear_state(g15_has_load_clear);
+                            // Exact Apple PM tail of the normal TA list:
+                            // 0x1ca30 = record+0x28 & ~0xf;
+                            // encoded 32-bit 0x16c39 carries the same source value;
+                            // 0x1c910 is synthesized from record+0x00 (the selected
+                            // four-byte PMPageMetricsBuffer slot in shared range 7).
+                            let g15_ta_pm_scene = g15_pm_scene_slice_gpuva & !0xf;
+                            let g15_ta_pm_metrics_1c910 =
+                                buffer::g15_pm_page_metrics_reg_1c910(g15_pm_page_metrics_gpuva);
+                            // Exact Apple list order. Width is encoded in Register.number
+                            // bit 0, matching RegisterArray::add() on existing generations.
+                            r.add(0x1748, g15_ta_seed_1748);
+                            if let Some(value) = g15_ta_seed_17e1 {
+                                r.add(0x17e1, value);
+                            }
+                            r.add(0x10141, g15_ta_tiler_mode_10141);
+                            r.add(0x1c039, g15_ta_tilemap);
+                            r.add(0x1c9c8, g15_ta_tilemap);
+                            r.add(0x1c0a1, g15_ta_tpc_pointer);
+                            r.add(0x1c031, g15_ta_heapmeta_tagged);
+                            r.add(0x1c9c0, g15_ta_heapmeta_tagged);
+                            r.add(0x1c051, g15_ta_iogpu_reg_1c051);
+                            r.add(0x1c061, g15_ta_iogpu_reg_1c061);
+                            r.add(0x10149, g15_ta_utile_config);
+                            r.add(0x10139, g15_ta_ppp_multisamplectl);
+                            r.add(0x10111, g15_ta_ctxswitch_secondary);
+                            r.add(0x1c9b0, g15_ta_ctxswitch_secondary);
+                            r.add(0x10119, g15_ta_ctxswitch_primary);
+                            r.add(0x1c9b8, g15_ta_ctxswitch_primary);
+                            r.add(0x1c958, 1);
+                            r.add(0x1c950, g15_ta_stencil_comp_packed_reg_1c950);
+                            r.add(0x1c930, 0);
+                            r.add(0x1c880, g15_ta_vdm_ctrl_stream_base);
+                            r.add(0x1c898, 0);
+                            r.add(0x1c079, g15_ta_layermeta);
+                            r.add(0x1c9d8, g15_ta_layermeta);
+                            r.add(0x10151, g15_ta_stencil_level_enable_10151);
+                            r.add(0x1c199, g15_ta_stencil_level_reg_1c199);
+                            r.add(0x1c1a1, g15_ta_stencil_stride_reg_1c1a1);
+                            r.add(0x1c1a9, g15_ta_stencil_comp_base_reg_1c1a9);
+                            r.add(0x1c1b1, g15_ta_stencil_comp_stride_reg_1c1b1);
+                            r.add(0x1c1b9, g15_ta_stencil_base_reg_1c1b9);
+                            r.add(0x1c8f8, g15_ta_mode_reg_1c8f8);
+                            r.add(0x1c0b1, g15_ta_rgn_size);
+                            r.add(0x1c850, g15_ta_rgn_size);
+                            r.add(0x10131, g15_ta_geom_const_88);
+                            r.add(0x10121, g15_ta_ppp_ctrl);
+                            r.add(0x10129, g15_ta_ppp_screen);
+                            r.add(0x101b9, g15_ta_te_screen);
+                            r.add(0x1c069, g15_ta_te_mtile1);
+                            r.add(0x1c071, g15_ta_te_mtile2);
+                            r.add(0x1c081, g15_ta_tiles_per_mtile);
+                            r.add(0x1c0a9, g15_ta_tpc_stride);
+                            r.add(0x10171, g15_ta_geom_const_100);
+                            r.add(0x10169, g15_ta_render_target_max.into());
+                            r.add(0x12099, g15_ta_raw1b8_reg_12099);
+                            r.add(0x101e1, g15_ta_raw1b8_reg_101e1);
+                            r.add(0x1c9e8, g15_ta_render_target_max_masked.into());
+                            r.add(0x1a099, g15_ta_clear_reg_1a099);
+                            r.add(0x1a0a1, g15_ta_memoryless_reg_1a0a1);
+                            r.add(0x1a069, g15_ta_vrs_reg_1a069);
+                            r.add(0x1a071, g15_ta_vrs_reg_1a071);
+                            r.add(0x1a0c9, g15_ta_vrs_reg_1a0c9);
+                            r.add(0x1a0d1, g15_ta_vrs_reg_1a0d1);
+                            r.add(0x101c9, g15_ta_depth_level_reg_101c9);
+                            r.add(0x0d471, g15_ta_stencil_level_reg_d471);
+                            r.add(0x1a0f1, g15_ta_sampled_reg_1a0f1);
+                            r.add(0x10799, g15_ta_dynamic_reg_10799.into());
+                            r.add(0x1ca48, g15_ta_object_payload_reg_1ca48);
+                            if let Some(value) = g15_ta_perf_feature_value {
+                                r.add(0x1ca10, value);
+                                r.add(0x14a1, value);
+                                r.add(0xa349, value);
+                            }
+                            r.add(0x1c830, g15_ta_param_buffer_id_1c830);
+                            r.add(0x1ca30, g15_ta_pm_scene);
+                            r.add(0x16c39, g15_ta_pm_scene);
+                            r.add(0x1c910, g15_ta_pm_metrics_1c910);
+                        },
+                    ),
+                    #[ver(G == G15)]
+                    g15_pad_750: Default::default(),
                     tpc: inner.scene.tpc_pointer(),
                     tpc_size: U64(tile_info.tpc_size as u64),
                     microsequence: inner.micro_seq.gpu_pointer(),
@@ -1306,7 +2363,9 @@ impl super::QueueInner::ver {
                     fragment_stamp_slot: ev_frag.slot,
                     fragment_stamp_value: ev_frag.value.next(),
                     unk_pointee: 0,
+                    #[ver(G != G15)]
                     unk_pad: 0,
+                    #[ver(G != G15)]
                     job_params2 <- try_init!(fw::vertex::raw::JobParameters2 {
                         unk_480: Default::default(), // fixed
                         unk_498: U64(0x0),           // fixed
@@ -1322,6 +2381,7 @@ impl super::QueueInner::ver {
                         unk_518: U64(0x0), // fixed
                         unk_520: U64(0x0), // fixed
                     }),
+                    #[ver(G != G15)]
                     encoder_params <- try_init!(fw::job::raw::EncoderParams {
                         unk_8: 0x0,     // fixed
                         sync_grow: 0x0, // fixed
@@ -1333,13 +2393,57 @@ impl super::QueueInner::ver {
                         sampler_count: cmdbuf.sampler_count as u32,
                         sampler_max: (cmdbuf.sampler_count as u32) + 1,
                     }),
+                    #[ver(G != G15)]
                     unk_55c: 0,
+                    #[ver(G != G15)]
                     unk_560: 0,
+                    #[ver(G != G15)]
                     sync_grow: 0,
+                    #[ver(G != G15)]
                     unk_568: 0,
+                    #[ver(G != G15)]
                     uses_scratch: (cmdbuf.flags
                         & uapi::drm_asahi_render_flags_DRM_ASAHI_RENDER_VERTEX_SCRATCH as u32
                         != 0) as u32,
+                    #[ver(G == G15)]
+                    g15_raw_render_10_788: U64(0),
+                    #[ver(G == G15)]
+                    g15_raw_render_18_790: U64(0),
+                    #[ver(G == G15)]
+                    g15_raw_render_20_798: U64(0),
+                    #[ver(G == G15)]
+                    g15_raw_render_28_7a0: U64(0),
+                    #[ver(G == G15)]
+                    g15_raw_render_60_7a8: U64(g15_ta_ctxswitch_secondary),
+                    #[ver(G == G15)]
+                    g15_zero_7b0: U64(0),
+                    #[ver(G == G15)]
+                    g15_zero_7b8: U64(0),
+                    #[ver(G == G15)]
+                    g15_zero_7c0: U64(0),
+                    #[ver(G == G15)]
+                    g15_pad_7c8: Default::default(),
+                    #[ver(G == G15)]
+                    g15_zero_810: Default::default(),
+                    #[ver(G == G15)]
+                    g15_pad_830: Default::default(),
+                    #[ver(G == G15)]
+                    g15_raw_render_60c_83c: U32(0),
+                    #[ver(G == G15)]
+                    g15_raw_render_608_610_lo_840: U64(0),
+                    #[ver(G == G15)]
+                    g15_raw_render_614_848: U32(0),
+                    #[ver(G == G15)]
+                    g15_raw_render_1bc_nonzero_84c: U32(0),
+                    #[ver(G == G15)]
+                    g15_raw_render_1bf_850: U32(0),
+                    #[ver(G == G15)]
+                    g15_segment_flag_198_854: U32(0),
+                    #[ver(G == G15)]
+                    g15_raw_render_1c1_858: U32(0),
+                    #[ver(G == G15)]
+                    g15_raw_render_1c2_85c: U32(0),
+                    #[ver(G != G15)]
                     meta <- try_init!(fw::job::raw::JobMeta {
                         unk_0: 0,
                         unk_2: 0,
@@ -1353,24 +2457,86 @@ impl super::QueueInner::ver {
                         uuid: uuid_ta,
                         event_seq: ev_vtx.event_seq as u32,
                     }),
+                    #[ver(G == G15)]
+                    meta <- try_init!(fw::job::raw::G15JobMeta {
+                        // J615/G15G C0 Apple TA submission leaves +0x860 zero:
+                        // accelerator packed feature bit 35 is provably zero.
+                        // Descriptor +0xe08 is (raw Render[0x1bc] != 0), and
+                        // ChinookV9 isForceGTPDiscardEnabled() is false, but
+                        // the bit-35 gate prevents either path from enabling it.
+                        engine_state: U32(0),
+                        stamp: ev_vtx.stamp_pointer,
+                        fw_stamp: ev_vtx.fw_stamp_pointer,
+                        stamp_value: ev_vtx.value.next(),
+                        stamp_slot: ev_vtx.slot,
+                        evctl_index: 0, // fixed
+                        flush_stamps: flush_stamps as u32,
+                        uuid: uuid_ta,
+                        event_seq: ev_vtx.event_seq as u32,
+                    }),
+                    #[ver(G != G15)]
                     unk_after_meta: unk1.into(),
+                    #[ver(G == G15)]
+                    g15_raw_render_619_eq_2_88c: U32(0),
+                    #[ver(G != G15)]
                     unk_buf_0: U64(0),
+                    #[ver(G != G15)]
                     unk_buf_8: U64(0),
+                    #[ver(G != G15)]
                     unk_buf_10: U64(0),
+                    #[ver(G != G15)]
                     command_time: U64(0),
+                    #[ver(G != G15)]
                     timestamp_pointers <- try_init!(fw::job::raw::TimestampPointers {
                         start_addr: Some(inner_ptr!(inner.timestamps.gpu_pointer(), vtx.start)),
                         end_addr: Some(inner_ptr!(inner.timestamps.gpu_pointer(), vtx.end)),
                     }),
+                    #[ver(G != G15)]
                     user_timestamp_pointers: inner.user_timestamps.pointers()?,
+                    #[ver(G != G15)]
                     client_sequence: slot_client_seq,
+                    #[ver(G != G15)]
                     pad_5d5: Default::default(),
+                    #[ver(G != G15)]
                     unk_5d8: 0,
+                    #[ver(G != G15)]
                     unk_5dc: 0,
-                    #[ver(V >= V13_0B4)]
+                    #[ver(V >= V13_0B4 && G != G15)]
                     unk_ts: U64(0),
-                    #[ver(V >= V13_0B4)]
+                    #[ver(V >= V13_0B4 && G != G15)]
                     unk_5dd_8: Default::default(),
+                    #[ver(G == G15)]
+                    g15_barrier_state_890: U64(0),
+                    #[ver(G == G15)]
+                    g15_pad_898: Default::default(),
+                    #[ver(G == G15)]
+                    g15_zero_8a8: U64(0),
+                    #[ver(G == G15)]
+                    g15_segment_resource_list_fwva_8b0: U64(0),
+                    #[ver(G == G15)]
+                    g15_block_fence_time0_fwva_8b8: U64(0),
+                    #[ver(G == G15)]
+                    g15_mtl_counter_fw_token_0_8c0: U64(0),
+                    #[ver(G == G15)]
+                    g15_mtl_counter_fw_token_1_8c8: U64(0),
+                    #[ver(G == G15)]
+                    g15_pad_8d0: Default::default(),
+                    #[ver(G == G15)]
+                    g15_uma_page_pool_state_fwva_8d6: U64(0),
+                    #[ver(G == G15)]
+                    g15_uma_prepared_8de: 0,
+                    #[ver(G == G15)]
+                    g15_uma_min_pool_size_8df: U64(0),
+                    #[ver(G == G15)]
+                    g15_uma_ideal_pool_size_8e7: U64(0),
+                    #[ver(G == G15)]
+                    g15_uma_metrics_fwva_8ef: U64(0),
+                    #[ver(G == G15)]
+                    g15_context_id_generation_8f7: 0,
+                    #[ver(G == G15)]
+                    g15_sku_timing_8f8: Default::default(),
+                    #[ver(G == G15)]
+                    g15_tail_918: Default::default(),
                 })
             },
         )?;

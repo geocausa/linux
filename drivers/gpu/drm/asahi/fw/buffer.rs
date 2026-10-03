@@ -24,13 +24,99 @@ pub(crate) mod raw {
     }
     default_zeroed!(BlockControl);
 
+    #[versions(AGX)]
     #[derive(Debug)]
     #[repr(C)]
     pub(crate) struct Counter {
         pub(crate) count: AtomicU32,
+        #[ver(G != G15)]
         __pad: Pad<0x3c>,
     }
-    default_zeroed!(Counter);
+
+    #[versions(AGX)]
+    default_zeroed!(Counter::ver);
+
+    /// G15 UMA Page Pool State. Apple allocates this as an exact 0x70-byte
+    /// GPU-mapped object (AGXUMAFList +0x1c0) and passes its FWVA in the late
+    /// Compute/TA/3D command tails. The deliberately unaligned U64 fields are
+    /// part of the Apple ABI, so this structure must remain packed.
+    #[derive(Clone, Copy)]
+    #[repr(C, packed)]
+    pub(crate) struct G15UMAPagePoolState {
+        pub(crate) pool_id: U64,                    // +0x00: AGXUMAPool global ID
+        // AGXHardwareBufferIDManager::alloc() assigns this 0..255 ID to the
+        // FList and AGXUMAPool::prepareLocked() copies the same value here.
+        // RTKit also uses it as the UMA Page Pool descriptor-table index.
+        pub(crate) hardware_buffer_id: U32,
+        // Copied from AGXUMAPool +0xa2. This flag gates FList async-grow
+        // preallocation/retirement and async submit bookkeeping.
+        pub(crate) async_grow_enabled: U32,
+        pub(crate) priority: U32,                   // +0x10: _AGFIUMAPoolPriorityType
+        pub(crate) page_pool_list_fwva: U64,        // +0x14: Apple "UMA Page Pool List"
+        pub(crate) page_pool_list_capacity: U32,    // +0x1c: backing allocation size / 8
+        // Hardware-maintained UMA ring cursors. Host population seeds cursor
+        // +0x20 to zero and +0x24 to page_count % list_capacity. The exact
+        // producer/consumer direction is intentionally not assigned yet.
+        pub(crate) ring_cursor_20: U32,
+        pub(crate) ring_cursor_24: U32,
+        // One-bit ring state mirrored in descriptor qword1 bit 61. Host
+        // population seeds zero; an internal FW reset path can force it to 1.
+        pub(crate) ring_state_bit_28: U32,
+        pub(crate) page_count: U32,                 // +0x2c: current allocated bytes >> 12; 22-bit in table
+        // +0x30 is a small RTKit/page-pool lifecycle state: host initializes
+        // it to 0, interrupt-post recovery can write 1, and cleanup treats
+        // value 2 specially. Exact value names remain intentionally unknown.
+        pub(crate) lifecycle_state_30: U32,
+        pub(crate) backup_page_list_fwva: U64,      // +0x34: Apple "UMA Backup Page List"
+        pub(crate) unk_3c: Pad<0x08>,               // +0x3c..+0x43: not written by host helper
+        // Count of 8-byte compact extent entries in the Backup Page List.
+        // Host population rounds it to 8 entries; RTKit adds each completed
+        // async-grow request's entry count, also rounded to 8.
+        pub(crate) backup_page_list_entry_count: U32,
+        pub(crate) fw_uncached_state_fwva: U64,     // +0x48: Apple "UMA FW Uncached State"
+        pub(crate) fw_uncached_state_mirror: U64,   // +0x50: cached qword compared by FW
+        // +0x58 is nonzero exactly for a reusable/shared UMA pool whose
+        // AGXIOFenceDataMasterType is CL/compute (2). TA=0 and 3D=1.
+        pub(crate) shared_compute_pool: U32,
+        // Scheduler dispatch increments only the low byte for those shared
+        // compute pools. No recovered consumer gives the upper bits a role.
+        pub(crate) shared_compute_dispatch_seq_5c: U32,
+        // Apple populateFirmwareState() initializes these qwords to zero.
+        // No recovered RTKit CPU consumer gives them a stronger semantic.
+        pub(crate) host_zero_60: U64,               // +0x60
+        pub(crate) host_zero_68: U64,               // +0x68
+    }
+    default_zeroed!(G15UMAPagePoolState);
+    const _: [(); 0x70] = [(); core::mem::size_of::<G15UMAPagePoolState>()];
+    const _: [(); 0x08] = [(); core::mem::offset_of!(G15UMAPagePoolState, hardware_buffer_id)];
+    const _: [(); 0x0c] = [(); core::mem::offset_of!(G15UMAPagePoolState, async_grow_enabled)];
+    const _: [(); 0x14] = [(); core::mem::offset_of!(G15UMAPagePoolState, page_pool_list_fwva)];
+    const _: [(); 0x1c] = [(); core::mem::offset_of!(G15UMAPagePoolState, page_pool_list_capacity)];
+    const _: [(); 0x20] = [(); core::mem::offset_of!(G15UMAPagePoolState, ring_cursor_20)];
+    const _: [(); 0x24] = [(); core::mem::offset_of!(G15UMAPagePoolState, ring_cursor_24)];
+    const _: [(); 0x28] = [(); core::mem::offset_of!(G15UMAPagePoolState, ring_state_bit_28)];
+    const _: [(); 0x30] = [(); core::mem::offset_of!(G15UMAPagePoolState, lifecycle_state_30)];
+    const _: [(); 0x34] = [(); core::mem::offset_of!(G15UMAPagePoolState, backup_page_list_fwva)];
+    const _: [(); 0x44] = [(); core::mem::offset_of!(G15UMAPagePoolState, backup_page_list_entry_count)];
+    const _: [(); 0x48] = [(); core::mem::offset_of!(G15UMAPagePoolState, fw_uncached_state_fwva)];
+    const _: [(); 0x50] = [(); core::mem::offset_of!(G15UMAPagePoolState, fw_uncached_state_mirror)];
+    const _: [(); 0x58] = [(); core::mem::offset_of!(G15UMAPagePoolState, shared_compute_pool)];
+    const _: [(); 0x5c] = [(); core::mem::offset_of!(G15UMAPagePoolState, shared_compute_dispatch_seq_5c)];
+    const _: [(); 0x60] = [(); core::mem::offset_of!(G15UMAPagePoolState, host_zero_60)];
+    const _: [(); 0x68] = [(); core::mem::offset_of!(G15UMAPagePoolState, host_zero_68)];
+
+    /// Exact 23J220 AGXUMAFList +0x1b0 backing. Apple allocates one 8-byte
+    /// GPU/FW-visible object in eGartRange 7, zeros it, and mirrors this qword
+    /// into G15UMAPagePoolState +0x50. Firmware requires the pointed value and
+    /// mirror to remain equal before refreshing the page-pool descriptor.
+    #[derive(Clone, Copy, Debug)]
+    #[repr(C)]
+    pub(crate) struct G15UMAFWUncachedState {
+        pub(crate) coherency_value: U64,
+    }
+    default_zeroed!(G15UMAFWUncachedState);
+    const _: [(); 0x08] = [(); core::mem::size_of::<G15UMAFWUncachedState>()];
+    const _: [(); 0x00] = [(); core::mem::offset_of!(G15UMAFWUncachedState, coherency_value)];
 
     #[derive(Debug, Default)]
     #[repr(C)]
@@ -68,20 +154,59 @@ pub(crate) mod raw {
         pub(crate) block_list: GpuPointer<'a, &'a [u32]>,
         pub(crate) block_ctl: GpuPointer<'a, super::BlockControl>,
         pub(crate) last_page: AtomicU32,
+
+        // G15 keeps the legacy-compatible prefix through +0x48, then switches
+        // to a compact 0x80-byte parameter-buffer state. Apple allocates the
+        // external control word as a separate 4-byte object and stores its FW
+        // address at +0x58.
+        #[ver(G == G15)]
+        pub(crate) g15_unk_4c: u32,
+        #[ver(G == G15)]
+        // Normal Fragment completion reads the low dword and max-tracks it in
+        // Parameter Scene statistics +0x04. Producer semantics remain unknown.
+        pub(crate) g15_completion_stat_50: U64,
+        #[ver(G == G15)]
+        pub(crate) counter: GpuPointer<'a, super::Counter::ver>,
+        #[ver(G == G15)]
+        pub(crate) g15_unk_60: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_unk_68: U64,
+        #[ver(G == G15)]
+        pub(crate) g15_unk_70: u32,
+        #[ver(G == G15)]
+        pub(crate) g15_unk_74: u32,
+        #[ver(G == G15)]
+        pub(crate) g15_unk_78: U64,
+
+        #[ver(G != G15)]
         pub(crate) gpu_page_ptr1: u32,
+        #[ver(G != G15)]
         pub(crate) gpu_page_ptr2: u32,
+        #[ver(G != G15)]
         pub(crate) unk_58: u32,
+        #[ver(G != G15)]
         pub(crate) block_size: u32,
+        #[ver(G != G15)]
         pub(crate) unk_60: U64,
-        pub(crate) counter: GpuPointer<'a, super::Counter>,
+        #[ver(G != G15)]
+        pub(crate) counter: GpuPointer<'a, super::Counter::ver>,
+        #[ver(G != G15)]
         pub(crate) unk_70: u32,
+        #[ver(G != G15)]
         pub(crate) unk_74: u32,
+        #[ver(G != G15)]
         pub(crate) unk_78: u32,
+        #[ver(G != G15)]
         pub(crate) unk_7c: u32,
+        #[ver(G != G15)]
         pub(crate) unk_80: u32,
+        #[ver(G != G15)]
         pub(crate) max_pages: u32,
+        #[ver(G != G15)]
         pub(crate) max_pages_nomemless: u32,
+        #[ver(G != G15)]
         pub(crate) unk_8c: u32,
+        #[ver(G != G15)]
         pub(crate) unk_90: Array<0x30, u8>,
     }
 
@@ -89,9 +214,9 @@ pub(crate) mod raw {
     #[derive(Debug)]
     #[repr(C)]
     pub(crate) struct Scene<'a> {
-        #[ver(G >= G14X)]
+        #[ver(G >= G14X || G == G15)]
         pub(crate) control_word: GpuPointer<'a, &'a [u32]>,
-        #[ver(G >= G14X)]
+        #[ver(G >= G14X || G == G15)]
         pub(crate) control_word2: GpuPointer<'a, &'a [u32]>,
         pub(crate) pass_page_count: AtomicU32,
         pub(crate) unk_4: u32,
@@ -99,15 +224,44 @@ pub(crate) mod raw {
         pub(crate) unk_10: U64,
         pub(crate) user_buffer: GpuPointer<'a, &'a [u8]>,
         pub(crate) unk_20: u32,
+        // G15 has one extra dword here. This moves the following U64/pointers
+        // to the exact firmware-observed +0x38/+0x40/+0x48 anchors.
+        #[ver(G == G15)]
+        pub(crate) g15_unk_34: u32,
         #[ver(V >= V13_3)]
         pub(crate) unk_28: U64,
         pub(crate) stats: GpuWeakPointer<super::Stats>,
         pub(crate) total_page_count: AtomicU32,
-        #[ver(G < G14X)]
+        #[ver(G < G14X && G != G15)]
         pub(crate) unk_30: U64, // pad
-        #[ver(G < G14X)]
+        #[ver(G < G14X && G != G15)]
         pub(crate) unk_38: U64, // pad
+        // Apple backs each G15 scene with 0x80 bytes. RTKit actively
+        // invalidates/uses the first 0x50; the remaining bytes stay opaque.
+        #[ver(G == G15)]
+        pub(crate) g15_tail: Pad<0x34>,
     }
+
+    // Exact G15 parameter-buffer backing recovered from Apple host allocation
+    // and RTKit command handling.
+    const _: [(); 0x04] = [(); core::mem::size_of::<CounterG15V14_7>()];
+    const _: [(); 0x80] = [(); core::mem::size_of::<InfoG15V14_7<'static>>()];
+    const _: [(); 0x1c] = [(); core::mem::offset_of!(InfoG15V14_7<'static>, page_list)];
+    const _: [(); 0x28] = [(); core::mem::offset_of!(InfoG15V14_7<'static>, page_count)];
+    const _: [(); 0x30] = [(); core::mem::offset_of!(InfoG15V14_7<'static>, block_count)];
+    const _: [(); 0x38] = [(); core::mem::offset_of!(InfoG15V14_7<'static>, block_list)];
+    const _: [(); 0x40] = [(); core::mem::offset_of!(InfoG15V14_7<'static>, block_ctl)];
+    const _: [(); 0x48] = [(); core::mem::offset_of!(InfoG15V14_7<'static>, last_page)];
+    const _: [(); 0x58] = [(); core::mem::offset_of!(InfoG15V14_7<'static>, counter)];
+    const _: [(); 0x80] = [(); core::mem::size_of::<SceneG15V14_7<'static>>()];
+    const _: [(); 0x00] = [(); core::mem::offset_of!(SceneG15V14_7<'static>, control_word)];
+    const _: [(); 0x08] = [(); core::mem::offset_of!(SceneG15V14_7<'static>, control_word2)];
+    const _: [(); 0x10] = [(); core::mem::offset_of!(SceneG15V14_7<'static>, pass_page_count)];
+    const _: [(); 0x28] = [(); core::mem::offset_of!(SceneG15V14_7<'static>, user_buffer)];
+    const _: [(); 0x34] = [(); core::mem::offset_of!(SceneG15V14_7<'static>, g15_unk_34)];
+    const _: [(); 0x38] = [(); core::mem::offset_of!(SceneG15V14_7<'static>, unk_28)];
+    const _: [(); 0x40] = [(); core::mem::offset_of!(SceneG15V14_7<'static>, stats)];
+    const _: [(); 0x48] = [(); core::mem::offset_of!(SceneG15V14_7<'static>, total_page_count)];
 
     #[versions(AGX)]
     #[derive(Debug)]
@@ -121,17 +275,30 @@ pub(crate) mod raw {
         pub(crate) buffer: GpuPointer<'a, super::Info::ver>,
         pub(crate) stamp_value: EventValue,
     }
+
+    // AGXTAChannelSKU::submitBuffer() constructs the G15 tag-6 record as
+    // exactly 0x20 bytes with the same packed field geometry, including the
+    // deliberately unaligned FW-visible buffer pointer at +0x14.
+    const _: [(); 0x20] = [(); core::mem::size_of::<InitBufferG15V14_7<'static>>()];
+    const _: [(); 0x00] = [(); core::mem::offset_of!(InitBufferG15V14_7<'static>, tag)];
+    const _: [(); 0x04] = [(); core::mem::offset_of!(InitBufferG15V14_7<'static>, vm_slot)];
+    const _: [(); 0x08] = [(); core::mem::offset_of!(InitBufferG15V14_7<'static>, buffer_slot)];
+    const _: [(); 0x0c] = [(); core::mem::offset_of!(InitBufferG15V14_7<'static>, unk_c)];
+    const _: [(); 0x10] = [(); core::mem::offset_of!(InitBufferG15V14_7<'static>, block_count)];
+    const _: [(); 0x14] = [(); core::mem::offset_of!(InitBufferG15V14_7<'static>, buffer)];
+    const _: [(); 0x1c] = [(); core::mem::offset_of!(InitBufferG15V14_7<'static>, stamp_value)];
 }
 
 trivial_gpustruct!(BlockControl);
-trivial_gpustruct!(Counter);
+#[versions(AGX)]
+trivial_gpustruct!(Counter::ver);
 trivial_gpustruct!(Stats);
 
 #[versions(AGX)]
 #[derive(Debug)]
 pub(crate) struct Info {
     pub(crate) block_ctl: GpuObject<BlockControl>,
-    pub(crate) counter: GpuObject<Counter>,
+    pub(crate) counter: GpuObject<Counter::ver>,
     pub(crate) page_list: GpuArray<u32>,
     pub(crate) block_list: GpuArray<u32>,
 }
@@ -155,7 +322,7 @@ pub(crate) struct Scene {
     pub(crate) tpc: Arc<GpuArray<u8>>,
     pub(crate) clustering: Option<ClusterBuffers>,
     pub(crate) preempt_buf: GpuArray<u8>,
-    #[ver(G >= G14X)]
+    #[ver(G >= G14X || G == G15)]
     pub(crate) control_word: GpuArray<u32>,
 }
 

@@ -17,6 +17,11 @@ pub(crate) mod raw {
     #[derive(Debug, Clone, Copy)]
     #[repr(C)]
     pub(crate) struct JobMeta {
+        // These legacy names describe the pre-G15 layout only. Apple G15
+        // reuses the entire first dword as engine-specific state: Compute
+        // repacks four raw command bytes, while TA and 3D synthesize different
+        // feature-gated dwords. Keep G15 zero/fail-closed until that producer
+        // contract is modeled per engine; do not infer no_preemption at +0x03.
         pub(crate) unk_0: u16,
         pub(crate) unk_2: u8,
         pub(crate) no_preemption: u8,
@@ -29,6 +34,49 @@ pub(crate) mod raw {
         pub(crate) uuid: u32,
         pub(crate) event_seq: u32,
     }
+
+    // G15 host submission copies the low 32 bits of its shared atomic
+    // command-descriptor ID to meta +0x24 and the independent queue-local
+    // event sequence to meta +0x28.
+    const _: [(); 0x2c] = [(); core::mem::size_of::<JobMeta>()];
+    const _: [(); 0x24] = [(); core::mem::offset_of!(JobMeta, uuid)];
+    const _: [(); 0x28] = [(); core::mem::offset_of!(JobMeta, event_seq)];
+
+    /// G15 reuses the first JobMeta dword as engine-specific state. The common
+    /// stamp/UUID/event-sequence tail keeps the legacy offsets unchanged.
+    #[derive(Debug, Clone, Copy)]
+    #[repr(C)]
+    pub(crate) struct G15JobMeta {
+        pub(crate) engine_state: U32,
+        pub(crate) stamp: GpuWeakPointer<Stamp>,
+        pub(crate) fw_stamp: GpuWeakPointer<FwStamp>,
+        pub(crate) stamp_value: EventValue,
+        pub(crate) stamp_slot: u32,
+        pub(crate) evctl_index: u32,
+        pub(crate) flush_stamps: u32,
+        pub(crate) uuid: u32,
+        pub(crate) event_seq: u32,
+    }
+
+    const _: [(); 0x2c] = [(); core::mem::size_of::<G15JobMeta>()];
+    const _: [(); 0x24] = [(); core::mem::offset_of!(G15JobMeta, uuid)];
+    const _: [(); 0x28] = [(); core::mem::offset_of!(G15JobMeta, event_seq)];
+
+    /// G15 TA/3D SKU-local timing state. Firmware scheduling writes the first
+    /// timestamp when work is dispatched. Completion paths require the first
+    /// timestamp to precede the third qword and feed their difference to the
+    /// common latency histogram helper. The other two qwords remain unnamed.
+    #[derive(Debug, Default, Clone, Copy)]
+    #[repr(C)]
+    pub(crate) struct G15SkuTimingState {
+        pub(crate) start_timestamp: U64,    // +0x00
+        pub(crate) unk_08: U64,             // +0x08
+        pub(crate) complete_timestamp: U64, // +0x10
+        pub(crate) unk_18: U64,             // +0x18
+    }
+    const _: [(); 0x20] = [(); core::mem::size_of::<G15SkuTimingState>()];
+    const _: [(); 0x00] = [(); core::mem::offset_of!(G15SkuTimingState, start_timestamp)];
+    const _: [(); 0x10] = [(); core::mem::offset_of!(G15SkuTimingState, complete_timestamp)];
 
     #[derive(Debug)]
     #[repr(C)]
@@ -88,6 +136,17 @@ pub(crate) mod raw {
         pub(crate) length: u16,
         pub(crate) unk_pad: u32,
     }
+
+    // The G14X and G15 firmware command ABIs both embed this exact object.
+    // Keep its non-native 12-byte register stride and trailing self-pointer
+    // geometry compile-time locked before generation-specific lists diverge.
+    const _: [(); 0x0c] = [(); core::mem::size_of::<Register>()];
+    const _: [(); 0x710] = [(); core::mem::size_of::<RegisterArray>()];
+    const _: [(); 0x600] = [(); core::mem::offset_of!(RegisterArray, pad)];
+    const _: [(); 0x700] = [(); core::mem::offset_of!(RegisterArray, addr)];
+    const _: [(); 0x708] = [(); core::mem::offset_of!(RegisterArray, count)];
+    const _: [(); 0x70a] = [(); core::mem::offset_of!(RegisterArray, length)];
+    const _: [(); 0x70c] = [(); core::mem::offset_of!(RegisterArray, unk_pad)];
 
     impl RegisterArray {
         pub(crate) fn new(
