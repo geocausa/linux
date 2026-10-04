@@ -2275,7 +2275,7 @@ impl GpuManager::ver {
     }
 
     /// Fetch the GPU MMU fault information from the hardware registers.
-    fn get_fault_info(&self) -> Option<regs::FaultInfo> {
+    pub(crate) fn get_fault_info(&self) -> Option<regs::FaultInfo> {
         let res = &(*self.dev).resources;
 
         let info = res.get_fault_info(self.cfg);

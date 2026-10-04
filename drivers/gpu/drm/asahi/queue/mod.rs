@@ -2390,6 +2390,21 @@ impl sched::JobImpl for QueueJob::ver {
             "QueueJob {}: Job timed out on the DRM scheduler, things will probably break (ran: {})\n",
             job.id, job.did_run
         );
+        #[ver(G == G15)]
+        {
+            let fault = (*job.dev)
+                .gpu
+                .clone()
+                .arc_as_any()
+                .downcast::<gpu::GpuManager::ver>()
+                .ok()
+                .and_then(|gpu| gpu.get_fault_info());
+            dev_err!(
+                job.dev.as_ref(),
+                "T8122 G15 E457 host-timeout fault snapshot={:#x?}\n",
+                fault
+            );
+        }
         sched::Status::NoDevice
     }
 
