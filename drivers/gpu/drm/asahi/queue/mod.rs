@@ -1650,7 +1650,10 @@ impl G15UnpublishedComputeChannel::ver {
                 context_store_req,
                 context_store_compl,
                 recovery_marker,
-            ) = command.with(|raw, _inner| {
+                timestamp_start,
+                timestamp_end,
+                result_word,
+            ) = command.with(|raw, inner| {
                 let regs = &raw.registers;
                 let register_count = unsafe { core::ptr::read_volatile(&regs.count) };
                 let register_length = unsafe { core::ptr::read_volatile(&regs.length) };
@@ -1663,12 +1666,40 @@ impl G15UnpublishedComputeChannel::ver {
                 let recovery_marker = unsafe {
                     core::ptr::read_unaligned(core::ptr::addr_of!(raw.g15_recovery_marker_878.0))
                 };
+                // E480: these are the exact CPU mappings targeted through
+                // command +0x818/+0x820 by the start/end timestamp SKU packets.
+                // Reading the atomics is observation-only and performs no GPU MMIO.
+                let (timestamp_start, timestamp_end) = inner.timestamps.with(|ts, _| {
+                    (
+                        ts.start.load(Ordering::Acquire),
+                        ts.end.load(Ordering::Acquire),
+                    )
+                });
+                // E487: unlike the stale completion helper, sample the actual
+                // separate result allocation used by the current working-pair body.
+                // Four volatile byte reads avoid alignment assumptions and make the
+                // observation valid while the GPU may be updating this shared object.
+                let result_bytes = inner.g15_result.as_slice();
+                let result_word = if result_bytes.len() >= 4 {
+                    let p = result_bytes.as_ptr();
+                    u32::from_le_bytes([
+                        unsafe { core::ptr::read_volatile(p) },
+                        unsafe { core::ptr::read_volatile(p.add(1)) },
+                        unsafe { core::ptr::read_volatile(p.add(2)) },
+                        unsafe { core::ptr::read_volatile(p.add(3)) },
+                    ])
+                } else {
+                    0
+                };
                 (
                     register_count,
                     register_length,
                     context_store_req,
                     context_store_compl,
                     recovery_marker,
+                    timestamp_start,
+                    timestamp_end,
+                    result_word,
                 )
             });
 
@@ -1681,6 +1712,9 @@ impl G15UnpublishedComputeChannel::ver {
                 context_store_req,
                 context_store_compl,
                 recovery_marker,
+                timestamp_start,
+                timestamp_end,
+                result_word,
                 hardware_buffer_id,
                 lifecycle_state,
                 shared_compute,

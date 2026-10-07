@@ -2803,6 +2803,44 @@ impl GpuManager::ver {
                 self.dev.as_ref(),
                 "T8122 G15 selected first RunWorkQueue accepted by scheduler; awaiting engine completion\n"
             );
+
+            // E480: preserve E478's CPU-mapped selected channel-ring sample
+            // and add only the retained RunCompute start/end timestamp targets.
+            // Exact E479 order is type0b -> start timestamp -> WFI -> end
+            // timestamp -> type0c. No GPU register access occurs here.
+            let log_wfi_state = |phase: &str| {
+                mem::sync();
+                match completion.transport_state() {
+                    Ok(state) => dev_info!(
+                        self.dev.as_ref(),
+                        "T8122 G15 E480 channel-ring {} doneptr={} wptr={} ring_size={}\n",
+                        phase, state.doneptr, state.wptr, state.ring_size,
+                    ),
+                    Err(err) => dev_info!(
+                        self.dev.as_ref(),
+                        "T8122 G15 E480 channel-ring {} error={:?}\n",
+                        phase, err,
+                    ),
+                }
+                match completion.execution_snapshot() {
+                    Ok(state) => dev_info!(
+                        self.dev.as_ref(),
+                        "T8122 G15 E487 progress {} start={:#x} end={:#x} ctx_req={:#x} ctx_done={:#x} result={:#010x}\n",
+                        phase, state.timestamp_start, state.timestamp_end,
+                        state.context_store_req, state.context_store_compl, state.result_word,
+                    ),
+                    Err(err) => dev_info!(
+                        self.dev.as_ref(),
+                        "T8122 G15 E487 progress {} error={:?}\n",
+                        phase, err,
+                    ),
+                }
+            };
+            log_wfi_state("immediate");
+            fsleep(Delta::from_millis(250));
+            log_wfi_state("250ms");
+            fsleep(Delta::from_millis(4750));
+            log_wfi_state("5s");
             Ok(())
         }
     }

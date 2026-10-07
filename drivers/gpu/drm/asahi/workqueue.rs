@@ -87,6 +87,11 @@ pub(crate) struct G15ExecutionSnapshot {
     pub(crate) context_store_req: u64,
     pub(crate) context_store_compl: u64,
     pub(crate) recovery_marker: u32,
+    /// E480 CPU-mapped timestamp targets used by the exact G15 SKU start/end packets.
+    pub(crate) timestamp_start: u64,
+    pub(crate) timestamp_end: u64,
+    /// E487: first dword of the real separate G15 result allocation.
+    pub(crate) result_word: u32,
     pub(crate) hardware_buffer_id: u32,
     pub(crate) lifecycle_state: u32,
     pub(crate) shared_compute: u32,
@@ -409,6 +414,12 @@ impl G15SelectedRunCommit {
 
     pub(crate) fn execution_snapshot(&self) -> Result<G15ExecutionSnapshot> {
         self.transport.execution_snapshot()
+    }
+
+    /// E478: observe the exact selected G15 uncached channel-memory cursors
+    /// through the existing transport abstraction. This is CPU RAM only.
+    pub(crate) fn transport_state(&self) -> Result<G15WorkQueueTransportState> {
+        self.transport.state()
     }
 }
 
