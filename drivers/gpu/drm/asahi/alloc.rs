@@ -1121,6 +1121,28 @@ impl HeapAllocator {
         })
     }
 
+    /// E528: synchronize every backing object in this heap for CPU access.
+    /// The selected G15 PPL heaps are private to the bounded command path, so
+    /// this is an ownership transition for exactly those streaming mappings.
+    pub(crate) fn dma_sync_for_cpu(&self) -> Result {
+        self.mm.with_inner(|inner| {
+            for (obj, _, _) in inner.backing_objects.iter() {
+                obj.dma_sync_for_cpu()?;
+            }
+            Ok(())
+        })
+    }
+
+    /// E528: publish CPU-authored heap contents back to the GPU DMA domain.
+    pub(crate) fn dma_sync_for_device(&self) -> Result {
+        self.mm.with_inner(|inner| {
+            for (obj, _, _) in inner.backing_objects.iter() {
+                obj.dma_sync_for_device()?;
+            }
+            Ok(())
+        })
+    }
+
     /// Add a new backing block of the given size to this heap.
     ///
     /// If CPU mapping is enabled, this also adds a guard node to the range allocator to ensure that

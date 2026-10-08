@@ -8,12 +8,15 @@
 //! implementing RTKit buffers on top of GEM objects for firmware use.
 
 use kernel::{
+    bindings,
+    container_of,
     drm,
     drm::gem::{
         shmem,
         shmem::VMap,
         BaseObject,
-        DriverObject, //
+        DriverObject,
+        IntoGEMObject, //
     },
     error::Result,
     prelude::*,
@@ -91,6 +94,65 @@ impl ObjectRef {
     /// Returns the size of an object in bytes
     pub(crate) fn size(&self) -> usize {
         self.gem.size()
+    }
+
+    /// Synchronize this kernel shmem object's streaming DMA mapping for CPU access.
+    ///
+    /// `drm_gem_shmem_get_pages_sgt()` maps the backing with
+    /// `DMA_BIDIRECTIONAL`. J615 is non-coherent under Linux, so cached CPU
+    /// construction after that map requires an explicit ownership transition.
+    pub(crate) fn dma_sync_for_cpu(&self) -> Result {
+        let _ = self.gem.sg_table()?;
+
+        // SAFETY: `self.gem` is a DRM shmem object by construction. `sg_table()`
+        // above guarantees that `shmem->sgt` exists and is DMA-mapped for this
+        // same DRM device. The mapping direction matches the shmem helper.
+        unsafe {
+            let shmem = container_of!(
+                self.gem.as_raw(),
+                bindings::drm_gem_shmem_object,
+                base
+            );
+            let sgt = (*shmem).sgt;
+            if sgt.is_null() {
+                return Err(EIO);
+            }
+            let nents = i32::try_from((*sgt).orig_nents).map_err(|_| EOVERFLOW)?;
+            bindings::__dma_sync_sg_for_cpu(
+                self.gem.dev().as_ref().as_raw(),
+                (*sgt).sgl,
+                nents,
+                bindings::dma_data_direction_DMA_BIDIRECTIONAL,
+            );
+        }
+        Ok(())
+    }
+
+    /// Synchronize this kernel shmem object's streaming DMA mapping for device access.
+    pub(crate) fn dma_sync_for_device(&self) -> Result {
+        let _ = self.gem.sg_table()?;
+
+        // SAFETY: See `dma_sync_for_cpu()`. This transfers ownership back to
+        // the device before the GPU consumes CPU-authored command/program data.
+        unsafe {
+            let shmem = container_of!(
+                self.gem.as_raw(),
+                bindings::drm_gem_shmem_object,
+                base
+            );
+            let sgt = (*shmem).sgt;
+            if sgt.is_null() {
+                return Err(EIO);
+            }
+            let nents = i32::try_from((*sgt).orig_nents).map_err(|_| EOVERFLOW)?;
+            bindings::__dma_sync_sg_for_device(
+                self.gem.dev().as_ref().as_raw(),
+                (*sgt).sgl,
+                nents,
+                bindings::dma_data_direction_DMA_BIDIRECTIONAL,
+            );
+        }
+        Ok(())
     }
 
     /// Maps an object into a given `Vm` at any free address within a given range.

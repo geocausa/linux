@@ -104,10 +104,6 @@ impl super::QueueInner::ver {
             .lock()
             .array_empty_tagged::<u8>(0x100, b"CDR1")?;
         #[ver(G == G15)]
-        for byte in g15_result.as_mut_slice().iter_mut() {
-            *byte = 0xff;
-        }
-        #[ver(G == G15)]
         let g15_result_addr = g15_result.gpu_va().get();
         // E351 exact production-PPL UserBuffer argument table: pool 3
         // preserves the default range-5 low control and maps as compact 0x308.
@@ -125,12 +121,6 @@ impl super::QueueInner::ver {
         if g15_args_addr & 7 != 0 {
             return Err(EIO);
         }
-        #[ver(G == G15)]
-        {
-            let entries = g15_argument_table.as_mut_slice();
-            entries.fill(0);
-            entries[..8].copy_from_slice(&g15_result_addr.to_le_bytes());
-        }
 
         // E351 reclassifies exact pool-0x0a Statics through production
         // UAT-PPL: selector 1 preserves low control 3, yielding compact 0x308.
@@ -147,8 +137,6 @@ impl super::QueueInner::ver {
         if g15_statics_addr & 0x1f != 0 {
             return Err(EIO);
         }
-        #[ver(G == G15)]
-        g15_statics.as_mut_slice().fill(0);
 
         // E351 reclassifies the finalized pool-5 ESL through production
         // UAT-PPL: selector 1 yields compact 0x308.
@@ -237,6 +225,28 @@ impl super::QueueInner::ver {
             let body_base = blob.gpu_va().get();
             let entry_addr = g15_entry_addr;
             let profile_helper_addr = profile_helper.gpu_va().get();
+
+            // E528: all exact production-PPL command assets now exist. Their
+            // shmem SG tables were DMA-mapped before these cached CPU writes,
+            // so transfer the two dedicated heaps back to CPU ownership first.
+            self._g15_range5_ppl308
+                .as_ref()
+                .ok_or(EINVAL)?
+                .lock()
+                .dma_sync_for_cpu()?;
+            self._g15_range5_ppl108
+                .as_ref()
+                .ok_or(EINVAL)?
+                .lock()
+                .dma_sync_for_cpu()?;
+
+            g15_result.as_mut_slice().fill(0xff);
+            {
+                let entries = g15_argument_table.as_mut_slice();
+                entries.fill(0);
+                entries[..8].copy_from_slice(&g15_result_addr.to_le_bytes());
+            }
+            g15_statics.as_mut_slice().fill(0);
 
             // Exact USCProfileControlStateLoaderGen1<G15> helper: two CNDRET_0
             // entry points at offsets 0 and 8, each instruction stored at +4.
@@ -382,10 +392,23 @@ impl super::QueueInner::ver {
                 return Err(EIO);
             }
 
+            // E528: publish the completed CDM/ESL/body/profile/argument/
+            // statics/result contents to the non-coherent GPU DMA domain.
+            self._g15_range5_ppl308
+                .as_ref()
+                .ok_or(EINVAL)?
+                .lock()
+                .dma_sync_for_device()?;
+            self._g15_range5_ppl108
+                .as_ref()
+                .ok_or(EINVAL)?
+                .lock()
+                .dma_sync_for_device()?;
+
             core::sync::atomic::fence(Ordering::SeqCst);
             dev_info!(
                 self.dev.as_ref(),
-                "T8122 G15 E493 exact-production passive-result CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
+                "T8122 G15 E528 DMA-synced exact-production CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
                 g15_cdm_addr,
                 entry_addr,
                 body_addr,

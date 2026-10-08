@@ -1675,22 +1675,12 @@ impl G15UnpublishedComputeChannel::ver {
                         ts.end.load(Ordering::Acquire),
                     )
                 });
-                // E487: unlike the stale completion helper, sample the actual
-                // separate result allocation used by the current working-pair body.
-                // Four volatile byte reads avoid alignment assumptions and make the
-                // observation valid while the GPU may be updating this shared object.
-                let result_bytes = inner.g15_result.as_slice();
-                let result_word = if result_bytes.len() >= 4 {
-                    let p = result_bytes.as_ptr();
-                    u32::from_le_bytes([
-                        unsafe { core::ptr::read_volatile(p) },
-                        unsafe { core::ptr::read_volatile(p.add(1)) },
-                        unsafe { core::ptr::read_volatile(p.add(2)) },
-                        unsafe { core::ptr::read_volatile(p.add(3)) },
-                    ])
-                } else {
-                    0
-                };
+                // E528: do not touch the result allocation while the GPU owns
+                // its streaming-DMA mapping. E487/E493's in-flight CPU read was
+                // not ownership-safe on non-coherent J615. Completion/retirement
+                // is the discriminator here; result validation is deferred until
+                // a later CPU-ownership sync after the GPU has retired the work.
+                let result_word = 0;
                 (
                     register_count,
                     register_length,
