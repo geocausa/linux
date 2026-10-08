@@ -481,10 +481,13 @@ impl File {
                             &vm,
                             mmu::G15_GART_RANGE5_PPL108,
                             buffer::PAGE_SIZE,
-                            mmu::PROT_G15_RANGE5_PPL108,
+                            // E531 diagnostic: reproduce the effective a1006e52 M3
+                            // allocator leaf (cached, AP=2, UXN=1, PXN=0) in the
+                            // same low range-5 arena while retaining E528 DMA sync.
+                            mmu::PROT_G15_RANGE5_CODE,
                             64 * 1024,
                             true,
-                            fmt!("File {} VM {} G15 Range 5 PPL108", file_id, id),
+                            fmt!("File {} VM {} G15 E531 DMA m1n1 uniform", file_id, id),
                             false,
                         )?),
                         GFP_KERNEL,

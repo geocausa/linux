@@ -93,24 +93,22 @@ impl super::QueueInner::ver {
             .lock()
             .array_empty_tagged(preempt_size, b"CPMT")?;
 
-        // E351 exact production-PPL application-output class. The Shared
-        // parent follows default range-5 compact 0x308, which UAT-PPL encodes
-        // as 0x00c0_0000_0000_0088 protection bits.
+        // E531: reproduce the effective a1006e52 uniform low allocator for
+        // result/output while retaining E528's DMA ownership transitions.
         #[ver(G == G15)]
         let mut g15_result = self
-            ._g15_range5_ppl308
+            ._g15_range5_ppl108
             .as_ref()
             .ok_or(EINVAL)?
             .lock()
             .array_empty_tagged::<u8>(0x100, b"CDR1")?;
         #[ver(G == G15)]
         let g15_result_addr = g15_result.gpu_va().get();
-        // E351 exact production-PPL UserBuffer argument table: pool 3
-        // preserves the default range-5 low control and maps as compact 0x308.
-        // Keep the 35-entry table a distinct allocation.
+        // E531 keeps the argument table a distinct object but places it in
+        // the same uniform a1006e52 low allocator as every command asset.
         #[ver(G == G15)]
         let mut g15_argument_table = self
-            ._g15_range5_ppl308
+            ._g15_range5_ppl108
             .as_ref()
             .ok_or(EINVAL)?
             .lock()
@@ -122,11 +120,10 @@ impl super::QueueInner::ver {
             return Err(EIO);
         }
 
-        // E351 reclassifies exact pool-0x0a Statics through production
-        // UAT-PPL: selector 1 preserves low control 3, yielding compact 0x308.
+        // E531 keeps Statics in the uniform a1006e52 diagnostic allocator.
         #[ver(G == G15)]
         let mut g15_statics = self
-            ._g15_range5_ppl308
+            ._g15_range5_ppl108
             .as_ref()
             .ok_or(EINVAL)?
             .lock()
@@ -138,11 +135,11 @@ impl super::QueueInner::ver {
             return Err(EIO);
         }
 
-        // E351 reclassifies the finalized pool-5 ESL through production
-        // UAT-PPL: selector 1 yields compact 0x308.
+        // E531 places the known-working entry in the same uniform low
+        // a1006e52 allocator as the other command assets.
         #[ver(G == G15)]
         let mut g15_entry = self
-            ._g15_range5_ppl308
+            ._g15_range5_ppl108
             .as_ref()
             .ok_or(EINVAL)?
             .lock()
@@ -172,9 +169,8 @@ impl super::QueueInner::ver {
             const BODY_OFF: usize = 0x200;
             const BLOB_LEN: usize = 0x400;
 
-            // E351 closes CodeHeap body and profile-helper mapping through
-            // production UAT-PPL as compact 0x108, distinct from data-like
-            // compact 0x308 resources.
+            // E531 uses the same effective a1006e52 low allocator for the body
+            // and retained profile-helper object.
             let mut blob = self
                 ._g15_range5_ppl108
                 .as_ref()
@@ -349,7 +345,7 @@ impl super::QueueInner::ver {
             core::sync::atomic::fence(Ordering::SeqCst);
             dev_info!(
                 self.dev.as_ref(),
-                "T8122 G15 E530 DMA-synced working-pair CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
+                "T8122 G15 E531 DMA-synced m1n1-uniform CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
                 g15_cdm_addr,
                 entry_addr,
                 body_addr,
