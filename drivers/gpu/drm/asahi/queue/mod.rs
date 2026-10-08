@@ -1172,6 +1172,13 @@ impl G15QueueJobStockEmptyAssets::ver {
             return Err(EINVAL);
         }
 
+        // E537: phase 2 has now performed the final CPU writes to the G15
+        // RunCompute image. Publish exactly this 0x880-byte allocation range;
+        // do not clean unrelated allocations sharing the kalloc.gpu GEM block.
+        self.command
+            .as_ref()
+            .ok_or(EINVAL)?
+            .dma_sync_for_device()?;
         let gpu_va = self.command.as_ref().ok_or(EINVAL)?.gpu_va();
         let command = Arc::new(self.command.take().ok_or(EINVAL)?, GFP_KERNEL)?;
         let finalized = self.finalized.take().ok_or(EINVAL)?;

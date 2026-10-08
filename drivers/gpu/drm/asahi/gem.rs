@@ -155,6 +155,94 @@ impl ObjectRef {
         Ok(())
     }
 
+    /// Synchronize a byte range of this object's streaming DMA mapping for CPU access.
+    pub(crate) fn dma_sync_range_for_cpu(&self, offset: usize, size: usize) -> Result {
+        self.dma_sync_range(offset, size, true)
+    }
+
+    /// Synchronize a byte range of this object's streaming DMA mapping for device access.
+    pub(crate) fn dma_sync_range_for_device(&self, offset: usize, size: usize) -> Result {
+        self.dma_sync_range(offset, size, false)
+    }
+
+    fn dma_sync_range(&self, offset: usize, size: usize, for_cpu: bool) -> Result {
+        if size == 0 {
+            return Ok(());
+        }
+        let end = offset.checked_add(size).ok_or(EOVERFLOW)?;
+        if end > self.size() {
+            return Err(EINVAL);
+        }
+
+        let _ = self.gem.sg_table()?;
+
+        // SAFETY: `self.gem` is a DRM shmem object by construction and `sg_table()`
+        // above guarantees a DMA-mapped SG table for this DRM device. Walk only
+        // the mapped DMA segments and synchronize the exact overlapping byte
+        // ranges, never unrelated allocations sharing the same GEM backing.
+        unsafe {
+            let shmem = container_of!(
+                self.gem.as_raw(),
+                bindings::drm_gem_shmem_object,
+                base
+            );
+            let sgt = (*shmem).sgt;
+            if sgt.is_null() {
+                return Err(EIO);
+            }
+
+            let mut sg = (*sgt).sgl;
+            let mut logical = 0usize;
+            let mut covered = 0usize;
+            let nents = (*sgt).nents as usize;
+
+            for _ in 0..nents {
+                if sg.is_null() {
+                    return Err(EIO);
+                }
+                let seg_len = bindings::sg_dma_len(sg) as usize;
+                let seg_end = logical.checked_add(seg_len).ok_or(EOVERFLOW)?;
+
+                let overlap_start = core::cmp::max(offset, logical);
+                let overlap_end = core::cmp::min(end, seg_end);
+                if overlap_start < overlap_end {
+                    let in_seg = overlap_start - logical;
+                    let sync_len = overlap_end - overlap_start;
+                    let dma_addr = bindings::sg_dma_address(sg)
+                        .checked_add(in_seg as u64)
+                        .ok_or(EOVERFLOW)?;
+                    if for_cpu {
+                        bindings::__dma_sync_single_for_cpu(
+                            self.gem.dev().as_ref().as_raw(),
+                            dma_addr,
+                            sync_len,
+                            bindings::dma_data_direction_DMA_BIDIRECTIONAL,
+                        );
+                    } else {
+                        bindings::__dma_sync_single_for_device(
+                            self.gem.dev().as_ref().as_raw(),
+                            dma_addr,
+                            sync_len,
+                            bindings::dma_data_direction_DMA_BIDIRECTIONAL,
+                        );
+                    }
+                    covered = covered.checked_add(sync_len).ok_or(EOVERFLOW)?;
+                }
+
+                if seg_end >= end {
+                    break;
+                }
+                logical = seg_end;
+                sg = bindings::sg_next(sg);
+            }
+
+            if covered != size {
+                return Err(EIO);
+            }
+        }
+        Ok(())
+    }
+
     /// Maps an object into a given `Vm` at any free address within a given range.
     pub(crate) fn map_into_range(
         &mut self,

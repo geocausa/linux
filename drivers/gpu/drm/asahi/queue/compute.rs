@@ -8,7 +8,7 @@
 //! work to the GPU, based on the userspace command buffer.
 
 use super::common;
-use crate::alloc::Allocator;
+use crate::alloc::{Allocator, DmaSyncAllocation};
 use crate::debug::*;
 use crate::fw::types::*;
 use crate::gpu::GpuManager;
@@ -411,6 +411,8 @@ impl super::QueueInner::ver {
         let comp_alloc = kalloc.gpu_ro.alloc_object()?;
         #[ver(G == G15)]
         let comp_alloc = kalloc.gpu.alloc_object()?;
+        #[ver(G == G15)]
+        comp_alloc.dma_sync_for_cpu()?;
 
         let comp = GpuObject::new_init_prealloc(
             comp_alloc,
