@@ -75,6 +75,12 @@ pub(crate) trait RawAllocation {
     fn device(&self) -> &AsahiDevice;
 }
 
+/// Raw allocations that can transition an exact byte range between CPU and DMA ownership.
+pub(crate) trait RawDmaSyncAllocation: RawAllocation {
+    fn dma_sync_range_for_cpu(&self, offset: usize, size: usize) -> Result;
+    fn dma_sync_range_for_device(&self, offset: usize, size: usize) -> Result;
+}
+
 /// Represents a typed allocation.
 pub(crate) trait Allocation<T>: Debug {
     /// Returns the typed CPU-side pointer (if CPU mapping is enabled).
@@ -120,6 +126,24 @@ impl<T, U: RawAllocation> Allocation<T> for GenericAlloc<T, U> {
     }
     fn device(&self) -> &AsahiDevice {
         self.alloc.device()
+    }
+}
+
+/// Typed allocations that can synchronize their exact usable byte range.
+pub(crate) trait DmaSyncAllocation<T>: Allocation<T> {
+    fn dma_sync_for_cpu(&self) -> Result;
+    fn dma_sync_for_device(&self) -> Result;
+}
+
+impl<T, U: RawDmaSyncAllocation> DmaSyncAllocation<T> for GenericAlloc<T, U> {
+    fn dma_sync_for_cpu(&self) -> Result {
+        self.alloc
+            .dma_sync_range_for_cpu(self.debug_offset, self.alloc_size)
+    }
+
+    fn dma_sync_for_device(&self) -> Result {
+        self.alloc
+            .dma_sync_range_for_device(self.debug_offset, self.alloc_size)
     }
 }
 
@@ -828,6 +852,28 @@ impl RawAllocation for SimpleAllocation {
     }
 }
 
+impl RawDmaSyncAllocation for SimpleAllocation {
+    fn dma_sync_range_for_cpu(&self, offset: usize, size: usize) -> Result {
+        let object_offset = self
+            .gpu_ptr
+            .checked_sub(self._mapping.iova())
+            .and_then(|v| v.checked_add(offset as u64))
+            .ok_or(EOVERFLOW)?;
+        self.obj
+            .dma_sync_range_for_cpu(object_offset.try_into()?, size)
+    }
+
+    fn dma_sync_range_for_device(&self, offset: usize, size: usize) -> Result {
+        let object_offset = self
+            .gpu_ptr
+            .checked_sub(self._mapping.iova())
+            .and_then(|v| v.checked_add(offset as u64))
+            .ok_or(EOVERFLOW)?;
+        self.obj
+            .dma_sync_range_for_device(object_offset.try_into()?, size)
+    }
+}
+
 /// A simple allocator that allocates each object as its own GEM object, aligned to the end of a
 /// page.
 ///
@@ -1023,6 +1069,47 @@ impl RawAllocation for HeapAllocation {
     }
     fn device(&self) -> &AsahiDevice {
         &self.0.as_ref().unwrap().dev
+    }
+}
+
+impl RawDmaSyncAllocation for HeapAllocation {
+    fn dma_sync_range_for_cpu(&self, offset: usize, size: usize) -> Result {
+        self.dma_sync_range(offset, size, true)
+    }
+
+    fn dma_sync_range_for_device(&self, offset: usize, size: usize) -> Result {
+        self.dma_sync_range(offset, size, false)
+    }
+}
+
+impl HeapAllocation {
+    fn dma_sync_range(&self, offset: usize, size: usize, for_cpu: bool) -> Result {
+        let node = self.0.as_ref().ok_or(EINVAL)?;
+        let offset_u64: u64 = offset.try_into()?;
+        let size_u64: u64 = size.try_into()?;
+        let end_offset = offset_u64.checked_add(size_u64).ok_or(EOVERFLOW)?;
+        if end_offset > node.size() {
+            return Err(EINVAL);
+        }
+        let start = node.start().checked_add(offset_u64).ok_or(EOVERFLOW)?;
+        let end = start.checked_add(size_u64).ok_or(EOVERFLOW)?;
+
+        node.alloc_ref().with(|inner| {
+            for (obj, _, gpu_base) in inner.backing_objects.iter() {
+                let obj_end = gpu_base
+                    .checked_add(obj.size() as u64)
+                    .ok_or(EOVERFLOW)?;
+                if start >= *gpu_base && end <= obj_end {
+                    let obj_offset: usize = (start - *gpu_base).try_into()?;
+                    return if for_cpu {
+                        obj.dma_sync_range_for_cpu(obj_offset, size)
+                    } else {
+                        obj.dma_sync_range_for_device(obj_offset, size)
+                    };
+                }
+            }
+            Err(EIO)
+        })
     }
 }
 

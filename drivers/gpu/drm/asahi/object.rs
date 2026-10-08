@@ -63,7 +63,7 @@ use core::ops::{
 };
 use core::{mem, ptr, slice};
 
-use crate::alloc::Allocation;
+use crate::alloc::{Allocation, DmaSyncAllocation};
 use crate::debug::*;
 use crate::fw::types::Zeroable;
 use crate::mmu;
@@ -450,6 +450,18 @@ impl<T: GpuStruct, U: Allocation<T>> GpuObject<T, U> {
         // SAFETY: `self.raw` is valid per the type invariant, and the second half is just
         // converting lifetimes.
         unsafe { callback(&*self.raw, &*(&*self.inner as *const _)) }
+    }
+}
+
+impl<T: GpuStruct, U: DmaSyncAllocation<T>> GpuObject<T, U> {
+    /// Transition this exact typed object's bytes to CPU ownership.
+    pub(crate) fn dma_sync_for_cpu(&self) -> Result {
+        self.alloc.dma_sync_for_cpu()
+    }
+
+    /// Publish this exact typed object's bytes to the DMA domain.
+    pub(crate) fn dma_sync_for_device(&self) -> Result {
+        self.alloc.dma_sync_for_device()
     }
 }
 
