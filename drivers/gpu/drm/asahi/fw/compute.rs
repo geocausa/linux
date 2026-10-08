@@ -619,7 +619,8 @@ impl G15SkuBacking {
             true,
             Some(mapping_notifier),
         );
-        let backing = allocator.array_empty_shared_data::<u8>(G15_SKU_BACKING_BYTES)?;
+        let backing = allocator
+            .array_empty_shared_data_cpu_owned::<u8>(G15_SKU_BACKING_BYTES)?;
         let base: u64 = backing.weak_pointer().into();
         if backing.len() != G15_SKU_BACKING_BYTES
             || base & mmu::UAT_PGMSK as u64 != 0
@@ -670,6 +671,7 @@ impl G15SkuBacking {
             .checked_mul(G15_SKU_SLOT_STRIDE)
             .ok_or(EOVERFLOW)?;
         let end = start.checked_add(G15_SKU_SLOT_STRIDE).ok_or(EOVERFLOW)?;
+        self.backing.dma_sync_for_cpu()?;
         let slot = &mut self.backing.as_mut_slice()[start..end];
         for byte in slot.iter_mut() {
             *byte = 0;
@@ -681,6 +683,7 @@ impl G15SkuBacking {
         {
             return Err(EIO);
         }
+        self.backing.dma_sync_for_device()?;
         Ok(G15PreparedSkuSlot {
             index: reserved.index().try_into().map_err(|_| EOVERFLOW)?,
             fwva: reserved.fwva(),

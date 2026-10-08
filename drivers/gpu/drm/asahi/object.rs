@@ -701,6 +701,18 @@ impl<T, U: Allocation<T>> GpuArray<T, U> {
     }
 }
 
+impl<T, U: DmaSyncAllocation<T>> GpuArray<T, U> {
+    /// Transition this exact typed array backing to CPU ownership.
+    pub(crate) fn dma_sync_for_cpu(&self) -> Result {
+        self.array.alloc.dma_sync_for_cpu()
+    }
+
+    /// Publish this exact typed array backing to the DMA domain.
+    pub(crate) fn dma_sync_for_device(&self) -> Result {
+        self.array.alloc.dma_sync_for_device()
+    }
+}
+
 impl<T, U: Allocation<T>> Deref for GpuArray<T, U> {
     type Target = GpuOnlyArray<T, U>;
 
