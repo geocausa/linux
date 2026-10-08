@@ -315,11 +315,10 @@ impl super::QueueInner::ver {
                 | ((entry_addr >> 32) << 16);
             cdm_bytes[pos..pos + 8].copy_from_slice(&shifted_entry.to_le_bytes());
             pos += 8;
-            // Exact 23J220 ordinary direct-launch dword 3 (E241/E242/E244).
-            // The older m1n1 bring-up stream used 0x40 here, but the target
-            // producer derives this from ComputeProgramVariant +0xa24 and the
-            // default distribution mode, yielding bit 30 set and no low bits.
-            put32(cdm_bytes, &mut pos, 0x4000_0000);
+            // E541 historical positive control only: Alyssa's explicitly successful
+            // a1006e52 M3 bring-up used 0x40 here. Exact 23J220 authority remains
+            // 0x40000000; this diagnostic must not become target state.
+            put32(cdm_bytes, &mut pos, 0x0000_0040);
             for _ in 0..6 {
                 put32(cdm_bytes, &mut pos, 1);
             }
@@ -345,7 +344,7 @@ impl super::QueueInner::ver {
             core::sync::atomic::fence(Ordering::SeqCst);
             dev_info!(
                 self.dev.as_ref(),
-                "T8122 G15 E531 DMA-synced m1n1-uniform CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
+                "T8122 G15 E541 DMA-synced a1006-launch-mode CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
                 g15_cdm_addr,
                 entry_addr,
                 body_addr,
