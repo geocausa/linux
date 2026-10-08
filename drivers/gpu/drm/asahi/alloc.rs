@@ -468,6 +468,28 @@ impl RawAllocation for G15SharedBank1Allocation {
     fn device(&self) -> &AsahiDevice { &self.dev }
 }
 
+impl RawDmaSyncAllocation for G15SharedBank1Allocation {
+    fn dma_sync_range_for_cpu(&self, offset: usize, size: usize) -> Result {
+        let object_offset = self
+            .gpu_ptr
+            .checked_sub(self._mapping.iova())
+            .and_then(|v| v.checked_add(offset as u64))
+            .ok_or(EOVERFLOW)?;
+        self.obj
+            .dma_sync_range_for_cpu(object_offset.try_into()?, size)
+    }
+
+    fn dma_sync_range_for_device(&self, offset: usize, size: usize) -> Result {
+        let object_offset = self
+            .gpu_ptr
+            .checked_sub(self._mapping.iova())
+            .and_then(|v| v.checked_add(offset as u64))
+            .ok_or(EOVERFLOW)?;
+        self.obj
+            .dma_sync_range_for_device(object_offset.try_into()?, size)
+    }
+}
+
 pub(crate) type G15SharedGpuObject<T> =
     GpuObject<T, GenericAlloc<T, G15SharedBank1Allocation>>;
 pub(crate) type G15SharedGpuArray<T> =
@@ -504,6 +526,39 @@ impl G15SharedBank1Allocator {
             // SAFETY: G15SharedBank1Allocator::alloc() rounds the backing to
             // `rounded` bytes and page alignment above forces its logical
             // offset to zero, so the whole mapped backing is writable here.
+            unsafe { p.as_ptr().write_bytes(0, rounded) };
+        } else {
+            return Err(EINVAL);
+        }
+
+        let alloc = GenericAlloc {
+            alloc: raw,
+            alloc_size: size,
+            debug_offset: 0,
+            padding: 0,
+            tag: 0,
+            pad_word: GUARD_MARKER | 0x81818181,
+            _p: PhantomData,
+        };
+        GpuArray::<T, GenericAlloc<T, G15SharedBank1Allocation>>::empty(alloc, count)
+    }
+
+    /// Allocate one shared-data array while explicitly taking CPU ownership
+    /// before the post-map zero/default initialization. The caller must publish
+    /// the completed array back to the device before firmware consumption.
+    pub(crate) fn array_empty_shared_data_cpu_owned<T: Sized + Default>(
+        &mut self,
+        count: usize,
+    ) -> Result<G15SharedGpuArray<T>> {
+        let size = mem::size_of::<T>() * count;
+        let rounded = (size + mmu::UAT_PGSZ - 1) & !mmu::UAT_PGMSK;
+        let raw = self.alloc(size, mmu::UAT_PGSZ)?;
+        raw.dma_sync_range_for_cpu(0, rounded)?;
+
+        if let Some(p) = raw.ptr() {
+            // SAFETY: The allocation is page-rounded and page-aligned just as
+            // in `array_empty_shared_data()`, and CPU ownership is established
+            // above before touching the cached mapping.
             unsafe { p.as_ptr().write_bytes(0, rounded) };
         } else {
             return Err(EINVAL);
