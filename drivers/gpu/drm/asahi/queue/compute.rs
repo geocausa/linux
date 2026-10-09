@@ -328,8 +328,13 @@ impl super::QueueInner::ver {
             pos += 8;
             entry_bytes[pos..pos + 3].copy_from_slice(&[0x77, 0x01, 0x2a]);
             pos += 3;
-            let shifted_body = (body_addr >> 7).to_le_bytes();
-            entry_bytes[pos..pos + 5].copy_from_slice(&shifted_body[..5]);
+            // E548 diagnostic: retain the exact 23J220 LoadShader grammar but
+            // replace only its program GPUVA with the address-tagged sentinel
+            // validated by the E547 Apple oracle. The real body allocation stays
+            // intact/inert so no surrounding ownership or placement changes.
+            const LOADSHADER_SENTINEL: u64 = 0x3ff_0000_0000;
+            let shifted_program = (LOADSHADER_SENTINEL >> 7).to_le_bytes();
+            entry_bytes[pos..pos + 5].copy_from_slice(&shifted_program[..5]);
             pos += 5;
             const LOAD_SHADER_TAIL: [u8; 12] = [
                 0x04, 0x00, 0xf7, 0x00, 0x2a, 0x00,
@@ -408,10 +413,11 @@ impl super::QueueInner::ver {
             core::sync::atomic::fence(Ordering::SeqCst);
             dev_info!(
                 self.dev.as_ref(),
-                "T8122 G15 E528 DMA-synced exact-production CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
+                "T8122 G15 E548 LoadShader-sentinel CDM={:#x} entry={:#x} body={:#x} program={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
                 g15_cdm_addr,
                 entry_addr,
                 body_addr,
+                LOADSHADER_SENTINEL,
                 profile_helper_addr,
                 result_addr,
                 g15_args_addr,
