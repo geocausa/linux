@@ -704,7 +704,11 @@ impl super::QueueInner::ver {
                             // Form-1 Apple register IDs are encoded with bit 0 set in
                             // the 12-byte RegisterArray entry (e.g. 0x12090 -> 0x12091).
                             r.add(0x1a510, inner.preempt_buf.gpu_pointer().into());
-                            r.add(0x1a420, inner.g15_cdm_root.gpu_pointer().into());
+                            // E552 one-variable diagnostic: tag only the exact
+                            // 23J220 hardware-visible CDM control-stream root.
+                            // Keep the real root allocated/mapped/content-identical.
+                            const CDM_ROOT_SENTINEL: u64 = 0x3fd_0000_0000;
+                            r.add(0x1a420, CDM_ROOT_SENTINEL);
                             r.add(
                                 0x1a4d0,
                                 inner.preempt_buf.gpu_offset_pointer(preempt2_off).into(),
