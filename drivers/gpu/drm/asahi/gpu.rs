@@ -2835,6 +2835,29 @@ impl GpuManager::ver {
                         phase, err,
                     ),
                 }
+                // E544: compare STOP-only Linux against the E543 Apple oracle at
+                // the exact firmware-owned G15 fault-classification boundary.
+                // RuntimePointers +0x24c already owns this CPU-mapped 0x60-byte
+                // control object; do not touch the banked RGX fault MMIO.
+                self.initdata
+                    .runtime_pointers
+                    .g15_control_state
+                    .with(|raw, _inner| {
+                        let base = raw as *const _ as *const u8;
+                        let u32_at = |offset: usize| unsafe {
+                            core::ptr::read_volatile(base.wrapping_add(offset).cast::<u32>())
+                        };
+                        dev_info!(
+                            self.dev.as_ref(),
+                            "T8122 G15 E550 control {} 00={:#010x} 04={:#010x} 08={:#010x} 0c={:#010x} 10={:#010x} 14={:#010x} 18={:#010x} 1c={:#010x} 20={:#010x} 24={:#010x} 28={:#010x} 2c={:#010x} 30={:#010x} 34={:#010x}\n",
+                            phase,
+                            u32_at(0x00), u32_at(0x04), u32_at(0x08),
+                            u32_at(0x0c), u32_at(0x10), u32_at(0x14),
+                            u32_at(0x18), u32_at(0x1c), u32_at(0x20),
+                            u32_at(0x24), u32_at(0x28), u32_at(0x2c),
+                            u32_at(0x30), u32_at(0x34),
+                        );
+                    });
             };
             log_wfi_state("immediate");
             fsleep(Delta::from_millis(250));

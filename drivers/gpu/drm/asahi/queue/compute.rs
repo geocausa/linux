@@ -374,9 +374,21 @@ impl super::QueueInner::ver {
             let cdm_bytes = g15_cdm_root.as_mut_slice();
             let mut pos = 0usize;
             put32(cdm_bytes, &mut pos, 0x0008_0000);
-            let shifted_entry = ((entry_addr & 0xffff_ffff) << 26)
+            // E550 diagnostic: preserve the exact ordinary G15 Launch packet but
+            // tag only the CDM-published ESL entry GPUVA. E241 proves dword1 uses
+            // the entry's high address bits plus the variant low 22 bits, while
+            // dword2 is entry >> 6. The historical shifted_entry shortcut is not
+            // equivalent for this high sentinel.
+            const ESL_ENTRY_SENTINEL: u64 = 0x3fe_0000_0000;
+            let normal_shifted_entry = ((entry_addr & 0xffff_ffff) << 26)
                 | ((entry_addr >> 32) << 16);
-            cdm_bytes[pos..pos + 8].copy_from_slice(&shifted_entry.to_le_bytes());
+            let normal_dword1 = normal_shifted_entry as u32;
+            let variant_low22 = normal_dword1 & 0x003f_ffff;
+            let sentinel_dword1 = ((ESL_ENTRY_SENTINEL >> 16) as u32 & 0xffc0_0000)
+                | variant_low22;
+            let sentinel_dword2 = (ESL_ENTRY_SENTINEL >> 6) as u32;
+            cdm_bytes[pos..pos + 4].copy_from_slice(&sentinel_dword1.to_le_bytes());
+            cdm_bytes[pos + 4..pos + 8].copy_from_slice(&sentinel_dword2.to_le_bytes());
             pos += 8;
             // Exact 23J220 ordinary direct-launch dword 3 (E241/E242/E244).
             // The older m1n1 bring-up stream used 0x40 here, but the target
@@ -408,9 +420,10 @@ impl super::QueueInner::ver {
             core::sync::atomic::fence(Ordering::SeqCst);
             dev_info!(
                 self.dev.as_ref(),
-                "T8122 G15 E528 DMA-synced exact-production CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
+                "T8122 G15 E550 entry-sentinel CDM={:#x} entry={:#x} sentinel={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
                 g15_cdm_addr,
                 entry_addr,
+                ESL_ENTRY_SENTINEL,
                 body_addr,
                 profile_helper_addr,
                 result_addr,
