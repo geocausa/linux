@@ -487,13 +487,18 @@ impl G15StockEmptyComputeChannelOwners {
             return Err(EINVAL);
         }
 
-        let channel_command_region_base_fwva = match self._cl_command_resource.base_fwva() {
+        let _real_channel_command_region_base_fwva =
+            match self._cl_command_resource.base_fwva() {
             Ok(fwva) => fwva,
             Err(err) => {
                 let _ = uma_pool.complete_reference(prepared.hardware_buffer_id);
                 return Err(err);
             }
         };
+        // E571 diagnostic: address-tag the single CL command-resource base
+        // from which exact RTKit derives the six G15 hardware scratch registers.
+        // Keep the real allocation alive; only the serialized hardware base changes.
+        let channel_command_region_base_fwva = 0x3fa0_0000_000;
         let sku_input = fw::compute::G15StockEmptySkuInputs {
             command_fwva,
             stream_fwva: prepared.sku.fwva(),
