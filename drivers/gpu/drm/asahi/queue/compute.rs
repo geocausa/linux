@@ -684,10 +684,12 @@ impl super::QueueInner::ver {
                             r.add(0x1a510, inner.preempt_buf.gpu_pointer().into());
                             r.add(0x1a420, cmdbuf.cdm_ctrl_stream_base);
                             // buf2-5 Only if internal program is used
-                            r.add(0x1a4d0, inner.preempt_buf.gpu_offset_pointer(preempt2_off).into());
-                            r.add(0x1a4d8, inner.preempt_buf.gpu_offset_pointer(preempt3_off).into());
-                            r.add(0x1a4e0, inner.preempt_buf.gpu_offset_pointer(preempt4_off).into());
-                            r.add(0x1a4e8, inner.preempt_buf.gpu_offset_pointer(preempt5_off).into());
+                            // E573: distinct unmapped sentinels identify which secondary
+                            // DataBuffer tail, if any, hardware consumes first.
+                            r.add(0x1a4d0, 0x3f60_0000_000);
+                            r.add(0x1a4d8, 0x3f70_0000_000);
+                            r.add(0x1a4e0, 0x3f80_0000_000);
+                            r.add(0x1a4e8, 0x3f90_0000_000);
                             r.add(0x10071, self.usc_exec_base); // USC_EXEC_BASE_CP
                             r.add(0x11841, cmdbuf.helper.binary.into());
                             r.add(0x11849, cmdbuf.helper.data);
