@@ -2835,7 +2835,7 @@ impl GpuManager::ver {
                         phase, err,
                     ),
                 }
-                // E552: observe the exact firmware-owned G15 fault-classification
+                // E554: observe the exact firmware-owned G15 fault-classification
                 // object without touching banked RGX fault MMIO. This is CPU-side
                 // telemetry only and does not alter GPU-visible state.
                 self.initdata
@@ -2848,7 +2848,7 @@ impl GpuManager::ver {
                         };
                         dev_info!(
                             self.dev.as_ref(),
-                            "T8122 G15 E552 control {} 00={:#010x} 04={:#010x} 08={:#010x} 0c={:#010x} 10={:#010x} 14={:#010x} 18={:#010x} 1c={:#010x} 20={:#010x} 24={:#010x} 28={:#010x} 2c={:#010x} 30={:#010x} 34={:#010x}\n",
+                            "T8122 G15 E554 control {} 00={:#010x} 04={:#010x} 08={:#010x} 0c={:#010x} 10={:#010x} 14={:#010x} 18={:#010x} 1c={:#010x} 20={:#010x} 24={:#010x} 28={:#010x} 2c={:#010x} 30={:#010x} 34={:#010x}\n",
                             phase,
                             u32_at(0x00), u32_at(0x04), u32_at(0x08),
                             u32_at(0x0c), u32_at(0x10), u32_at(0x14),

@@ -372,23 +372,24 @@ impl super::QueueInner::ver {
             }
 
             let cdm_bytes = g15_cdm_root.as_mut_slice();
+            cdm_bytes[..CDM_LEN].fill(0);
+
+            // E554 exact-23J220 parser discriminator. The retained target
+            // agxaReserveCDMTokenSpace<G15>() emits an unconditional Stream
+            // Link as {0x20000000 | target[47:32], target[31:0]}. Point it
+            // at an unmapped bank-local sentinel while preserving the real
+            // root mapping and the published end/terminate token.
+            const LINK_SENTINEL: u64 = 0x3fc_0000_0000;
             let mut pos = 0usize;
-            put32(cdm_bytes, &mut pos, 0x0008_0000);
-            let shifted_entry = ((entry_addr & 0xffff_ffff) << 26)
-                | ((entry_addr >> 32) << 16);
-            cdm_bytes[pos..pos + 8].copy_from_slice(&shifted_entry.to_le_bytes());
-            pos += 8;
-            // Exact 23J220 ordinary direct-launch dword 3 (E241/E242/E244).
-            // The older m1n1 bring-up stream used 0x40 here, but the target
-            // producer derives this from ComputeProgramVariant +0xa24 and the
-            // default distribution mode, yielding bit 30 set and no low bits.
-            put32(cdm_bytes, &mut pos, 0x4000_0000);
-            for _ in 0..6 {
-                put32(cdm_bytes, &mut pos, 1);
-            }
-            put32(cdm_bytes, &mut pos, 0x6000_0160);
-            put32(cdm_bytes, &mut pos, 0x4000_0000);
-            if pos != CDM_LEN {
+            put32(
+                cdm_bytes,
+                &mut pos,
+                0x2000_0000 | (((LINK_SENTINEL >> 32) as u32) & 0xffff),
+            );
+            put32(cdm_bytes, &mut pos, LINK_SENTINEL as u32);
+            let mut end_pos = CDM_LEN - 4;
+            put32(cdm_bytes, &mut end_pos, 0x4000_0000);
+            if pos != 8 || end_pos != CDM_LEN {
                 return Err(EIO);
             }
 
@@ -704,11 +705,7 @@ impl super::QueueInner::ver {
                             // Form-1 Apple register IDs are encoded with bit 0 set in
                             // the 12-byte RegisterArray entry (e.g. 0x12090 -> 0x12091).
                             r.add(0x1a510, inner.preempt_buf.gpu_pointer().into());
-                            // E552 one-variable diagnostic: tag only the exact
-                            // 23J220 hardware-visible CDM control-stream root.
-                            // Keep the real root allocated/mapped/content-identical.
-                            const CDM_ROOT_SENTINEL: u64 = 0x3fd_0000_0000;
-                            r.add(0x1a420, CDM_ROOT_SENTINEL);
+                            r.add(0x1a420, inner.g15_cdm_root.gpu_pointer().into());
                             r.add(
                                 0x1a4d0,
                                 inner.preempt_buf.gpu_offset_pointer(preempt2_off).into(),
