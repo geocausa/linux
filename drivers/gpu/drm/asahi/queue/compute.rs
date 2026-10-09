@@ -398,8 +398,11 @@ impl super::QueueInner::ver {
             // producer derives this from ComputeProgramVariant +0xa24 and the
             // default distribution mode, yielding bit 30 set and no low bits.
             put32(cdm_bytes, &mut pos, 0x4000_0000);
+            // E568 diagnostic: E567 proved on the same M3 that exact-target
+            // Launch with all six geometry dwords zero retires as a valid
+            // no-work command. Keep every other Launch/resource field intact.
             for _ in 0..6 {
-                put32(cdm_bytes, &mut pos, 1);
+                put32(cdm_bytes, &mut pos, 0);
             }
             put32(cdm_bytes, &mut pos, 0x6000_0160);
             put32(cdm_bytes, &mut pos, 0x4000_0000);
