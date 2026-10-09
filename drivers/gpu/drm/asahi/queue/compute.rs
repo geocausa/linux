@@ -718,7 +718,10 @@ impl super::QueueInner::ver {
                             //
                             // Form-1 Apple register IDs are encoded with bit 0 set in
                             // the 12-byte RegisterArray entry (e.g. 0x12090 -> 0x12091).
-                            r.add(0x1a510, inner.preempt_buf.gpu_pointer().into());
+                            // E570 diagnostic: address-tag the primary execution
+                            // DataBuffer consumption while preserving all real-work
+                            // Launch bytes and the four exact tail addresses.
+                            r.add(0x1a510, 0x3fb0_0000_000);
                             r.add(0x1a420, inner.g15_cdm_root.gpu_pointer().into());
                             r.add(
                                 0x1a4d0,
