@@ -389,15 +389,27 @@ impl super::QueueInner::ver {
             let cdm_bytes = g15_cdm_root.as_mut_slice();
             let mut pos = 0usize;
             put32(cdm_bytes, &mut pos, 0x0008_0000);
-            let shifted_entry = ((entry_addr & 0xffff_ffff) << 26)
+
+            // E563 diagnostic: make first ESL-entry consumption address-tagged
+            // while preserving the exact E241 high-sentinel address packing.
+            // The only Launch-control deviation from exact 23J220 below is
+            // dword3 bit 0, independently observed on a successful current
+            // 25G241 M3 Launch. This is a discriminator, not target authority.
+            const ESL_ENTRY_SENTINEL: u64 = 0x3fe_0000_0000;
+            let normal_shifted_entry = ((entry_addr & 0xffff_ffff) << 26)
                 | ((entry_addr >> 32) << 16);
-            cdm_bytes[pos..pos + 8].copy_from_slice(&shifted_entry.to_le_bytes());
-            pos += 8;
-            // Exact 23J220 ordinary direct-launch dword 3 (E241/E242/E244).
-            // The older m1n1 bring-up stream used 0x40 here, but the target
-            // producer derives this from ComputeProgramVariant +0xa24 and the
-            // default distribution mode, yielding bit 30 set and no low bits.
-            put32(cdm_bytes, &mut pos, 0x4000_0000);
+            let normal_dword1 = normal_shifted_entry as u32;
+            let variant_low22 = normal_dword1 & 0x003f_ffff;
+            let sentinel_dword1 = ((ESL_ENTRY_SENTINEL >> 16) as u32 & 0xffc0_0000)
+                | variant_low22;
+            let sentinel_dword2 = (ESL_ENTRY_SENTINEL >> 6) as u32;
+            put32(cdm_bytes, &mut pos, sentinel_dword1);
+            put32(cdm_bytes, &mut pos, sentinel_dword2);
+
+            // Current-Apple structural oracle E549 emits 0x40000001 on this
+            // same J615/G15G C0. Exact 23J220 remains 0x40000000; bit 0 is set
+            // here only to test whether that mode reaches the ESL fetch stage.
+            put32(cdm_bytes, &mut pos, 0x4000_0001);
             for _ in 0..6 {
                 put32(cdm_bytes, &mut pos, 1);
             }
@@ -423,9 +435,10 @@ impl super::QueueInner::ver {
             core::sync::atomic::fence(Ordering::SeqCst);
             dev_info!(
                 self.dev.as_ref(),
-                "T8122 G15 E528 DMA-synced exact-production CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
+                "T8122 G15 E563 current-mode entry-sentinel CDM={:#x} entry={:#x} sentinel={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
                 g15_cdm_addr,
                 entry_addr,
+                ESL_ENTRY_SENTINEL,
                 body_addr,
                 profile_helper_addr,
                 result_addr,
