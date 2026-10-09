@@ -88,10 +88,25 @@ impl super::QueueInner::ver {
             return Err(EIO);
         }
 
-        let preempt_buf = self
+        let mut preempt_buf = self
             .ualloc
             .lock()
             .array_empty_tagged(preempt_size, b"CPMT")?;
+
+        #[ver(G == G15)]
+        {
+            // E560: the ordinary per-VM HeapAllocator establishes a
+            // non-coherent streaming-DMA mapping before GpuArray::empty()
+            // initializes this backing through the cached CPU mapping.
+            // Reacquire CPU ownership, rebuild the exact zero/default
+            // preemption state, then publish it back to the device before
+            // RegisterArray/JobParameters2 expose these addresses to CDM.
+            preempt_buf.dma_sync_for_cpu()?;
+            for byte in preempt_buf.as_mut_slice() {
+                *byte = 0;
+            }
+            preempt_buf.dma_sync_for_device()?;
+        }
 
         // E351 exact production-PPL application-output class. The Shared
         // parent follows default range-5 compact 0x308, which UAT-PPL encodes
