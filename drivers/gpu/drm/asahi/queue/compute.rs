@@ -300,69 +300,14 @@ impl super::QueueInner::ver {
                 out
             }
 
-            // Exact 23J220 direct state-loader entry. E289 adds the production
-            // inactive-profile BL_0 that E285/E286 omitted.
-            const ENTRY_LEN: usize = 126;
-            let mut pos = 0usize;
-
-            for ptr in [exact_pointer(g15_args_addr), exact_pointer(g15_statics_addr)] {
-                entry_bytes[pos..pos + ptr.len()].copy_from_slice(&ptr);
-                pos += ptr.len();
-            }
-
-            const LOADS: [u8; 28] = [
-                // BufferBindings/UserBuffer -> r0/r1.
-                0x67, 0x10, 0x54, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x59, 0x00, 0x00, 0x50, 0x26, 0x00,
-                // Statics -> r2/r3.
-                0x67, 0x10, 0x54, 0x04, 0x02, 0x00, 0x00, 0x00,
-                0x59, 0x00, 0x00, 0x40, 0x26, 0x00,
-            ];
-            entry_bytes[pos..pos + LOADS.len()].copy_from_slice(&LOADS);
-            pos += LOADS.len();
-
-            // appendLdshdr() reserves exactly 0x1c bytes. finish() later patches
-            // them with this exact LoadShader encoding; only the body VA varies.
-            entry_bytes[pos..pos + 8]
-                .copy_from_slice(&[0x77, 0x00, 0x2a, 0x41, 0x00, 0x00, 0x00, 0x00]);
-            pos += 8;
-            entry_bytes[pos..pos + 3].copy_from_slice(&[0x77, 0x01, 0x2a]);
-            pos += 3;
-            let shifted_body = (body_addr >> 7).to_le_bytes();
-            entry_bytes[pos..pos + 5].copy_from_slice(&shifted_body[..5]);
-            pos += 5;
-            const LOAD_SHADER_TAIL: [u8; 12] = [
-                0x04, 0x00, 0xf7, 0x00, 0x2a, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            ];
-            entry_bytes[pos..pos + LOAD_SHADER_TAIL.len()].copy_from_slice(&LOAD_SHADER_TAIL);
-            pos += LOAD_SHADER_TAIL.len();
-
-            // Both inflight loads carry dependency class 1, so finishRound()
-            // reduces them to aggregate mask 2: NOP(2), then three NOP(0).
-            // COPYs hand the exact r0..r3 load results to u0..u3.
-            const ROUND_AND_COPIES: [u8; 24] = [
-                0x06, 0x08, 0x06, 0x00, 0x06, 0x00, 0x06, 0x00,
-                0x0b, 0x00, 0x09, 0x24,
-                0x1b, 0x02, 0x09, 0x24,
-                0x2b, 0x04, 0x09, 0x24,
-                0x3b, 0x06, 0x09, 0x24,
-            ];
-            entry_bytes[pos..pos + ROUND_AND_COPIES.len()].copy_from_slice(&ROUND_AND_COPIES);
-            pos += ROUND_AND_COPIES.len();
-
-            let profile = profile_bl(profile_helper_addr);
-            entry_bytes[pos..pos + profile.len()].copy_from_slice(&profile);
-            pos += profile.len();
-
-            const STOP: [u8; 4] = [0x0e, 0x00, 0x00, 0x00];
-            entry_bytes[pos..pos + STOP.len()].copy_from_slice(&STOP);
-            pos += STOP.len();
-
-            if pos != ENTRY_LEN {
-                return Err(EIO);
-            }
-            entry_bytes[pos..].fill(0);
+            // E542 diagnostic control: select a real CDM Launch whose ESL program
+            // immediately terminates and never issues LoadShader. 0x0e000000 is
+            // the exact 23J220 ESL STOP emitted by ESLStateLoadEncoderGen2::finish().
+            // All surrounding command state remains the E538 exact-target baseline.
+            const ENTRY_LEN: usize = 4;
+            const ESL_STOP: [u8; ENTRY_LEN] = [0x0e, 0x00, 0x00, 0x00];
+            entry_bytes[..ENTRY_LEN].copy_from_slice(&ESL_STOP);
+            entry_bytes[ENTRY_LEN..].fill(0);
 
             // The 0x30-byte G15 direct stream independently appears in Alyssa's
             // working m1n1 path and pac85's standalone macOS AGX demo.
@@ -408,7 +353,7 @@ impl super::QueueInner::ver {
             core::sync::atomic::fence(Ordering::SeqCst);
             dev_info!(
                 self.dev.as_ref(),
-                "T8122 G15 E528 DMA-synced exact-production CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
+                "T8122 G15 E542 real-Launch ESL-STOP no-LoadShader CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
                 g15_cdm_addr,
                 entry_addr,
                 body_addr,
