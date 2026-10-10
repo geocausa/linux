@@ -786,6 +786,19 @@ impl<'a> InitDataBuilder::ver<'a> {
                     ..Zeroable::init_zeroed()
                 })
                 .chain(|raw| {
+                    #[ver(G == G15)]
+                    // E592 lifecycle discriminator. Exact RTKit treats the
+                    // qword at HwDataB +0x17d4 as an optional CORE_MASK_0
+                    // restore value. Normal J615 leaves it zero (E574/E575),
+                    // but this one-shot diagnostic republishes the known live
+                    // ten-core mask through that exact firmware-supported path.
+                    unsafe {
+                        core::ptr::write_unaligned(
+                            (raw as *mut _ as *mut u8).add(0x17d4).cast::<u32>(),
+                            0x0000_03ff,
+                        );
+                    }
+
                     #[ver(V >= V13_3)]
                     for i in 0..16 {
                         raw.unk_arr_0[i] = i as u32;
