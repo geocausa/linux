@@ -187,41 +187,6 @@ impl super::QueueInner::ver {
             const BODY_OFF: usize = 0x200;
             const BLOB_LEN: usize = 0x400;
 
-            // macOS 14.8.3 / 23J220 G15 uses the older two-LDIMM pointer
-            // grammar here, not the newer generator form used by E283. E284
-            // recovered the exact bit-preserving pointer fixup performed by
-            // loadBufferPointer(); keep it isolated so runtime GPU VAs remain
-            // dynamic while the instruction grammar stays byte-exact.
-            fn exact_pointer(addr: u64) -> [u8; 16] {
-                const TEMPLATE: [u8; 16] = [
-                    0x1c, 0x80, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00,
-                    0x1c, 0x80, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
-                ];
-                const INDEX: [usize; 16] = [
-                    0, 0, 0, 3, 8, 8, 9, 10, 4, 4, 4, 7, 12, 12, 13, 14,
-                ];
-                const RSHIFT: [u8; 16] = [
-                    0, 0, 0, 0, 1, 4, 0, 0, 0, 0, 0, 0, 1, 4, 0, 0,
-                ];
-                const PRESERVE: [u8; 16] = [
-                    0xff, 0x80, 0xff, 0x01, 0xe1, 0xf3, 0x00, 0xf0,
-                    0xff, 0x80, 0xff, 0x01, 0xe1, 0xf3, 0x00, 0xf0,
-                ];
-
-                let mut table = [0u8; 16];
-                table[..8].copy_from_slice(&addr.to_le_bytes());
-                table[8..].copy_from_slice(&(addr >> 5).to_le_bytes());
-
-                let mut out = TEMPLATE;
-                let mut i = 0;
-                while i < out.len() {
-                    let shifted = table[INDEX[i]] >> RSHIFT[i];
-                    out[i] = shifted ^ ((shifted ^ TEMPLATE[i]) & PRESERVE[i]);
-                    i += 1;
-                }
-                out
-            }
-
             // E351 closes CodeHeap body and profile-helper mapping through
             // production UAT-PPL as compact 0x108, distinct from data-like
             // compact 0x308 resources.
@@ -275,69 +240,57 @@ impl super::QueueInner::ver {
             let body_bytes = blob.as_mut_slice();
             let entry_bytes = g15_entry.as_mut_slice();
 
-            // E493: provenance-clean exact 23J220 backend body from E280/E281.
-            // It consumes the exact UserBuffer pointer handed to u0/u1 by the
-            // E352 production state-loader and writes 0x0539015c when gid == 0.
-            const PROD_MAIN: [u8; 58] = [
-                0x1c, 0xa0, 0x10, 0x06, 0x06, 0x04, 0x06, 0x00,
-                0x06, 0x00, 0x06, 0x00, 0x0a, 0x03, 0x2b, 0x80,
-                0x06, 0x00, 0x07, 0x22, 0x00, 0x00, 0x0f, 0x05,
-                0x54, 0x01, 0x1c, 0xdc, 0x02, 0x04, 0x04, 0x00,
-                0xc8, 0x09, 0xe7, 0x00, 0x54, 0x02, 0x00, 0x00,
-                0x00, 0x00, 0x51, 0x00, 0x00, 0x90, 0x00, 0x00,
-                0x0f, 0x06, 0x04, 0x01, 0x00, 0x00, 0x0e, 0x00,
-                0x00, 0x00,
-            ];
-            body_bytes[BODY_OFF..BODY_OFF + PROD_MAIN.len()].copy_from_slice(&PROD_MAIN);
+            // E597 restores the body paired with the independently working
+            // M3 G15 entry used by E357.  This is the only executed-program
+            // delta from E357: materialize the PPL308 result GPUVA in r0/r1,
+            // materialize 1337.0f in r2, device-store r2 through r0:r1, STOP.
+            fn swizzle_imm32(value: u32) -> u64 {
+                let imm_a = (value & 0x7f) as u64;
+                let imm_b = ((value >> 7) & 0x0f) as u64;
+                let imm_c = ((value >> 11) & 0x03) as u64;
+                let imm_d = ((value >> 13) & 0x0fff) as u64;
+                let imm_e = ((value >> 25) & 0x7f) as u64;
 
-            // Exact inactive-profile BL_0 emitted after the final load round and
-            // before finish() appends STOP. The target is helper entry 0.
-            fn profile_bl(helper_addr: u64) -> [u8; 10] {
-                let value = ((helper_addr & 0xffff_ffff_ffff) << 1) | 1;
-                let lo = value as u32;
-                let hi = (value >> 32) as u32;
-                let words = [
-                    (((hi >> 6) & 0x800) | 0x8f) as u16,
-                    ((((lo & 0x01ff_fffc) << 7) | ((lo & 1) << 8) | 0x54)
-                        & 0xffff) as u16,
-                    ((value >> 9) & 0xffff) as u16,
-                    ((value >> 25) & 0xffff) as u16,
-                    ((hi >> 9) & 0xff) as u16,
-                ];
-                let mut out = [0u8; 10];
-                let mut i = 0;
-                while i < words.len() {
-                    let bytes = words[i].to_le_bytes();
-                    out[i * 2] = bytes[0];
-                    out[i * 2 + 1] = bytes[1];
-                    i += 1;
-                }
-                out
+                (imm_a << 8)
+                    | (imm_b << 33)
+                    | (imm_c << 42)
+                    | (imm_d << 48)
+                    | (imm_e << 25)
             }
 
-            // Exact 23J220 direct state-loader entry. E289 adds the production
-            // inactive-profile BL_0 that E285/E286 omitted.
-            const ENTRY_LEN: usize = 126;
+            fn imm_inst(reg: u8, value: u32) -> [u8; 8] {
+                let base = u64::from_le_bytes([0x0c, 0x80, 0x02, 0, 0, 0, 0, 0]);
+                (base | ((reg as u64) << 4) | swizzle_imm32(value)).to_le_bytes()
+            }
+
+            let mut body_pos = BODY_OFF;
+            for inst in [
+                imm_inst(0, result_addr as u32),
+                imm_inst(2, 1337.0f32.to_bits()),
+                imm_inst(1, (result_addr >> 32) as u32),
+            ] {
+                body_bytes[body_pos..body_pos + inst.len()].copy_from_slice(&inst);
+                body_pos += inst.len();
+            }
+            const WORKING_BODY_TAIL: [u8; 18] = [
+                0xe7, 0x00, 0x54, 0x04, 0x00, 0x00, 0x00, 0x00,
+                0x11, 0x01, 0x00, 0x90, 0x08, 0x00,
+                0x0e, 0x00, 0x00, 0x00,
+            ];
+            body_bytes[body_pos..body_pos + WORKING_BODY_TAIL.len()]
+                .copy_from_slice(&WORKING_BODY_TAIL);
+            body_pos += WORKING_BODY_TAIL.len();
+            if body_pos != BODY_OFF + 42 {
+                return Err(EIO);
+            }
+
+            // E530 keeps E357's full G15 entry-state program shared by
+            // Alyssa's explicitly successful a1006e52 M3 Compute path and
+            // pac85's independent G15 demo.  The paired working body above is
+            // the only executed-program delta in this discriminator.
+            const ENTRY_LEN: usize = 84;
             let mut pos = 0usize;
 
-            for ptr in [exact_pointer(g15_args_addr), exact_pointer(g15_statics_addr)] {
-                entry_bytes[pos..pos + ptr.len()].copy_from_slice(&ptr);
-                pos += ptr.len();
-            }
-
-            const LOADS: [u8; 28] = [
-                // BufferBindings/UserBuffer -> r0/r1.
-                0x67, 0x10, 0x54, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x59, 0x00, 0x00, 0x50, 0x26, 0x00,
-                // Statics -> r2/r3.
-                0x67, 0x10, 0x54, 0x04, 0x02, 0x00, 0x00, 0x00,
-                0x59, 0x00, 0x00, 0x40, 0x26, 0x00,
-            ];
-            entry_bytes[pos..pos + LOADS.len()].copy_from_slice(&LOADS);
-            pos += LOADS.len();
-
-            // appendLdshdr() reserves exactly 0x1c bytes. finish() later patches
-            // them with this exact LoadShader encoding; only the body VA varies.
             entry_bytes[pos..pos + 8]
                 .copy_from_slice(&[0x77, 0x00, 0x2a, 0x41, 0x00, 0x00, 0x00, 0x00]);
             pos += 8;
@@ -346,43 +299,26 @@ impl super::QueueInner::ver {
             let shifted_body = (body_addr >> 7).to_le_bytes();
             entry_bytes[pos..pos + 5].copy_from_slice(&shifted_body[..5]);
             pos += 5;
-            const LOAD_SHADER_TAIL: [u8; 12] = [
-                0x04, 0x00, 0xf7, 0x00, 0x2a, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+
+            const WORKING_ENTRY_EPILOG: [u8; 68] = [
+                0x04, 0x00, 0xf7, 0x00, 0x2a, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x1c, 0x80, 0x02, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x14, 0x81, 0x11, 0x06,
+                0x00, 0x00, 0x00, 0x00, 0x0c, 0x80, 0x02, 0x00,
+                0x04, 0x00, 0x00, 0x00, 0x9f, 0x11, 0x54, 0x00,
+                0x02, 0x00, 0x08, 0xa8, 0x10, 0x05, 0x1c, 0x80,
+                0x02, 0x00, 0x04, 0x00, 0x00, 0x00, 0x0f, 0x12,
+                0x54, 0x00, 0x4c, 0xff, 0x0e, 0x00, 0x00, 0x00,
+                0x0e, 0x00, 0x00, 0x00,
             ];
-            entry_bytes[pos..pos + LOAD_SHADER_TAIL.len()].copy_from_slice(&LOAD_SHADER_TAIL);
-            pos += LOAD_SHADER_TAIL.len();
-
-            // Both inflight loads carry dependency class 1, so finishRound()
-            // reduces them to aggregate mask 2: NOP(2), then three NOP(0).
-            // COPYs hand the exact r0..r3 load results to u0..u3.
-            const ROUND_AND_COPIES: [u8; 24] = [
-                0x06, 0x08, 0x06, 0x00, 0x06, 0x00, 0x06, 0x00,
-                0x0b, 0x00, 0x09, 0x24,
-                0x1b, 0x02, 0x09, 0x24,
-                0x2b, 0x04, 0x09, 0x24,
-                0x3b, 0x06, 0x09, 0x24,
-            ];
-            entry_bytes[pos..pos + ROUND_AND_COPIES.len()].copy_from_slice(&ROUND_AND_COPIES);
-            pos += ROUND_AND_COPIES.len();
-
-            let profile = profile_bl(profile_helper_addr);
-            entry_bytes[pos..pos + profile.len()].copy_from_slice(&profile);
-            pos += profile.len();
-
-            const STOP: [u8; 4] = [0x0e, 0x00, 0x00, 0x00];
-            entry_bytes[pos..pos + STOP.len()].copy_from_slice(&STOP);
-            pos += STOP.len();
+            entry_bytes[pos..pos + WORKING_ENTRY_EPILOG.len()]
+                .copy_from_slice(&WORKING_ENTRY_EPILOG);
+            pos += WORKING_ENTRY_EPILOG.len();
 
             if pos != ENTRY_LEN {
                 return Err(EIO);
             }
             entry_bytes[pos..].fill(0);
-
-            // E587 matches the successful Apple E543 diagnostic exactly:
-            // preserve the complete finalized 126-byte direct ESL stream and
-            // replace only instruction 0 with the native four-byte STOP.
-            entry_bytes[..4].copy_from_slice(&[0x0e, 0x00, 0x00, 0x00]);
 
             // The 0x30-byte G15 direct stream independently appears in Alyssa's
             // working m1n1 path and pac85's standalone macOS AGX demo.
@@ -428,7 +364,7 @@ impl super::QueueInner::ver {
             core::sync::atomic::fence(Ordering::SeqCst);
             dev_info!(
                 self.dev.as_ref(),
-                "T8122 G15 E587 corrected-envelope first4-STOP CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
+                "T8122 G15 E597 corrected-envelope working-pair CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
                 g15_cdm_addr,
                 entry_addr,
                 body_addr,
