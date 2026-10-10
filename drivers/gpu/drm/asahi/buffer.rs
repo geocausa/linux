@@ -1982,16 +1982,32 @@ impl G15FListResourceOwner {
         // must be the cached/FList class (PROT_G15_RANGE5_FLIST_LIST); E082
         // proves that class is bit-identical to the existing cached range-5
         // arena while retaining distinct FList semantics here.
-        let page_pool_list = range5_list_alloc.array_empty_tagged::<U64>(
+        let mut page_pool_list = range5_list_alloc.array_empty_tagged::<U64>(
             geometry.page_pool_list_entries as usize,
             b"UPPL",
         )?;
+        // `DefaultAllocator` establishes its non-coherent streaming-DMA mapping
+        // before `GpuArray::empty()` initializes the cached CPU mapping. E527
+        // therefore requires an explicit CPU/device ownership round trip before
+        // the GPU consumes these persistent list contents. Rebuild the exact
+        // stock-empty zero image while CPU-owned, then publish it to the device.
+        page_pool_list.dma_sync_for_cpu()?;
+        for entry in page_pool_list.as_mut_slice() {
+            *entry = U64(0);
+        }
+        page_pool_list.dma_sync_for_device()?;
+
         let backup_entries: usize = (geometry.backup_page_list_bytes
             / G15FListGeometry::BACKUP_PAGE_LIST_ENTRY_BYTES)
             .try_into()
             .map_err(|_| EOVERFLOW)?;
-        let backup_page_list =
+        let mut backup_page_list =
             range5_list_alloc.array_empty_tagged::<U64>(backup_entries, b"UBPL")?;
+        backup_page_list.dma_sync_for_cpu()?;
+        for entry in backup_page_list.as_mut_slice() {
+            *entry = U64(0);
+        }
+        backup_page_list.dma_sync_for_device()?;
 
         let uppl_base: u64 = page_pool_list.gpu_pointer().into();
         let ubpl_base: u64 = backup_page_list.gpu_pointer().into();
