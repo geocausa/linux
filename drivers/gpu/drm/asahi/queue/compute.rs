@@ -379,6 +379,11 @@ impl super::QueueInner::ver {
             }
             entry_bytes[pos..].fill(0);
 
+            // E587 matches the successful Apple E543 diagnostic exactly:
+            // preserve the complete finalized 126-byte direct ESL stream and
+            // replace only instruction 0 with the native four-byte STOP.
+            entry_bytes[..4].copy_from_slice(&[0x0e, 0x00, 0x00, 0x00]);
+
             // The 0x30-byte G15 direct stream independently appears in Alyssa's
             // working m1n1 path and pac85's standalone macOS AGX demo.
             fn put32(bytes: &mut [u8], pos: &mut usize, value: u32) {
@@ -423,7 +428,7 @@ impl super::QueueInner::ver {
             core::sync::atomic::fence(Ordering::SeqCst);
             dev_info!(
                 self.dev.as_ref(),
-                "T8122 G15 E528 DMA-synced exact-production CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
+                "T8122 G15 E587 corrected-envelope first4-STOP CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
                 g15_cdm_addr,
                 entry_addr,
                 body_addr,
