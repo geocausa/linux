@@ -734,7 +734,15 @@ impl<'a> InitDataBuilder::ver<'a> {
                     unk_ae4: Array::new([0x0, 0x3, 0x7, 0x7]),
                     #[ver(V < V13_0B4)]
                     unk_ae4: Array::new([0x0, 0xf, 0x3f, 0x3f]),
+                    #[ver(G != G15)]
                     unk_b10: 0x1,
+                    #[ver(G == G15)]
+                    // Exact J615 has no gpu-fstp-downgrade properties, so
+                    // Apple's preferred core-mask restore qword at HwDataB
+                    // +0x17d4 stays zero. On G15 this field is its high dword:
+                    // setting it to 1 makes exact RTKit take the restore path
+                    // and write the zero low dword into CORE_MASK_0.
+                    unk_b10: 0,
                     timer_offset: U64(0),
                     #[ver(G != G15)]
                     unk_b24: 0x1,

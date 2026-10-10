@@ -2041,6 +2041,8 @@ pub(crate) mod raw {
     const _: [(); 0xb58] = [(); core::mem::offset_of!(HwDataBG15V14_7, max_pstate)];
     const _: [(); 0xb5c] = [(); core::mem::offset_of!(HwDataBG15V14_7, frequencies)];
     const _: [(); 0x134c] = [(); core::mem::offset_of!(HwDataBG15V14_7, pad_ac4_0)];
+    const _: [(); 0x17d8] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_b10)];
+    const _: [(); 0x17dc] = [(); core::mem::offset_of!(HwDataBG15V14_7, timer_offset)];
     const _: [(); 0x17e4] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_b1c)];
     const _: [(); 0x17e8] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_b20)];
     const _: [(); 0x17ec] = [(); core::mem::offset_of!(HwDataBG15V14_7, g15_startup_17ec)];
