@@ -379,10 +379,13 @@ impl super::QueueInner::ver {
             }
             entry_bytes[pos..].fill(0);
 
-            // E587 matches the successful Apple E543 diagnostic exactly:
-            // preserve the complete finalized 126-byte direct ESL stream and
-            // replace only instruction 0 with the native four-byte STOP.
-            entry_bytes[..4].copy_from_slice(&[0x0e, 0x00, 0x00, 0x00]);
+            // E590 cross-engine pool-5 visibility control. Keep this exact
+            // production-PPL308 allocation and final DMA publication, but make
+            // its first dword a CDM Stream Terminate. The CDM root below links
+            // directly to this real ESL allocation, so retirement proves that
+            // the mapped pool-5 page and its final CPU-written bytes are visible
+            // to hardware independently of the state-loader interpreter.
+            entry_bytes[..4].copy_from_slice(&0x4000_0000u32.to_le_bytes());
 
             // The 0x30-byte G15 direct stream independently appears in Alyssa's
             // working m1n1 path and pac85's standalone macOS AGX demo.
@@ -392,23 +395,24 @@ impl super::QueueInner::ver {
             }
 
             let cdm_bytes = g15_cdm_root.as_mut_slice();
+            cdm_bytes[..CDM_LEN].fill(0);
+
+            // Exact G15 Stream Link grammar independently proven by retained
+            // 23J220 and the E556 Apple oracle. Point it at the *real mapped*
+            // pool-5/PPL308 entry allocation rather than an unmapped sentinel.
             let mut pos = 0usize;
-            put32(cdm_bytes, &mut pos, 0x0008_0000);
-            let shifted_entry = ((entry_addr & 0xffff_ffff) << 26)
-                | ((entry_addr >> 32) << 16);
-            cdm_bytes[pos..pos + 8].copy_from_slice(&shifted_entry.to_le_bytes());
-            pos += 8;
-            // Exact 23J220 ordinary direct-launch dword 3 (E241/E242/E244).
-            // The older m1n1 bring-up stream used 0x40 here, but the target
-            // producer derives this from ComputeProgramVariant +0xa24 and the
-            // default distribution mode, yielding bit 30 set and no low bits.
-            put32(cdm_bytes, &mut pos, 0x4000_0000);
-            for _ in 0..6 {
-                put32(cdm_bytes, &mut pos, 1);
-            }
-            put32(cdm_bytes, &mut pos, 0x6000_0160);
-            put32(cdm_bytes, &mut pos, 0x4000_0000);
-            if pos != CDM_LEN {
+            put32(
+                cdm_bytes,
+                &mut pos,
+                0x2000_0000 | (((entry_addr >> 32) as u32) & 0xffff),
+            );
+            put32(cdm_bytes, &mut pos, entry_addr as u32);
+
+            // Preserve the published exact-target stream-end contract at
+            // root+0x2c even though the linked target should terminate first.
+            let mut end_pos = CDM_LEN - 4;
+            put32(cdm_bytes, &mut end_pos, 0x4000_0000);
+            if pos != 8 || end_pos != CDM_LEN {
                 return Err(EIO);
             }
 
@@ -428,7 +432,7 @@ impl super::QueueInner::ver {
             core::sync::atomic::fence(Ordering::SeqCst);
             dev_info!(
                 self.dev.as_ref(),
-                "T8122 G15 E587 corrected-envelope first4-STOP CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
+                "T8122 G15 E590 pool5-CDM-visibility CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
                 g15_cdm_addr,
                 entry_addr,
                 body_addr,
