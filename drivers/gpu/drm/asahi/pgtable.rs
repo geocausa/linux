@@ -166,12 +166,12 @@ pub(crate) mod prot {
     /// differs from 0x108 by high bit 54 (UXN) while retaining AP=2 and the
     /// uncached memory attribute.
     pub(crate) const PROT_G15_RANGE5_PPL308: Prot = PROT_GPU_SHARED_RW;
-    /// Exact non-legacy G15 range-5 cached PTE shape used by the PM record
-    /// backing. SecureGart compact 0x300 emits AP=0, cached memory,
-    /// GPU-access=1, PXN=UXN=0. This intentionally does not reuse the older
-    /// `PROT_GPU_FW_PRIV_RW`, which would add PXN/UXN bits not present here.
+    /// Exact production G15 UAT-PPL compact 0x300 protection used by cached
+    /// range-5 resources such as PM records and FList Page/Backup lists.
+    /// E350 proves production G15 routes SecureGart through IOUAT/PPL; applying
+    /// that encoder to 0x300 gives AP=2, cached, GPU-access=1, UXN=1, PXN=0.
     pub(crate) const PROT_G15_RANGE5_CACHED: Prot =
-        PROT_FW_GPU_NA.memattr(MEMATTR_CACHED);
+        PROT_GPU_RW.memattr(MEMATTR_CACHED);
     /// Dynamically proven M3/G15 code heap class from the 14.8.3 m1n1 path:
     /// OS=1, AP=GPU-only (2), cached, UXN=1, PXN=0.
     pub(crate) const PROT_G15_RANGE5_CODE: Prot =
@@ -222,17 +222,16 @@ const _: [(); 1] = [(); ((prot::PROT_G15_RANGE5_PPL108.as_pte() & UAT_PROT_BITS)
 // Production UAT-PPL compact 0x308: AP=2, uncached, GPU-access, UXN=1.
 const _: [(); 1] = [(); ((prot::PROT_G15_RANGE5_PPL308.as_pte() & UAT_PROT_BITS)
     == 0x00c0_0000_0000_0088) as usize];
-// PM-record compact 0x300 -> G15 GPU-access high bit + cached memory,
-// with no PXN/UXN bits.
+// Production UAT-PPL compact 0x300: AP=2, cached, GPU-access, UXN=1.
 const _: [(); 1] = [(); ((prot::PROT_G15_RANGE5_CACHED.as_pte() & UAT_PROT_BITS)
-    == 0x0080_0000_0000_0000) as usize];
+    == 0x00c0_0000_0000_0080) as usize];
 // M3/G15 code heap: cached GPU-only RW, UXN=1, PXN=0.
 const _: [(); 1] = [(); ((prot::PROT_G15_RANGE5_CODE.as_pte() & UAT_PROT_BITS)
     == 0x00c0_0000_0000_0080) as usize];
-// FList Page/Backup lists: exact compact 0x300, intentionally equal to the
-// cached range-5 protection bits while retaining separate ownership semantics.
+// FList Page/Backup lists: production UAT-PPL compact 0x300, intentionally
+// equal to the cached range-5 class while retaining separate ownership semantics.
 const _: [(); 1] = [(); ((prot::PROT_G15_RANGE5_FLIST_LIST.as_pte() & UAT_PROT_BITS)
-    == 0x0080_0000_0000_0000) as usize];
+    == 0x00c0_0000_0000_0080) as usize];
 // Range-7 FW-shared resources: compact 0x007 -> AP=1, device memattr,
 // UXN + GPU-access high bits.
 const _: [(); 1] = [(); ((prot::PROT_G15_RANGE7_FW.as_pte() & UAT_PROT_BITS)
