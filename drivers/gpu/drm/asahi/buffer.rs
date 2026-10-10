@@ -1993,6 +1993,17 @@ impl G15FListResourceOwner {
         let backup_page_list =
             range5_list_alloc.array_empty_tagged::<U64>(backup_entries, b"UBPL")?;
 
+        let uppl_base: u64 = page_pool_list.gpu_pointer().into();
+        let ubpl_base: u64 = backup_page_list.gpu_pointer().into();
+        dev_info!(
+            dev,
+            "T8122 G15 E577 FList owners UPPL={:#x} UPPL_bytes={:#x} UBPL={:#x} UBPL_bytes={:#x}\n",
+            uppl_base,
+            geometry.page_pool_list_entries as u64 * core::mem::size_of::<U64>() as u64,
+            ubpl_base,
+            geometry.backup_page_list_bytes
+        );
+
         // Exact fixed FList objects in accelerator-shared bank 1. Their
         // constructors hard-wire the independently proven range-7 FList and
         // range-8 Page-Pool-State protection classes. E085 makes the shared
