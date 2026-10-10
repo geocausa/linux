@@ -487,13 +487,18 @@ impl G15StockEmptyComputeChannelOwners {
             return Err(EINVAL);
         }
 
-        let channel_command_region_base_fwva = match self._cl_command_resource.base_fwva() {
-            Ok(fwva) => fwva,
-            Err(err) => {
-                let _ = uma_pool.complete_reference(prepared.hardware_buffer_id);
-                return Err(err);
-            }
-        };
+        let _real_channel_command_region_base_fwva =
+            match self._cl_command_resource.base_fwva() {
+                Ok(fwva) => fwva,
+                Err(err) => {
+                    let _ = uma_pool.complete_reference(prepared.hardware_buffer_id);
+                    return Err(err);
+                }
+            };
+        // E586 repeats E571 after the G15 core-mask and Page-Pool fixes.
+        // Exact RTKit derives all six CL scratch registers from this base; keep
+        // the real owner alive and tag only the serialized hardware addresses.
+        let channel_command_region_base_fwva = 0x3fa0_0000_000;
         let sku_input = fw::compute::G15StockEmptySkuInputs {
             command_fwva,
             stream_fwva: prepared.sku.fwva(),
