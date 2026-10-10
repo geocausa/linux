@@ -626,7 +626,7 @@ impl super::QueueInner::ver {
                     registers: fw::job::raw::RegisterArray::new(
                         inner_weak_ptr!(_ptr, registers.registers),
                         |r| {
-                            r.add(0x1a510, inner.preempt_buf.gpu_pointer().into());
+                            r.add(0x1a510, 0x3fb_0000_0000); // E585 primary preempt sentinel
                             r.add(0x1a420, cmdbuf.cdm_ctrl_stream_base);
                             // buf2-5 Only if internal program is used
                             r.add(0x1a4d0, inner.preempt_buf.gpu_offset_pointer(preempt2_off).into());
@@ -665,22 +665,10 @@ impl super::QueueInner::ver {
                             // the 12-byte RegisterArray entry (e.g. 0x12090 -> 0x12091).
                             r.add(0x1a510, inner.preempt_buf.gpu_pointer().into());
                             r.add(0x1a420, inner.g15_cdm_root.gpu_pointer().into());
-                            r.add(
-                                0x1a4d0,
-                                inner.preempt_buf.gpu_offset_pointer(preempt2_off).into(),
-                            );
-                            r.add(
-                                0x1a4d8,
-                                inner.preempt_buf.gpu_offset_pointer(preempt3_off).into(),
-                            );
-                            r.add(
-                                0x1a4e0,
-                                inner.preempt_buf.gpu_offset_pointer(preempt4_off).into(),
-                            );
-                            r.add(
-                                0x1a4e8,
-                                inner.preempt_buf.gpu_offset_pointer(preempt5_off).into(),
-                            );
+                            r.add(0x1a4d0, 0x3f6_0000_0000); // E585 tail 2
+                            r.add(0x1a4d8, 0x3f7_0000_0000); // E585 tail 3
+                            r.add(0x1a4e0, 0x3f8_0000_0000); // E585 tail 4
+                            r.add(0x1a4e8, 0x3f9_0000_0000); // E585 tail 5
                             r.add(0x1a440, 0x154024201);
                             r.add(0x1a458, 0x10c08860);
                             r.add(0x12091, 0x1c);
