@@ -364,7 +364,7 @@ impl super::QueueInner::ver {
             core::sync::atomic::fence(Ordering::SeqCst);
             dev_info!(
                 self.dev.as_ref(),
-                "T8122 G15 E597 corrected-envelope working-pair CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
+                "T8122 G15 E598 minimal-RA corrected working-pair CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
                 g15_cdm_addr,
                 entry_addr,
                 body_addr,
@@ -659,43 +659,13 @@ impl super::QueueInner::ver {
                             //
                             // Form-1 Apple register IDs are encoded with bit 0 set in
                             // the 12-byte RegisterArray entry (e.g. 0x12090 -> 0x12091).
+                            // E598 diagnostic: retain only the five host entries
+                            // independently sufficient in the successful M3 path.
+                            // Firmware still appends its exact dynamic G15 tail.
                             r.add(0x1a510, inner.preempt_buf.gpu_pointer().into());
                             r.add(0x1a420, inner.g15_cdm_root.gpu_pointer().into());
-                            r.add(
-                                0x1a4d0,
-                                inner.preempt_buf.gpu_offset_pointer(preempt2_off).into(),
-                            );
-                            r.add(
-                                0x1a4d8,
-                                inner.preempt_buf.gpu_offset_pointer(preempt3_off).into(),
-                            );
-                            r.add(
-                                0x1a4e0,
-                                inner.preempt_buf.gpu_offset_pointer(preempt4_off).into(),
-                            );
-                            r.add(
-                                0x1a4e8,
-                                inner.preempt_buf.gpu_offset_pointer(preempt5_off).into(),
-                            );
                             r.add(0x1a440, 0x154024201);
                             r.add(0x1a458, 0x10c08860);
-                            r.add(0x12091, 0x1c);
-                            r.add(0x101d9, 0x1c);
-                            r.add(0x1a089, 0);
-                            r.add(0x1a091, 0);
-                            r.add(0x1a059, 0);
-                            r.add(0x1a061, 0);
-                            r.add(0x1a0b9, 0);
-                            r.add(0x1a0c1, 0);
-                            r.add(0x101d1, 0);
-                            r.add(0x0d479, 0);
-                            r.add(0x1a0e9, 0);
-                            // E260 exact 23J220 control-flow closure: with the
-                            // ordinary non-ray default requirement tuple, context
-                            // +0x658/+0x65c remain zero. endComputePass() therefore
-                            // skips the late real-dispatch resource synthesis block;
-                            // raw +0x158/+0x1b0 stay zero and 0x107a0 uses Apple's
-                            // zero-resource fallback.
                             r.add(0x107a1, 0x00ff_0000);
                         },
                     ),
