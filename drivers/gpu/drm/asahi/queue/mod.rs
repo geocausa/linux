@@ -2579,6 +2579,17 @@ impl Queue::ver {
             .array_empty_tagged(buffer::G15_J615_PM_RECORD_COUNT, b"PMRC")?;
         #[ver(G == G15)]
         {
+            let pmrc_base: u64 = g15_pm_records.gpu_pointer().into();
+            let pmrc_record2 = pmrc_base + 2 * core::mem::size_of::<buffer::G15PmRecord>() as u64;
+            dev_info!(
+                dev.as_ref(),
+                "T8122 G15 E576 PMRC owner base={:#x} record2={:#x} count={} stride={:#x} bytes={:#x}\n",
+                pmrc_base,
+                pmrc_record2,
+                buffer::G15_J615_PM_RECORD_COUNT,
+                core::mem::size_of::<buffer::G15PmRecord>(),
+                buffer::G15_J615_PM_RECORD_COUNT * core::mem::size_of::<buffer::G15PmRecord>()
+            );
             let scene_base: u64 = g15_pm_scene_alloc.gpu_pointer().into();
             let shared_scene =
                 scene_base + buffer::g15_j615_pm_shared_scene_slice_offset() as u64;
