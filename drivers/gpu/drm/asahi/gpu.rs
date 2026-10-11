@@ -3130,6 +3130,38 @@ impl GpuManager for GpuManager::ver {
             // dynamic backing growth and teardown must publish q22 normally.
             self.initdata.g15_mapping_notifier.lock().activate()?;
 
+            // E606 idle diagnostic: keep Apple's exact boot-time FWLog gate at
+            // zero through all pre-RTKit validation, then enable the already-
+            // published FW log only after firmware_ready. Exact RTKit 2419.140.12
+            // treats q22 +0x0000 as a request to print the firmware-owned USC pipe
+            // state overview from its normal housekeeping path, then clears it.
+            self.initdata.runtime_pointers.with(|raw, _inner| unsafe {
+                core::ptr::write_volatile(
+                    core::ptr::addr_of!(raw.fwlog_enabled_230) as *mut u32,
+                    1,
+                );
+            });
+            self.initdata.g15_q22.with(|raw, _inner| unsafe {
+                core::ptr::write_volatile(
+                    core::ptr::addr_of!(raw.host_zero_0000.0) as *mut u32,
+                    1,
+                );
+            });
+            dev_info!(
+                self.dev.as_ref(),
+                "T8122 G15 E606 idle USC-dump request armed via q22+0\n"
+            );
+            fsleep(Delta::from_millis(250));
+            let request_after = self.initdata.g15_q22.with(|raw, _inner| unsafe {
+                core::ptr::read_volatile(core::ptr::addr_of!(raw.host_zero_0000.0))
+            });
+            self.rx_channels.lock().fw_log.poll();
+            dev_info!(
+                self.dev.as_ref(),
+                "T8122 G15 E606 idle USC-dump request_after_250ms={}\n",
+                request_after
+            );
+
             // E188 exact normal-start lifetime: q4 +0x070 is enabled once for
             // the settled device runtime, not toggled around individual CL
             // submissions. Userspace submission remains independently gated.
