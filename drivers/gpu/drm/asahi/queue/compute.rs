@@ -284,36 +284,91 @@ impl super::QueueInner::ver {
                 return Err(EIO);
             }
 
-            // E530 keeps E357's full G15 entry-state program shared by
-            // Alyssa's explicitly successful a1006e52 M3 Compute path and
-            // pac85's independent G15 demo.  The paired working body above is
-            // the only executed-program delta in this discriminator.
-            const ENTRY_LEN: usize = 84;
-            let mut pos = 0usize;
+            // E614: E613 proves on the same M3 that LoadShader does not
+            // require either exact pointer materialization or either load
+            // record before it.  The shortest tested Apple-valid address-
+            // tagged form is a native-NOP prefix through +0x1c followed by
+            // poisoned LoadShader, native NOPs through +0x58, then the exact
+            // 23J220 finish/profile/STOP tail.  Keep all resource, scheduler,
+            // RegisterArray and Launch state from E598 unchanged.
+            fn profile_bl(helper_addr: u64) -> [u8; 10] {
+                let value = ((helper_addr & 0xffff_ffff_ffff) << 1) | 1;
+                let lo = value as u32;
+                let hi = (value >> 32) as u32;
+                let words = [
+                    (((hi >> 6) & 0x800) | 0x8f) as u16,
+                    ((((lo & 0x01ff_fffc) << 7) | ((lo & 1) << 8) | 0x54)
+                        & 0xffff) as u16,
+                    ((value >> 9) & 0xffff) as u16,
+                    ((value >> 25) & 0xffff) as u16,
+                    ((hi >> 9) & 0xff) as u16,
+                ];
+                let mut out = [0u8; 10];
+                let mut i = 0;
+                while i < words.len() {
+                    let bytes = words[i].to_le_bytes();
+                    out[i * 2] = bytes[0];
+                    out[i * 2 + 1] = bytes[1];
+                    i += 1;
+                }
+                out
+            }
 
+            const ENTRY_LEN: usize = 126;
+            const LOADSHADER_OFF: usize = 0x1c;
+            const TAIL_OFF: usize = 0x58;
+            const LOADSHADER_SENTINEL: u64 = 0x3ff_0000_0000;
+
+            // Native two-byte NOP through the complete frontend test area.
+            let mut pos = 0usize;
+            while pos < TAIL_OFF {
+                entry_bytes[pos..pos + 2].copy_from_slice(&[0x06, 0x00]);
+                pos += 2;
+            }
+
+            // Exact 28-byte LoadShader at the shortest Apple-proven working
+            // slot (+0x1c), with only its program VA replaced by the sentinel.
+            pos = LOADSHADER_OFF;
             entry_bytes[pos..pos + 8]
                 .copy_from_slice(&[0x77, 0x00, 0x2a, 0x41, 0x00, 0x00, 0x00, 0x00]);
             pos += 8;
             entry_bytes[pos..pos + 3].copy_from_slice(&[0x77, 0x01, 0x2a]);
             pos += 3;
-            let shifted_body = (body_addr >> 7).to_le_bytes();
-            entry_bytes[pos..pos + 5].copy_from_slice(&shifted_body[..5]);
+            let shifted_program = (LOADSHADER_SENTINEL >> 7).to_le_bytes();
+            entry_bytes[pos..pos + 5].copy_from_slice(&shifted_program[..5]);
             pos += 5;
-
-            const WORKING_ENTRY_EPILOG: [u8; 68] = [
-                0x04, 0x00, 0xf7, 0x00, 0x2a, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x1c, 0x80, 0x02, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x14, 0x81, 0x11, 0x06,
-                0x00, 0x00, 0x00, 0x00, 0x0c, 0x80, 0x02, 0x00,
-                0x04, 0x00, 0x00, 0x00, 0x9f, 0x11, 0x54, 0x00,
-                0x02, 0x00, 0x08, 0xa8, 0x10, 0x05, 0x1c, 0x80,
-                0x02, 0x00, 0x04, 0x00, 0x00, 0x00, 0x0f, 0x12,
-                0x54, 0x00, 0x4c, 0xff, 0x0e, 0x00, 0x00, 0x00,
-                0x0e, 0x00, 0x00, 0x00,
+            const LOAD_SHADER_TAIL: [u8; 12] = [
+                0x04, 0x00, 0xf7, 0x00, 0x2a, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             ];
-            entry_bytes[pos..pos + WORKING_ENTRY_EPILOG.len()]
-                .copy_from_slice(&WORKING_ENTRY_EPILOG);
-            pos += WORKING_ENTRY_EPILOG.len();
+            entry_bytes[pos..pos + LOAD_SHADER_TAIL.len()]
+                .copy_from_slice(&LOAD_SHADER_TAIL);
+            pos += LOAD_SHADER_TAIL.len();
+            if pos != LOADSHADER_OFF + 0x1c {
+                return Err(EIO);
+            }
+
+            // Keep the remainder of the pre-tail area as native NOPs exactly
+            // as in the successful E613 Apple oracle.
+            pos = TAIL_OFF;
+            const ROUND_AND_COPIES: [u8; 24] = [
+                0x06, 0x08, 0x06, 0x00, 0x06, 0x00, 0x06, 0x00,
+                0x0b, 0x00, 0x09, 0x24,
+                0x1b, 0x02, 0x09, 0x24,
+                0x2b, 0x04, 0x09, 0x24,
+                0x3b, 0x06, 0x09, 0x24,
+            ];
+            entry_bytes[pos..pos + ROUND_AND_COPIES.len()]
+                .copy_from_slice(&ROUND_AND_COPIES);
+            pos += ROUND_AND_COPIES.len();
+
+            let profile = profile_bl(profile_helper_addr);
+            entry_bytes[pos..pos + profile.len()].copy_from_slice(&profile);
+            pos += profile.len();
+
+            const STOP: [u8; 4] = [0x0e, 0x00, 0x00, 0x00];
+            entry_bytes[pos..pos + STOP.len()].copy_from_slice(&STOP);
+            pos += STOP.len();
 
             if pos != ENTRY_LEN {
                 return Err(EIO);
@@ -364,7 +419,7 @@ impl super::QueueInner::ver {
             core::sync::atomic::fence(Ordering::SeqCst);
             dev_info!(
                 self.dev.as_ref(),
-                "T8122 G15 E598 minimal-RA corrected working-pair CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
+                "T8122 G15 E614 Apple-proven NOP-prefix LoadShader-sentinel CDM={:#x} entry={:#x} body={:#x} profile={:#x} result={:#x} args={:#x} statics={:#x}\n",
                 g15_cdm_addr,
                 entry_addr,
                 body_addr,
