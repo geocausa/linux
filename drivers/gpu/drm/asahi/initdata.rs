@@ -705,7 +705,12 @@ impl<'a> InitDataBuilder::ver<'a> {
                     unk_4e0: U64(cfg.db.unk_4e0),
                     unk_4f0: 0x1,
                     unk_4f4: 0x1,
+                    #[ver(G != G15)]
                     unk_504: 0x31,
+                    #[ver(G == G15)]
+                    // Exact J615/G15G derives HwDataB +0xae0 from accelerator
+                    // feature bit 26; base configure ties it to cleared bit 28.
+                    unk_504: 0,
                     unk_524: 0x1, // use_secure_cache_flush
                     unk_534: cfg.db.unk_534,
                     num_frags: dyncfg.id.num_frags * dyncfg.id.num_clusters,

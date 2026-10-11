@@ -2036,6 +2036,7 @@ pub(crate) mod raw {
     const _: [(); 0xac4] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_4ec)];
     // Exact J615/G15G UAT + core-config header and perf-table boundary.
     const _: [(); 0xad0] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_4f8)];
+    const _: [(); 0xae0] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_504)];
     const _: [(); 0xb38] = [(); core::mem::offset_of!(HwDataBG15V14_7, g15_zero_b38)];
     const _: [(); 0xb3c] = [(); core::mem::offset_of!(HwDataBG15V14_7, g15_zero_b3c)];
     const _: [(); 0xb40] = [(); core::mem::offset_of!(HwDataBG15V14_7, g15_uat_mode_b40)];
