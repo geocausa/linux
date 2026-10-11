@@ -735,8 +735,13 @@ impl<'a> InitDataBuilder::ver<'a> {
 
                     #[ver(G == G15)]
                     unk_4f8: 1,
-                    #[ver(V >= V13_0B4)]
+                    #[ver(V >= V13_0B4 && G != G15)]
                     unk_ae4: Array::new([0x0, 0x3, 0x7, 0x7]),
+                    #[ver(V >= V13_0B4 && G == G15)]
+                    // Exact 23J220 J615 explicitly writes physical HwDataB
+                    // +0x17b4 = 0. In this pre-V14.8.3 logical layout that
+                    // physical word is unk_ae4[2]; keep +0x17b8 unchanged.
+                    unk_ae4: Array::new([0x0, 0x3, 0x0, 0x7]),
                     #[ver(V < V13_0B4)]
                     unk_ae4: Array::new([0x0, 0xf, 0x3f, 0x3f]),
                     #[ver(G != G15)]
