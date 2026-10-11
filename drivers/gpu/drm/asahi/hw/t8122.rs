@@ -116,8 +116,12 @@ pub(crate) const HWCONFIG_PREFLIGHT: super::HwConfig = HwConfig {
     db: HwConfigB {
         // Runtime /arm-io chip-revision is 0x20, and Apple stores >> 4 here.
         unk_454: 2,
-        // Explicitly zeroed by AGXArmFirmware::initFirmwareData().
-        unk_4e0: 0,
+        // Exact J615/G15 host sequence: base halGetDefaultMcacheWrites()
+        // returns 0, then AGXAcceleratorG15::configureDevice() ORs bit 2.
+        // initFirmwareData() copies that qword to unaligned HwDataB +0xabc.
+        // In the Linux packed G15 layout this is the high dword of the
+        // u64 beginning at +0xab8, so the exact physical image is 4 << 32.
+        unk_4e0: 0x0000_0004_0000_0000,
         // High dword of the explicit zero qword pair copied from +0x1dc8.
         unk_534: 0,
         unk_ab8: 0,

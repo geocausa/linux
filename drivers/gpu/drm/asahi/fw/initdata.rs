@@ -2029,6 +2029,11 @@ pub(crate) mod raw {
     const _: [(); 0xa30] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_458)];
     const _: [(); 0xa34] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_45c)];
     const _: [(); 0xa6c] = [(); core::mem::offset_of!(HwDataBG15V14_7, power_sample_period)];
+    // Exact J615 host writes the G15 MCache-write qword at unaligned +0xabc.
+    // Pin the surrounding typed fields so the physical overlay cannot drift.
+    const _: [(); 0xab8] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_4e0)];
+    const _: [(); 0xac0] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_4e8)];
+    const _: [(); 0xac4] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_4ec)];
     // Exact J615/G15G UAT + core-config header and perf-table boundary.
     const _: [(); 0xad0] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_4f8)];
     const _: [(); 0xb38] = [(); core::mem::offset_of!(HwDataBG15V14_7, g15_zero_b38)];
