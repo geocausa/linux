@@ -1334,12 +1334,20 @@ impl GpuManager::ver {
                     && raw.unk_454 == 2
                     && raw.unk_458 == 0
                     && raw.unk_45c == 4
+                    // E642 proved exact +0xa38=0 has an unresolved paired cold-start
+                    // prerequisite; retain the E641 value in this compile-only cleanup.
+                    && raw.unk_460 == 1
+                    && raw.g15_extra_a64 == 0
                     && raw.base_clock_khz == 24_000
-                    && raw.power_sample_period == 1
+                    && raw.g15_extra_a6c == 1
+                    && raw.power_sample_period == mgr.dyncfg.pwr.power_sample_period
                     // Exact G15 UAT/GPTBAT + core-config header consumed by
                     // RTKit-2419 firmware. The GPTBAT base is dynamic but must
                     // be the physical base of Linux's ttbs region and 16 KiB aligned.
-                    && raw.g15_zero_b38 == 0
+                    // E645/E646 require direct q22 until SecureGart registration exists.
+                    && raw.unk_524 == 0
+                    && raw.g15_extra_b1c == 0
+                    && raw.unk_554 == 1
                     && raw.g15_zero_b3c == 0
                     && raw.g15_uat_mode_b40 == 1
                     && raw.uat_ttb_base.0 == mgr.dyncfg.uat_ttb_base
@@ -1348,8 +1356,10 @@ impl GpuManager::ver {
                     && raw.gpu_core_id == cfg.gpu_core as u32
                     && raw.gpu_rev_id == hw::GpuRevisionID::C0 as u32
                     && raw.num_cores == mgr.dyncfg.id.num_cores * mgr.dyncfg.id.num_clusters
-                    // Physical HwDataB +0xad0 is source field unk_4f8 on G15.
-                    && raw.unk_4f8 == 1
+                    // V14.8.3 moves exact physical +0xad0 to source field unk_4f4.
+                    && raw.unk_4f4 == 1
+                    && raw.unk_4f8 == 0
+                    && raw.unk_504_0 == 0
                     // Firmware pre-ready qword at +0x17e4 remains allocation-zero.
                     && raw.unk_b1c == 0
                     && raw.unk_b20 == 0

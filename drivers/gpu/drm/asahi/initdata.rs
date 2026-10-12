@@ -691,13 +691,17 @@ impl<'a> InitDataBuilder::ver<'a> {
                     unk_47c: 0x1,
                     unk_484: 0x1,
                     unk_48c: 0x1,
-                    base_clock_khz: cfg.base_clock_hz / 1000,
-                    #[ver(G != G15)]
-                    power_sample_period: dyncfg.pwr.power_sample_period,
                     #[ver(G == G15)]
-                    // Exact J615 production path: `model-slow` is absent from
-                    // Apple's ADT, so AGXFirmware writes 1 to HwDataB +0xa6c.
-                    power_sample_period: 1,
+                    // V14.8.3 inserts a host-zero word at exact +0xa64.
+                    g15_extra_a64: 0,
+                    base_clock_khz: cfg.base_clock_hz / 1000,
+                    #[ver(G == G15)]
+                    // Exact J615 writes 1 here unless the diagnostic
+                    // shared-probe bit requests the alternate value 200.
+                    g15_extra_a6c: 1,
+                    // V14.8.3 moves the actual ADT power sample period to
+                    // +0xa70; J615's target property is 8.
+                    power_sample_period: dyncfg.pwr.power_sample_period,
                     unk_49c: 0x1,
                     unk_4a0: 0x1,
                     unk_4a4: 0x1,
@@ -708,11 +712,21 @@ impl<'a> InitDataBuilder::ver<'a> {
                     #[ver(G != G15)]
                     unk_504: 0x31,
                     #[ver(G == G15)]
-                    // Exact J615/G15G derives HwDataB +0xae0 from accelerator
-                    // feature bit 26; base configure ties it to cleared bit 28.
+                    // The old pre-V14.8.3 overlay used unk_504 to hit physical
+                    // +0xae0. That physical word is now unk_504_0 and remains
+                    // zero. Keep the newly exposed +0xae4 semantic conservative
+                    // until its exact producer is independently named.
                     unk_504: 0,
+                    #[ver(G != G15)]
                     unk_524: 0x1, // use_secure_cache_flush
+                    #[ver(G == G15)]
+                    // Bring-up exception: exact +0xb04=1 requires Apple's
+                    // SecureGart context-registration service (E645/E646).
+                    // Keep q22 on its validated direct/local flush path.
+                    unk_524: 0,
                     unk_534: cfg.db.unk_534,
+                    #[ver(G == G15)]
+                    g15_extra_b1c: 0,
                     num_frags: dyncfg.id.num_frags * dyncfg.id.num_clusters,
                     unk_554: 0x1,
                     #[ver(G == G15)]
@@ -733,8 +747,9 @@ impl<'a> InitDataBuilder::ver<'a> {
                     #[ver(V < V13_0B4)]
                     unk_ac0: 0x1020,
 
-                    #[ver(G == G15)]
-                    unk_4f8: 1,
+                    // With the V14.8.3 middle layout, exact physical
+                    // +0xad0 is provided by unk_4f4=1; do not retain the old
+                    // unk_4f8 overlay that used to land at +0xad0.
                     #[ver(V >= V13_0B4 && G != G15)]
                     unk_ae4: Array::new([0x0, 0x3, 0x7, 0x7]),
                     #[ver(V >= V13_0B4 && G == G15)]

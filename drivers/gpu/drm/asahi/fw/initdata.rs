@@ -1305,13 +1305,18 @@ pub(crate) mod raw {
         pub(crate) unk_46c: u32,
         pub(crate) unk_470: u32,
         pub(crate) unk_474: u32,
+        #[ver(G != G15)]
         pub(crate) unk_478: u32,
         pub(crate) unk_47c: u32,
         pub(crate) unk_480: u32,
         pub(crate) unk_484: u32,
         pub(crate) unk_488: u32,
         pub(crate) unk_48c: u32,
+        #[ver(G == G15)]
+        pub(crate) g15_extra_a64: u32,
         pub(crate) base_clock_khz: u32,
+        #[ver(G == G15)]
+        pub(crate) g15_extra_a6c: u32,
         pub(crate) power_sample_period: u32,
         pub(crate) pad_498: Pad<0x4>,
         pub(crate) unk_49c: u32,
@@ -1355,11 +1360,13 @@ pub(crate) mod raw {
         pub(crate) unk_52c: u32,
         pub(crate) unk_530: u32,
 
-        #[ver(V >= V13_0B4)]
+        #[ver(V >= V13_0B4 && G != G15)]
         pub(crate) unk_534_0: u32,
 
         pub(crate) unk_534: u32,
         pub(crate) unk_538: u32,
+        #[ver(G == G15)]
+        pub(crate) g15_extra_b1c: u32,
 
         pub(crate) num_frags: u32,
         pub(crate) unk_540: u32,
@@ -1369,13 +1376,10 @@ pub(crate) mod raw {
         pub(crate) unk_550: u32,
         pub(crate) unk_554: u32,
 
-        // G15 inserts a 12-byte UAT/GPTBAT header ahead of the legacy
-        // uat_ttb_base/core tuple. Apple zeros +0xb38/+0xb3c, marks the
-        // non-legacy G15 UAT mode at +0xb40, then publishes the GPTBAT
-        // physical base at +0xb44. Keeping uat_ttb_base as the shared field
-        // name lets the builder use the same physical TTB/GPTBAT allocation.
-        #[ver(G == G15)]
-        pub(crate) g15_zero_b38: u32,
+        // V14.8.3 G15 leaves unk_554 at +0xb38 and inserts only the two
+        // firmware-specific words at +0xb3c/+0xb40 before the GPTBAT root
+        // at +0xb44. The historical pre-V14.8.3 model inserted a third word
+        // at +0xb38 and compensated for the earlier middle-layout skew.
         #[ver(G == G15)]
         pub(crate) g15_zero_b3c: u32,
         #[ver(G == G15)]
@@ -2028,16 +2032,28 @@ pub(crate) mod raw {
     const _: [(); 0xa2c] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_454)];
     const _: [(); 0xa30] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_458)];
     const _: [(); 0xa34] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_45c)];
-    const _: [(); 0xa6c] = [(); core::mem::offset_of!(HwDataBG15V14_7, power_sample_period)];
+    const _: [(); 0xa50] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_47c)];
+    const _: [(); 0xa60] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_48c)];
+    const _: [(); 0xa64] = [(); core::mem::offset_of!(HwDataBG15V14_7, g15_extra_a64)];
+    const _: [(); 0xa68] = [(); core::mem::offset_of!(HwDataBG15V14_7, base_clock_khz)];
+    const _: [(); 0xa6c] = [(); core::mem::offset_of!(HwDataBG15V14_7, g15_extra_a6c)];
+    const _: [(); 0xa70] = [(); core::mem::offset_of!(HwDataBG15V14_7, power_sample_period)];
     // Exact J615 host writes the G15 MCache-write qword at unaligned +0xabc.
     // Pin the surrounding typed fields so the physical overlay cannot drift.
-    const _: [(); 0xab8] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_4e0)];
-    const _: [(); 0xac0] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_4e8)];
-    const _: [(); 0xac4] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_4ec)];
+    const _: [(); 0xabc] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_4e0)];
+    const _: [(); 0xac4] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_4e8)];
+    const _: [(); 0xac8] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_4ec)];
+    const _: [(); 0xad0] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_4f4)];
+    const _: [(); 0xad4] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_4f8)];
+    const _: [(); 0xae0] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_504_0)];
+    const _: [(); 0xae4] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_504)];
+    const _: [(); 0xb04] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_524)];
+    const _: [(); 0xb10] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_530)];
+    const _: [(); 0xb18] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_538)];
+    const _: [(); 0xb1c] = [(); core::mem::offset_of!(HwDataBG15V14_7, g15_extra_b1c)];
+    const _: [(); 0xb20] = [(); core::mem::offset_of!(HwDataBG15V14_7, num_frags)];
+    const _: [(); 0xb38] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_554)];
     // Exact J615/G15G UAT + core-config header and perf-table boundary.
-    const _: [(); 0xad0] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_4f8)];
-    const _: [(); 0xae0] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_504)];
-    const _: [(); 0xb38] = [(); core::mem::offset_of!(HwDataBG15V14_7, g15_zero_b38)];
     const _: [(); 0xb3c] = [(); core::mem::offset_of!(HwDataBG15V14_7, g15_zero_b3c)];
     const _: [(); 0xb40] = [(); core::mem::offset_of!(HwDataBG15V14_7, g15_uat_mode_b40)];
     const _: [(); 0xb44] = [(); core::mem::offset_of!(HwDataBG15V14_7, uat_ttb_base)];
