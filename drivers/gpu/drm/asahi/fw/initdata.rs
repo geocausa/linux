@@ -2028,6 +2028,10 @@ pub(crate) mod raw {
     const _: [(); 0xa2c] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_454)];
     const _: [(); 0xa30] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_458)];
     const _: [(); 0xa34] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_45c)];
+    // Exact RTKit imports +0xa38/+0xa40 as f190/f194 and branches on both
+    // during the cold-power path; pin their physical ABI positions.
+    const _: [(); 0xa38] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_460)];
+    const _: [(); 0xa40] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_468)];
     const _: [(); 0xa6c] = [(); core::mem::offset_of!(HwDataBG15V14_7, power_sample_period)];
     // Exact J615 host writes the G15 MCache-write qword at unaligned +0xabc.
     // Pin the surrounding typed fields so the physical overlay cannot drift.

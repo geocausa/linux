@@ -685,7 +685,12 @@ impl<'a> InitDataBuilder::ver<'a> {
                     #[ver(G == G15)]
                     // Exact J615/G15G process-node word at HwDataB +0xa34.
                     unk_45c: 0x4,
+                    #[ver(G != G15)]
                     unk_460: 0x1,
+                    #[ver(G == G15)]
+                    // Exact J615 derives physical HwDataB +0xa38 from bit 1
+                    // of a zero-initialized AGXG15G feature byte.
+                    unk_460: 0x0,
                     unk_464: 0x1,
                     unk_468: 0x1,
                     unk_47c: 0x1,
