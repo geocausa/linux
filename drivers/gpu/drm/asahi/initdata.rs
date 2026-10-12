@@ -712,11 +712,12 @@ impl<'a> InitDataBuilder::ver<'a> {
                     #[ver(G != G15)]
                     unk_504: 0x31,
                     #[ver(G == G15)]
-                    // The old pre-V14.8.3 overlay used unk_504 to hit physical
-                    // +0xae0. That physical word is now unk_504_0 and remains
-                    // zero. Keep the newly exposed +0xae4 semantic conservative
-                    // until its exact producer is independently named.
-                    unk_504: 0,
+                    // V14.8.3 places unk_504 at physical +0xae4. Exact 23J220
+                    // copies accelerator +0x1d5c here after configureDevice()
+                    // sets it to 0x31; independently successful M3/m1n1 uses
+                    // the same value. RTKit consumes it during startup when
+                    // programming RGX +0x140120.
+                    unk_504: 0x31,
                     #[ver(G != G15)]
                     unk_524: 0x1, // use_secure_cache_flush
                     #[ver(G == G15)]

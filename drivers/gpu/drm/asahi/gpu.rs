@@ -1360,6 +1360,9 @@ impl GpuManager::ver {
                     && raw.unk_4f4 == 1
                     && raw.unk_4f8 == 0
                     && raw.unk_504_0 == 0
+                    // Exact 23J220 and successful V14.8.3 M3 both publish
+                    // physical +0xae4 as 0x31; RTKit consumes it during startup.
+                    && raw.unk_504 == 0x31
                     // Firmware pre-ready qword at +0x17e4 remains allocation-zero.
                     && raw.unk_b1c == 0
                     && raw.unk_b20 == 0
