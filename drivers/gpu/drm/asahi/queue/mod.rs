@@ -200,8 +200,9 @@ const _: [(); 0x100] = [(); G15HWMetricsBacking::RECORD_COUNT];
 
 /// Persistent exact 23J220 CL-channel command-resource backing used by the
 /// stock-empty Compute SKU stream. E114 proves J615 owns one normal option-3
-/// eGartRange-5 resource of logical size 0x1f400. The already-proven range-5
-/// option-3 class is Linux's dedicated uncached range-5 allocator.
+/// eGartRange-5 resource of logical size 0x1f400. E351 supersedes the old
+/// direct-encoder placement: an unmarked/default range-5 resource reaches the
+/// production G15 UAT-PPL as compact 0x308 (GPU RW, uncached).
 ///
 /// This owner is reachable only through the definition-only stock-empty owner
 /// graph below. It does not publish its FWVA to a live command.
@@ -213,8 +214,8 @@ struct G15ClCommandResourceBacking {
 
 #[allow(dead_code)]
 impl G15ClCommandResourceBacking {
-    fn new(range5_uncached_alloc: &mut alloc::DefaultAllocator) -> Result<Self> {
-        let backing = range5_uncached_alloc.array_empty_tagged::<u8>(
+    fn new(range5_ppl308_alloc: &mut alloc::DefaultAllocator) -> Result<Self> {
+        let backing = range5_ppl308_alloc.array_empty_tagged::<u8>(
             fw::compute::G15_J615_CL_COMMAND_RESOURCE_BYTES,
             b"CLCR",
         )?;
@@ -383,7 +384,7 @@ impl G15StockEmptyComputeChannelOwners {
         dev: &AsahiDevice,
         compute_stats: GpuWeakPointer<fw::initdata::G15StatsComp>,
         channel_resources: buffer::G15InitializedFirmwareChannelResources,
-        range5_uncached_alloc: &mut alloc::DefaultAllocator,
+        range5_ppl308_alloc: &mut alloc::DefaultAllocator,
         bank1: mmu::G15SharedBank1,
         mapping_notifier: Arc<Mutex<mmu::G15MappingNotifier>>,
     ) -> Result<Self> {
@@ -401,7 +402,7 @@ impl G15StockEmptyComputeChannelOwners {
             bank1.clone(),
             mapping_notifier.clone(),
         )?;
-        let cl_command_resource = G15ClCommandResourceBacking::new(range5_uncached_alloc)?;
+        let cl_command_resource = G15ClCommandResourceBacking::new(range5_ppl308_alloc)?;
         let sku = fw::compute::G15SkuBacking::new(dev, bank1, mapping_notifier)?;
 
         Ok(Self {
@@ -1908,7 +1909,7 @@ impl QueueInner::ver {
         {
             let container = self._g15_uma_shared_pools.as_ref().ok_or(EINVAL)?;
             let range5_cached = self._g15_range5_cached.as_ref().ok_or(EINVAL)?;
-            let range5_uncached = self._g15_range5_uncached.as_ref().ok_or(EINVAL)?;
+            let range5_ppl308 = self._g15_range5_ppl308.as_ref().ok_or(EINVAL)?;
             let bank1 = self._g15_shared_bank1.as_ref().ok_or(EINVAL)?.clone();
             let mapping_notifier = self
                 ._g15_mapping_notifier
@@ -1949,12 +1950,12 @@ impl QueueInner::ver {
                 fw::workqueue::G15_J615_NONFOREGROUND_CL_QOS_ARGUMENT,
             )?;
             let owners = {
-                let mut range5_uncached = range5_uncached.lock();
+                let mut range5_ppl308 = range5_ppl308.lock();
                 G15StockEmptyComputeChannelOwners::new_unpublished(
                     &self.dev,
                     gpu.initdata.runtime_pointers.g15_stats_comp.weak_pointer(),
                     initialized_channel_resources,
-                    &mut range5_uncached,
+                    &mut range5_ppl308,
                     bank1,
                     mapping_notifier,
                 )?
