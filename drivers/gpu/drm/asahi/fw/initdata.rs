@@ -2029,6 +2029,9 @@ pub(crate) mod raw {
     const _: [(); 0xa30] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_458)];
     const _: [(); 0xa34] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_45c)];
     const _: [(); 0xa6c] = [(); core::mem::offset_of!(HwDataBG15V14_7, power_sample_period)];
+    // Until the complete V14.8.3 middle layout is modeled, the semantic
+    // secure-cache selector occupies unk_528 at exact physical +0xb04.
+    const _: [(); 0xb04] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_528)];
     // Exact J615 host writes the G15 MCache-write qword at unaligned +0xabc.
     // Pin the surrounding typed fields so the physical overlay cannot drift.
     const _: [(); 0xab8] = [(); core::mem::offset_of!(HwDataBG15V14_7, unk_4e0)];

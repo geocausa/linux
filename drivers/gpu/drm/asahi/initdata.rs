@@ -712,6 +712,11 @@ impl<'a> InitDataBuilder::ver<'a> {
                     // feature bit 26; base configure ties it to cleared bit 28.
                     unk_504: 0,
                     unk_524: 0x1, // use_secure_cache_flush
+                    #[ver(G == G15)]
+                    // V14.8.3 G15 places use_secure_cache_flush at physical
+                    // HwDataB +0xb04; the current pre-V14.8.3 logical layout
+                    // reaches that word through unk_528.
+                    unk_528: 0x1,
                     unk_534: cfg.db.unk_534,
                     num_frags: dyncfg.id.num_frags * dyncfg.id.num_clusters,
                     unk_554: 0x1,
