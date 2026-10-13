@@ -1157,6 +1157,25 @@ impl G15FirmwareChannelResourceLeases {
         })
     }
 
+    /// E662 observation-only snapshot of the first two exact firmware DAG
+    /// entries embedded after the selected QueueInfo prefix. E194/E195 prove
+    /// the first selected command carries stamp 0x100, so its DAG index is 1.
+    /// FUN_20d70 writes entry state 3 when the final finish path retires it.
+    pub(crate) fn transport_dag_state(&self) -> Result<(u32, u32, u32)> {
+        const DAG_BASE: usize = 0xb0;
+        const DAG_STRIDE: usize = 0x48;
+        let mut state = self.channel_state.manager.0.lock();
+        let (_fwva, slot) = state.selected_mapped_element(
+            self.channel_state.index,
+            G15FirmwareResourceKind::ChannelState,
+        )?;
+        Ok((
+            G15FirmwareResourceLease::get_u32(slot, DAG_BASE)?,
+            G15FirmwareResourceLease::get_u32(slot, DAG_BASE + DAG_STRIDE)?,
+            G15FirmwareResourceLease::get_u32(slot, DAG_BASE + DAG_STRIDE + 4)?,
+        ))
+    }
+
     /// Nonblocking Linux form of exact E184 `writeChannelCommandPointer()`.
     /// The future WorkQueue caller already serializes command insertion; return
     /// EBUSY rather than spinning if firmware still owns the next slot.

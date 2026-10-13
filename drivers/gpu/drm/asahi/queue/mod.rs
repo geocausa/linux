@@ -1703,6 +1703,8 @@ impl G15UnpublishedComputeChannel::ver {
 
             let (hardware_buffer_id, lifecycle_state, shared_compute, dispatch_seq) =
                 self.pool.dispatch_state_snapshot()?;
+            let (dag0_state, dag1_state, dag1_flags) =
+                self._fw_channel_resources.transport_dag_state()?;
 
             Ok(workqueue::G15ExecutionSnapshot {
                 register_count,
@@ -1717,6 +1719,9 @@ impl G15UnpublishedComputeChannel::ver {
                 lifecycle_state,
                 shared_compute,
                 dispatch_seq,
+                dag0_state,
+                dag1_state,
+                dag1_flags,
             })
         }
     }

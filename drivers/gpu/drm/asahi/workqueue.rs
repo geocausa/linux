@@ -96,6 +96,10 @@ pub(crate) struct G15ExecutionSnapshot {
     pub(crate) lifecycle_state: u32,
     pub(crate) shared_compute: u32,
     pub(crate) dispatch_seq: u32,
+    /// E662 selected QueueInfo DAG entry state, CPU-mapped firmware memory only.
+    pub(crate) dag0_state: u32,
+    pub(crate) dag1_state: u32,
+    pub(crate) dag1_flags: u32,
 }
 
 /// Typed E185 bridge from generic WorkQueue ownership to the selected G15 CL

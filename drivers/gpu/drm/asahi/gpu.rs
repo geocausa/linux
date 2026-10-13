@@ -2836,23 +2836,33 @@ impl GpuManager::ver {
                     ),
                 }
                 match completion.execution_snapshot() {
-                    Ok(state) => dev_info!(
-                        self.dev.as_ref(),
-                        "T8122 G15 E581 progress {} start={:#x} end={:#x} ctx_req={:#x} ctx_done={:#x} result={:#010x} hwid={} lifecycle={} shared={} seq={:#x} regs={}/{} recovery={:#x}\n",
-                        phase,
-                        state.timestamp_start,
-                        state.timestamp_end,
-                        state.context_store_req,
-                        state.context_store_compl,
-                        state.result_word,
-                        state.hardware_buffer_id,
-                        state.lifecycle_state,
-                        state.shared_compute,
-                        state.dispatch_seq,
-                        state.register_count,
-                        state.register_length,
-                        state.recovery_marker,
-                    ),
+                    Ok(state) => {
+                        dev_info!(
+                            self.dev.as_ref(),
+                            "T8122 G15 E581 progress {} start={:#x} end={:#x} ctx_req={:#x} ctx_done={:#x} result={:#010x} hwid={} lifecycle={} shared={} seq={:#x} regs={}/{} recovery={:#x}\n",
+                            phase,
+                            state.timestamp_start,
+                            state.timestamp_end,
+                            state.context_store_req,
+                            state.context_store_compl,
+                            state.result_word,
+                            state.hardware_buffer_id,
+                            state.lifecycle_state,
+                            state.shared_compute,
+                            state.dispatch_seq,
+                            state.register_count,
+                            state.register_length,
+                            state.recovery_marker,
+                        );
+                        dev_info!(
+                            self.dev.as_ref(),
+                            "T8122 G15 E662 dag {} entry0_state={:#010x} entry1_state={:#010x} entry1_flags={:#010x}\n",
+                            phase,
+                            state.dag0_state,
+                            state.dag1_state,
+                            state.dag1_flags,
+                        );
+                    }
                     Err(err) => dev_info!(
                         self.dev.as_ref(),
                         "T8122 G15 E487 progress {} error={:?}\n",
