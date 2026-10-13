@@ -2859,6 +2859,35 @@ impl GpuManager::ver {
                         phase, err,
                     ),
                 }
+                // E661: E660 is the first lineage to cross WFI and publish the
+                // end timestamp while doneptr remains zero. Sample only the
+                // already CPU-mapped firmware-owned Compute slot-0 record so we
+                // can distinguish normal type-0xc cleanup from context-store/
+                // replay. This performs no GPU MMIO and changes no GPU-visible
+                // command, mapping, or timing point.
+                self.initdata
+                    .runtime_pointers
+                    .g15_stats_comp
+                    .with(|raw, _inner| {
+                        let base = raw as *const _ as *const u8;
+                        let u32_at = |offset: usize| unsafe {
+                            core::ptr::read_volatile(base.wrapping_add(offset).cast::<u32>())
+                        };
+                        let u64_at = |offset: usize| unsafe {
+                            core::ptr::read_volatile(base.wrapping_add(offset).cast::<u64>())
+                        };
+                        dev_info!(
+                            self.dev.as_ref(),
+                            "T8122 G15 E661 slot0 {} 00={:#010x} 04={:#010x} 08={:#010x} 0c={:#010x} 10={:#018x} 18={:#018x}\n",
+                            phase,
+                            u32_at(0x00),
+                            u32_at(0x04),
+                            u32_at(0x08),
+                            u32_at(0x0c),
+                            u64_at(0x10),
+                            u64_at(0x18),
+                        );
+                    });
                 self.initdata
                     .runtime_pointers
                     .g15_control_state
