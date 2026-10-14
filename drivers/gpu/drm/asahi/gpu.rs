@@ -2926,7 +2926,18 @@ impl GpuManager::ver {
                     });
             };
             log_wfi_state("immediate");
-            fsleep(Delta::from_millis(250));
+            // E667: observation-only timing refinement.  The total evidence
+            // window remains 5 seconds; only intermediate CPU-side snapshots
+            // are added to determine when the exact E665 replay marker flips.
+            fsleep(Delta::from_millis(1));
+            log_wfi_state("1ms");
+            fsleep(Delta::from_millis(9));
+            log_wfi_state("10ms");
+            fsleep(Delta::from_millis(40));
+            log_wfi_state("50ms");
+            fsleep(Delta::from_millis(50));
+            log_wfi_state("100ms");
+            fsleep(Delta::from_millis(150));
             log_wfi_state("250ms");
             fsleep(Delta::from_millis(4750));
             log_wfi_state("5s");
