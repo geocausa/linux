@@ -2862,6 +2862,13 @@ impl GpuManager::ver {
                             state.dag1_state,
                             state.dag1_flags,
                         );
+                        dev_info!(
+                            self.dev.as_ref(),
+                            "T8122 G15 E665 replay-marker {} jp2_76c={:#010x} jp2_770={:#010x}\n",
+                            phase,
+                            state.job_params2_word0,
+                            state.job_params2_word1,
+                        );
                     }
                     Err(err) => dev_info!(
                         self.dev.as_ref(),

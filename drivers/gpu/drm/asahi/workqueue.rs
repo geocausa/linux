@@ -87,6 +87,9 @@ pub(crate) struct G15ExecutionSnapshot {
     pub(crate) context_store_req: u64,
     pub(crate) context_store_compl: u64,
     pub(crate) recovery_marker: u32,
+    /// E665 exact Finalize replay marker at RunCompute +0x76c/+0x770.
+    pub(crate) job_params2_word0: u32,
+    pub(crate) job_params2_word1: u32,
     /// E480 CPU-mapped timestamp targets used by the exact G15 SKU start/end packets.
     pub(crate) timestamp_start: u64,
     pub(crate) timestamp_end: u64,

@@ -1658,6 +1658,8 @@ impl G15UnpublishedComputeChannel::ver {
                 context_store_req,
                 context_store_compl,
                 recovery_marker,
+                job_params2_word0,
+                job_params2_word1,
                 timestamp_start,
                 timestamp_end,
                 result_word,
@@ -1673,6 +1675,16 @@ impl G15UnpublishedComputeChannel::ver {
                 };
                 let recovery_marker = unsafe {
                     core::ptr::read_unaligned(core::ptr::addr_of!(raw.g15_recovery_marker_878.0))
+                };
+                // E665: exact RTKit FUN_1e40c writes 0x0000000100000001
+                // to JobParameters2 (RunCompute +0x76c) only on the
+                // c020&0x1e == 0x18 Finalize replay exit. These are ordinary
+                // CPU-mapped command-backing dwords, not GPU MMIO.
+                let job_params2_word0 = unsafe {
+                    core::ptr::read_volatile(core::ptr::addr_of!(raw.job_params2.unk_0_0))
+                };
+                let job_params2_word1 = unsafe {
+                    core::ptr::read_volatile(core::ptr::addr_of!(raw.job_params2.g15_unk_770.0))
                 };
                 // E480: these are the exact CPU mappings targeted through
                 // command +0x818/+0x820 by the start/end timestamp SKU packets.
@@ -1695,6 +1707,8 @@ impl G15UnpublishedComputeChannel::ver {
                     context_store_req,
                     context_store_compl,
                     recovery_marker,
+                    job_params2_word0,
+                    job_params2_word1,
                     timestamp_start,
                     timestamp_end,
                     result_word,
@@ -1712,6 +1726,8 @@ impl G15UnpublishedComputeChannel::ver {
                 context_store_req,
                 context_store_compl,
                 recovery_marker,
+                job_params2_word0,
+                job_params2_word1,
                 timestamp_start,
                 timestamp_end,
                 result_word,
