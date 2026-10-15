@@ -812,6 +812,25 @@ impl<'a> InitDataBuilder::ver<'a> {
                     ..Zeroable::init_zeroed()
                 })
                 .chain(|raw| {
+                    #[ver(G == G15)]
+                    {
+                        // Exact 23J220 startup-consumed color-conversion records.
+                        // Retained RTKit copies slot 6 to RGX 0x12100..0x12110
+                        // and slot 38 to RGX 0x13100..0x13110 via the 0x4010/0x4018
+                        // indirect programming port. The complete 24-byte records
+                        // are byte-identical in the exact kernelcache and working M3 m1n1.
+                        raw.yuv_matrices[6] = Array::new([
+                            Array::new([0x24cb, 0, 0x2cfa, -0x3676]),
+                            Array::new([0x24cb, -0xb0a, -0x16e9, 0x1877]),
+                            Array::new([0x24cb, 0x38d9, 0, -0x4255]),
+                        ]);
+                        raw.yuv_matrices[38] = Array::new([
+                            Array::new([-0x8000, 0, 0, 0]),
+                            Array::new([0, -0x8000, 0, 0]),
+                            Array::new([0, 0, -0x8000, 0]),
+                        ]);
+                    }
+
                     #[ver(V >= V13_3)]
                     for i in 0..16 {
                         raw.unk_arr_0[i] = i as u32;
