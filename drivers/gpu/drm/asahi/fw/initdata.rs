@@ -3310,6 +3310,42 @@ pub(crate) struct G15PerfCtrFirstSample {
     pub(crate) valid: bool,
 }
 
+/// E743 CPU-side diagnostic snapshot taken only while the sampler is inactive
+/// (before START or after STOP). Bank-1 source/state/sample backings are
+/// streaming-DMA mappings, so the public snapshot helper performs an explicit
+/// device->CPU ownership transition before these fields are read and returns
+/// them to the device domain afterwards.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct G15PerfCtrStateSnapshot {
+    pub(crate) q22_command_count: u32,
+    pub(crate) q22_active: u32,
+    pub(crate) q22_context_id: u16,
+    pub(crate) q22_mask_4068: u64,
+    pub(crate) q22_mask_4070: u64,
+    pub(crate) source_active_d8: u32,
+    pub(crate) source_triggers_dc: u32,
+    pub(crate) source_flags_e0: u32,
+    pub(crate) source_period_e4: u32,
+    pub(crate) source_derived_e8: u32,
+    pub(crate) generated_count_8f8: u32,
+    pub(crate) selected_entry_12: u64,
+    pub(crate) source_buffer_size_900: u64,
+    pub(crate) source_buffer_addr_908: u64,
+    pub(crate) source_buffer_trailer_910: u64,
+    pub(crate) source_buffer_map_918: u64,
+    pub(crate) state_source_00: u32,
+    pub(crate) state_context_04: u16,
+    pub(crate) state_config_06: u8,
+    pub(crate) state_size_08: u64,
+    pub(crate) state_base_10: u64,
+    pub(crate) state_addr_18: u64,
+    pub(crate) state_write_20: u64,
+    pub(crate) state_trailer20_28: u64,
+    pub(crate) state_trailer30_30: u64,
+    pub(crate) completion_cursor: u64,
+    pub(crate) first_header: u64,
+}
+
 /// Mutable G15 sampler image owned under one lock. The exact sampler context
 /// ID is allocated only after a user VM exists, so both the state backing and
 /// q22 must be patched together after InitData construction.
@@ -3324,17 +3360,28 @@ impl G15PerfCtrRuntimeState {
             Ok(v) => v,
             Err(_) => return false,
         };
+        // The state backing is a streaming-DMA mapping. E743 fixes the same
+        // ownership class proven by E527/E528: retake CPU ownership before the
+        // runtime context patch and publish the three changed bytes back to the
+        // device domain before sampler START can observe them.
+        if self.backings.states.dma_sync_for_cpu().is_err() {
+            return false;
+        }
         let state = self.backings.states.as_mut_slice();
         // RDE_0 is global sampler-state index 1; +0x04 is the exact source
         // context ID and +0x06 is the exact zero byte copied from sampler +0x50.
         let off = 0x38usize + 0x04;
         if state.len() < off + 3 {
+            let _ = self.backings.states.dma_sync_for_device();
             return false;
         }
         let id = context_id.to_le_bytes();
         state[off] = id[0];
         state[off + 1] = id[1];
         state[off + 2] = 0;
+        if self.backings.states.dma_sync_for_device().is_err() {
+            return false;
+        }
         self.q22.with_mut(|raw, _inner| {
             raw.sampler_source_context_id_4064 = context_id;
             raw.sampler_source_context_zero_4066 = 0;
@@ -3375,17 +3422,89 @@ impl G15PerfCtrRuntimeState {
         }
     }
 
+    fn state_snapshot(&self) -> Option<G15PerfCtrStateSnapshot> {
+        let sources = self.backings.sources.as_slice();
+        if sources.len() < 2 {
+            return None;
+        }
+        let source = &sources[1];
+        let states = self.backings.states.as_slice();
+        let off = 0x38usize;
+        if states.len() < off + 0x38 {
+            return None;
+        }
+        let sbuf = self.backings.rde0_source_buffer.as_slice();
+        if sbuf.len() < 0x4000 + 0x38 {
+            return None;
+        }
+        let read_u16 = |bytes: &[u8], off: usize| -> u16 {
+            u16::from_le_bytes([bytes[off], bytes[off + 1]])
+        };
+        let read_u32 = |bytes: &[u8], off: usize| -> u32 {
+            u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]])
+        };
+        let read_u64 = |bytes: &[u8], off: usize| -> u64 {
+            u64::from_le_bytes([
+                bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3],
+                bytes[off + 4], bytes[off + 5], bytes[off + 6], bytes[off + 7],
+            ])
+        };
+        let (q22_command_count, q22_active, q22_context_id, q22_mask_4068, q22_mask_4070) =
+            self.q22.with(|raw, _inner| {
+                (
+                    raw.sampler_command_count_4018.0,
+                    raw.sampler_active_4030.0,
+                    raw.sampler_source_context_id_4064,
+                    raw.sampler_mask_4068.0,
+                    raw.sampler_mask_4070.0,
+                )
+            });
+        Some(G15PerfCtrStateSnapshot {
+            q22_command_count,
+            q22_active,
+            q22_context_id,
+            q22_mask_4068,
+            q22_mask_4070,
+            source_active_d8: source.runtime_active_d8.0,
+            source_triggers_dc: source.selection_mask_dc.0,
+            source_flags_e0: source.runtime_e0.0,
+            source_period_e4: source.runtime_e4.0,
+            source_derived_e8: source.runtime_e8.0,
+            generated_count_8f8: source.generated_entry_count_8f8.0,
+            selected_entry_12: source.generated_entries_f8[12].0,
+            source_buffer_size_900: source.source_buffer_size_900.0,
+            source_buffer_addr_908: source.source_buffer_addr_908.0,
+            source_buffer_trailer_910: source.source_buffer_trailer_addr_910.0,
+            source_buffer_map_918: source.source_buffer_trailer_map_918.0,
+            state_source_00: read_u32(states, off + 0x00),
+            state_context_04: read_u16(states, off + 0x04),
+            state_config_06: states[off + 0x06],
+            state_size_08: read_u64(states, off + 0x08),
+            state_base_10: read_u64(states, off + 0x10),
+            state_addr_18: read_u64(states, off + 0x18),
+            state_write_20: read_u64(states, off + 0x20),
+            state_trailer20_28: read_u64(states, off + 0x28),
+            state_trailer30_30: read_u64(states, off + 0x30),
+            completion_cursor: read_u64(sbuf, 0x4000 + 0x30),
+            first_header: read_u64(sbuf, 0),
+        })
+    }
+
     fn clear_source_context(&mut self, expected_id: u32) {
         let expected: u16 = match expected_id.try_into() {
             Ok(v) => v,
             Err(_) => return,
         };
-        let state = self.backings.states.as_mut_slice();
-        let off = 0x38usize + 0x04;
-        if state.len() >= off + 3 {
-            state[off] = 0xff;
-            state[off + 1] = 0xff;
-            state[off + 2] = 0;
+        let cpu_owned = self.backings.states.dma_sync_for_cpu().is_ok();
+        if cpu_owned {
+            let state = self.backings.states.as_mut_slice();
+            let off = 0x38usize + 0x04;
+            if state.len() >= off + 3 {
+                state[off] = 0xff;
+                state[off + 1] = 0xff;
+                state[off + 2] = 0;
+            }
+            let _ = self.backings.states.dma_sync_for_device();
         }
         self.q22.with_mut(|raw, _inner| {
             if raw.sampler_source_context_id_4064 == expected {
@@ -3419,6 +3538,41 @@ impl G15PerfCtrRuntimeHandle {
 
     pub(crate) fn first_sample(&self) -> G15PerfCtrFirstSample {
         self.0.lock().first_sample()
+    }
+
+    /// Snapshot sampler source/state/sample bytes only at an inactive boundary.
+    /// This temporarily transfers the three streaming-DMA backings to CPU
+    /// ownership, then returns every successfully acquired backing to device
+    /// ownership before returning.
+    pub(crate) fn state_snapshot_synced(&self) -> Option<G15PerfCtrStateSnapshot> {
+        let guard = self.0.lock();
+        let src_cpu = guard.backings.sources.dma_sync_for_cpu().is_ok();
+        let state_cpu = guard.backings.states.dma_sync_for_cpu().is_ok();
+        let sample_cpu = guard.backings.rde0_source_buffer.dma_sync_for_cpu().is_ok();
+        if !(src_cpu && state_cpu && sample_cpu) {
+            if src_cpu { let _ = guard.backings.sources.dma_sync_for_device(); }
+            if state_cpu { let _ = guard.backings.states.dma_sync_for_device(); }
+            if sample_cpu { let _ = guard.backings.rde0_source_buffer.dma_sync_for_device(); }
+            return None;
+        }
+        let snapshot = guard.state_snapshot();
+        let src_dev = guard.backings.sources.dma_sync_for_device().is_ok();
+        let state_dev = guard.backings.states.dma_sync_for_device().is_ok();
+        let sample_dev = guard.backings.rde0_source_buffer.dma_sync_for_device().is_ok();
+        if !(src_dev && state_dev && sample_dev) {
+            return None;
+        }
+        snapshot
+    }
+
+    pub(crate) fn q22_sampler_state(&self) -> (u32, u32, u16, u64, u64) {
+        self.with_q22(|raw| (
+            raw.sampler_command_count_4018.0,
+            raw.sampler_active_4030.0,
+            raw.sampler_source_context_id_4064,
+            raw.sampler_mask_4068.0,
+            raw.sampler_mask_4070.0,
+        ))
     }
 
     pub(crate) fn with_q22<Ret>(&self, callback: impl FnOnce(&raw::G15Q22Shared) -> Ret) -> Ret {

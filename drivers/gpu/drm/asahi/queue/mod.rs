@@ -2394,16 +2394,50 @@ impl sched::JobImpl for QueueJob::ver {
                 return Err(EIO);
             }
 
-            // E742: all host-side validation is complete before START. The
-            // sampler image is tied to this QueueJob's VM and carries exactly
-            // one RDE_0/DCDM/CSInvocation selector. START itself waits for the
-            // exact DeviceControl completion before any Compute ring mutation.
+            // E743: take one DMA-synchronized inactive baseline before START.
+            // This also validates that E736/E737's streaming-DMA backings were
+            // published with the exact selector/context image before firmware
+            // can consume them.
+            match gpu.g15_perfctr_state_snapshot_synced() {
+                Ok(s) => {
+                    dev_info!(
+                        job.dev.as_ref(),
+                        "T8122 G15 E743 pre-start q22 cmd={} active={:#x} ctx={} masks={:#018x}/{:#018x} src d8={:#x} dc={:#x} e0={:#x} e4={:#x} e8={:#x} gen={} sel12={:#018x}\n",
+                        s.q22_command_count, s.q22_active, s.q22_context_id,
+                        s.q22_mask_4068, s.q22_mask_4070,
+                        s.source_active_d8, s.source_triggers_dc, s.source_flags_e0,
+                        s.source_period_e4, s.source_derived_e8,
+                        s.generated_count_8f8, s.selected_entry_12,
+                    );
+                    dev_info!(
+                        job.dev.as_ref(),
+                        "T8122 G15 E743 pre-start buffer size={:#x} base={:#018x} trailer={:#018x} map={:#018x} state src={} ctx={} cfg={} size={:#x} base={:#018x} a18={:#018x} w20={:#018x} t28={:#018x} t30={:#018x} cursor={:#018x} hdr={:#018x}\n",
+                        s.source_buffer_size_900, s.source_buffer_addr_908,
+                        s.source_buffer_trailer_910, s.source_buffer_map_918,
+                        s.state_source_00, s.state_context_04, s.state_config_06,
+                        s.state_size_08, s.state_base_10, s.state_addr_18,
+                        s.state_write_20, s.state_trailer20_28, s.state_trailer30_30,
+                        s.completion_cursor, s.first_header,
+                    );
+                }
+                Err(err) => return Err(err),
+            }
+
+            // START waits for the exact DeviceControl completion before any
+            // Compute ring mutation.
             gpu.g15_perfctr_start()?;
             dev_info!(
                 job.dev.as_ref(),
-                "T8122 G15 E742 RDE observer START complete for QueueJob {}\n",
+                "T8122 G15 E743 RDE observer START complete for QueueJob {}\n",
                 job.id
             );
+            if let Ok((cmd, active, ctx, mask68, mask70)) = gpu.g15_perfctr_q22_sampler_state() {
+                dev_info!(
+                    job.dev.as_ref(),
+                    "T8122 G15 E743 post-start q22 cmd={} active={:#x} ctx={} masks={:#018x}/{:#018x}\n",
+                    cmd, active, ctx, mask68, mask70,
+                );
+            }
 
             // Keep all post-START operations inside a result value so STOP is
             // attempted even when selected Compute submission/transport fails.
@@ -2420,47 +2454,67 @@ impl sched::JobImpl for QueueJob::ver {
             })();
 
             if compute_result.is_ok() {
-                // The selected Compute has crossed its existing scheduler/
-                // observation boundary even if a later sampler STOP fails.
                 job.did_run = true;
             }
 
-            // One bounded CPU-side observer read. This is deliberately a
-            // single snapshot, not a selector/counter scan.
-            let sample_result = gpu.g15_perfctr_first_sample();
-            match sample_result {
-                Ok(sample) => dev_info!(
+            if let Ok((cmd, active, ctx, mask68, mask70)) = gpu.g15_perfctr_q22_sampler_state() {
+                dev_info!(
                     job.dev.as_ref(),
-                    "T8122 G15 E742 RDE sample active={:#010x} base={:#018x} cursor={:#018x} header={:#018x} valid={}\n",
-                    sample.active,
-                    sample.source_base,
-                    sample.completion_cursor,
-                    sample.first_header,
-                    sample.valid,
-                ),
-                Err(err) => dev_err!(
-                    job.dev.as_ref(),
-                    "T8122 G15 E742 RDE sample read failed: {:?}\n",
-                    err
-                ),
+                    "T8122 G15 E743 pre-stop q22 cmd={} active={:#x} ctx={} masks={:#018x}/{:#018x}\n",
+                    cmd, active, ctx, mask68, mask70,
+                );
             }
 
-            // Always attempt STOP after a successful START. If the selected
-            // Compute path fail-stopped the GPU manager this can itself fail;
-            // retain the original Compute error while logging STOP separately.
+            // Always STOP before transferring the sample/source/state streaming
+            // mappings back to CPU ownership. E528 established that an in-flight
+            // CPU read while the device owns a non-coherent mapping is invalid.
             let stop_result = gpu.g15_perfctr_stop();
             match &stop_result {
                 Ok(()) => dev_info!(
                     job.dev.as_ref(),
-                    "T8122 G15 E742 RDE observer STOP complete for QueueJob {}\n",
+                    "T8122 G15 E743 RDE observer STOP complete for QueueJob {}\n",
                     job.id
                 ),
                 Err(err) => dev_err!(
                     job.dev.as_ref(),
-                    "T8122 G15 E742 RDE observer STOP failed for QueueJob {}: {:?}\n",
+                    "T8122 G15 E743 RDE observer STOP failed for QueueJob {}: {:?}\n",
                     job.id,
                     err
                 ),
+            }
+
+            if stop_result.is_ok() {
+                match gpu.g15_perfctr_state_snapshot_synced() {
+                    Ok(s) => {
+                        let valid = s.completion_cursor < 0x4000
+                            && s.completion_cursor != s.source_buffer_addr_908
+                            && (s.first_header >> 48) == 0xfeed;
+                        dev_info!(
+                            job.dev.as_ref(),
+                            "T8122 G15 E743 post-stop q22 cmd={} active={:#x} ctx={} masks={:#018x}/{:#018x} src d8={:#x} dc={:#x} e0={:#x} e4={:#x} e8={:#x} gen={} sel12={:#018x}\n",
+                            s.q22_command_count, s.q22_active, s.q22_context_id,
+                            s.q22_mask_4068, s.q22_mask_4070,
+                            s.source_active_d8, s.source_triggers_dc, s.source_flags_e0,
+                            s.source_period_e4, s.source_derived_e8,
+                            s.generated_count_8f8, s.selected_entry_12,
+                        );
+                        dev_info!(
+                            job.dev.as_ref(),
+                            "T8122 G15 E743 post-stop buffer size={:#x} base={:#018x} trailer={:#018x} map={:#018x} state src={} ctx={} cfg={} size={:#x} base={:#018x} a18={:#018x} w20={:#018x} t28={:#018x} t30={:#018x} cursor={:#018x} hdr={:#018x} valid={}\n",
+                            s.source_buffer_size_900, s.source_buffer_addr_908,
+                            s.source_buffer_trailer_910, s.source_buffer_map_918,
+                            s.state_source_00, s.state_context_04, s.state_config_06,
+                            s.state_size_08, s.state_base_10, s.state_addr_18,
+                            s.state_write_20, s.state_trailer20_28, s.state_trailer30_30,
+                            s.completion_cursor, s.first_header, valid,
+                        );
+                    }
+                    Err(err) => dev_err!(
+                        job.dev.as_ref(),
+                        "T8122 G15 E743 synchronized post-stop snapshot failed: {:?}\n",
+                        err
+                    ),
+                }
             }
 
             if let Err(err) = compute_result {

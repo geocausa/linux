@@ -3184,6 +3184,37 @@ impl GpuManager::ver {
         }
     }
 
+    #[allow(dead_code)]
+    pub(crate) fn g15_perfctr_state_snapshot_synced(
+        &self,
+    ) -> Result<fw::initdata::G15PerfCtrStateSnapshot> {
+        #[ver(G != G15)]
+        {
+            return Err(EINVAL);
+        }
+        #[ver(G == G15)]
+        {
+            mem::sync();
+            self.initdata
+                .g15_perfctr_runtime
+                .state_snapshot_synced()
+                .ok_or(EIO)
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn g15_perfctr_q22_sampler_state(&self) -> Result<(u32, u32, u16, u64, u64)> {
+        #[ver(G != G15)]
+        {
+            return Err(EINVAL);
+        }
+        #[ver(G == G15)]
+        {
+            mem::sync();
+            Ok(self.initdata.g15_perfctr_runtime.q22_sampler_state())
+        }
+    }
+
     /// Prepare the exact G15 RDE observer's runtime source context for the
     /// same VM that owns the selected Compute submission. This remains
     /// deliberately zero-caller in E739 and sends no DeviceControl message.

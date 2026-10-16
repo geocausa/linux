@@ -1706,6 +1706,18 @@ impl<'a> InitDataBuilder::ver<'a> {
             let control = range8
                 .array_empty_shared_data::<u8>(control_backing_bytes as usize)?;
 
+            // E743: these bank-1 objects are backed by streaming DMA mappings.
+            // E527/E528 proved that cached CPU construction after DMA mapping
+            // must be explicitly published back to the device domain on J615.
+            // E736/E737 constructed these exact sampler images after allocation
+            // but did not perform that ownership transition. Publish every
+            // sampler backing only after its final CPU-side bytes are complete.
+            sources.dma_sync_for_device()?;
+            states.dma_sync_for_device()?;
+            rde0_source_buffer.dma_sync_for_device()?;
+            control.dma_sync_for_device()?;
+            aps_usc.dma_sync_for_device()?;
+
             G15PerfCtrBackings {
                 sources, states, rde0_source_buffer, control, aps_usc,
             }
