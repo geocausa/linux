@@ -2439,6 +2439,13 @@ impl sched::JobImpl for QueueJob::ver {
                 );
             }
 
+            let e747_post_start_mmio = job.dev.resources.g15_rde0_mmio_snapshot();
+            dev_info!(
+                job.dev.as_ref(),
+                "T8122 G15 E747 post-start RDE0 MMIO {:?}\n",
+                e747_post_start_mmio,
+            );
+
             // Keep all post-START operations inside a result value so STOP is
             // attempted even when selected Compute submission/transport fails.
             let compute_result = (|| -> Result {
@@ -2464,6 +2471,13 @@ impl sched::JobImpl for QueueJob::ver {
                     cmd, active, ctx, mask68, mask70,
                 );
             }
+
+            let e747_pre_stop_mmio = job.dev.resources.g15_rde0_mmio_snapshot();
+            dev_info!(
+                job.dev.as_ref(),
+                "T8122 G15 E747 pre-stop RDE0 MMIO {:?}\n",
+                e747_pre_stop_mmio,
+            );
 
             // Always STOP before transferring the sample/source/state streaming
             // mappings back to CPU ownership. E528 established that an in-flight

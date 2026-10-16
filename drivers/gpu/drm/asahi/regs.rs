@@ -230,6 +230,18 @@ pub(crate) struct Resources {
     sgx: Pin<KBox<Devres<IoMem<SGX_SIZE>>>>,
 }
 
+/// E747 read-only ordinary RDE_0 registers. Every offset here is read by the
+/// exact 23J220 firmware during STOP/teardown or final-pointer capture.
+/// No diagnostic writer exists.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct G15Rde0MmioSnapshot {
+    pub(crate) ea18: u64,
+    pub(crate) ea20: u64,
+    pub(crate) ea40: u64,
+    pub(crate) ea60: u64,
+    pub(crate) e840: u64,
+}
+
 /// E370 read-only snapshot of the exact RGX register window consumed by the
 /// G15 RTKit scheduler path after RegisterArray construction.
 ///
@@ -286,6 +298,18 @@ impl Resources {
             sgx.relaxed().read64(OFF)
         } else {
             0
+        }
+    }
+
+    /// E747: sample only firmware-proven-readable RDE_0 status/final-pointer
+    /// registers. This is deliberately read-only and does not alter sampler state.
+    pub(crate) fn g15_rde0_mmio_snapshot(&self) -> G15Rde0MmioSnapshot {
+        G15Rde0MmioSnapshot {
+            ea18: self.sgx_read64::<0xea18>(),
+            ea20: self.sgx_read64::<0xea20>(),
+            ea40: self.sgx_read64::<0xea40>(),
+            ea60: self.sgx_read64::<0xea60>(),
+            e840: self.sgx_read64::<0xe840>(),
         }
     }
 
