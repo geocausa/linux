@@ -812,6 +812,25 @@ impl Clone for VmBind {
     }
 }
 
+/// Dedicated G15 sampler source-context binding for one VM. Apple allocates
+/// this from AGXContextIDManager selector 0, independently of the Compute
+/// descriptor's selector-2 context ID. Holding the slot guard keeps the second
+/// ASID unavailable to ordinary VM bindings for the entire sampler lifetime.
+///
+/// E738 keeps this helper zero-caller: it is compile-only plumbing for the next
+/// runtime ownership slice and does not make performance-counter start reachable.
+pub(crate) struct G15SamplerVmBind {
+    _vm: Vm,
+    _slot_guard: slotalloc::Guard<SlotInner>,
+    slot: u32,
+}
+
+impl G15SamplerVmBind {
+    pub(crate) fn slot(&self) -> u32 {
+        self.slot
+    }
+}
+
 /// Inner data required for an object mapping into a [`Vm`].
 pub(crate) struct KernelMappingInner {
     // Drop order matters:
@@ -3097,6 +3116,69 @@ impl Uat {
             binding.active_users
         );
         Ok(VmBind(vm.clone(), slot, generation))
+    }
+
+    /// Allocate Apple's separate G15 performance-counter source context for
+    /// an existing VM/GART. Unlike `bind()`, this deliberately does not consult
+    /// `VmBinding`: selector 0 and Compute selector 2 are independent context-ID
+    /// domains on the same GART and must remain distinct while both are live.
+    ///
+    /// The method is intentionally zero-caller in E738. Robust-isolation mode
+    /// constrains the shared slot allocator to one user context and therefore
+    /// cannot host the second sampler context; fail closed instead of blocking.
+    pub(crate) fn bind_g15_sampler_context(&self, vm: &Vm) -> Result<G15SamplerVmBind> {
+        if self.cfg.gpu_gen != hw::GpuGen::G15 {
+            return Err(EINVAL);
+        }
+        if *module_parameters::robust_isolation.value() != 0 {
+            return Err(EBUSY);
+        }
+
+        let mut slot = self.slots.get(None)?;
+        let idx = (slot.slot() as usize) + UAT_USER_CTX_START;
+        let uat_inner = self.inner.lock();
+        let bank1 = uat_inner.g15_shared_bank1.as_ref().ok_or(EINVAL)?;
+        let bank1_root = bank1.ttb();
+        let binding = vm.binding.lock();
+        if !g15_gptbat_roots_fit(binding.ttb, bank1_root) {
+            dev_err!(
+                self.dev.as_ref(),
+                "MMU: G15 sampler GPTBAT roots exceed 42-bit OAS ({:#x}, {:#x})\n",
+                binding.ttb,
+                bank1_root
+            );
+            return Err(EINVAL);
+        }
+        let ttb0 = g15_gptbat_bank0(binding.ttb, idx as u8);
+        let ttb1 = g15_gptbat_bank1(binding.ttb, bank1_root, idx as u8);
+        core::mem::drop(binding);
+
+        let ttbs = uat_inner.ttbs();
+        uat_inner.handoff().lock();
+        if uat_inner.handoff().current_slot() == Some(idx as u32) {
+            uat_inner.handoff().unlock();
+            return Err(EBUSY);
+        }
+        ttbs[idx].ttb0.store(ttb0, Ordering::Release);
+        ttbs[idx].ttb1.store(ttb1, Ordering::Release);
+        uat_inner.handoff().unlock();
+        core::mem::drop(uat_inner);
+
+        mem::tlbi_asid(idx as u8);
+        mem::sync();
+        slot.generation = slot.generation.wrapping_add(1);
+
+        let slot_id = idx as u32;
+        mod_pr_debug!(
+            "MMU: G15 sampler selector-0 context slot {} for Vm {}\n",
+            slot_id,
+            vm.id
+        );
+        Ok(G15SamplerVmBind {
+            _vm: vm.clone(),
+            _slot_guard: slot,
+            slot: slot_id,
+        })
     }
 
     /// Creates a new `Vm` linked to this UAT.

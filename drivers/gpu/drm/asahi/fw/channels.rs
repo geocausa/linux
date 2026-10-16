@@ -197,9 +197,13 @@ pub(crate) enum DeviceControlMsg {
     Unk01(Array<DEVICECONTROL_SZ::ver, u8>),
     Unk02(Array<DEVICECONTROL_SZ::ver, u8>),
     Unk03(Array<DEVICECONTROL_SZ::ver, u8>),
-    Unk04(Array<DEVICECONTROL_SZ::ver, u8>),
-    Unk05(Array<DEVICECONTROL_SZ::ver, u8>),
-    Unk06(Array<DEVICECONTROL_SZ::ver, u8>),
+    // Exact 23J220 AGXPerfCtrSampler device-control entries. These records are
+    // otherwise zero-filled; the enum discriminant is the firmware command.
+    PerfCounterStart(Pad<DEVICECONTROL_SZ::ver>),
+    PerfCounterStop(Pad<DEVICECONTROL_SZ::ver>),
+    // Gen15 AGXPerfCtrSampler command 10. Exact transport/type is proven, but
+    // its higher-level semantic role is intentionally left unnamed.
+    PerfCounterGen15Cmd10(Pad<DEVICECONTROL_SZ::ver>),
     Unk07(Array<DEVICECONTROL_SZ::ver, u8>),
     Unk08(Array<DEVICECONTROL_SZ::ver, u8>),
     Unk09(Array<DEVICECONTROL_SZ::ver, u8>),

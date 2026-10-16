@@ -213,6 +213,20 @@ impl Default for ID {
 /// submission count.
 pub(crate) struct OpGuard(Arc<dyn GpuManagerPriv>);
 
+/// Zero-caller E739 owner for Apple's separate sampler selector-0 context.
+/// Drop clears the published sampler context before returning the ASID slot.
+pub(crate) struct G15RdeObserverRuntime {
+    sampler_context: mmu::G15SamplerVmBind,
+    perfctr_runtime: fw::initdata::G15PerfCtrRuntimeHandle,
+}
+
+impl Drop for G15RdeObserverRuntime {
+    fn drop(&mut self) {
+        self.perfctr_runtime
+            .clear_source_context(self.sampler_context.slot());
+    }
+}
+
 impl Drop for OpGuard {
     fn drop(&mut self) {
         self.0.end_op();
@@ -970,7 +984,7 @@ impl GpuManager::ver {
             let wrapper_va = mgr.initdata.runtime_pointers.gpu_va().get();
             let globals_va = mgr.initdata.g15_globals.gpu_va().get();
             let q21_va = mgr.initdata.g15_q21.gpu_va().get();
-            let q22_va = mgr.initdata.g15_q22.gpu_va().get();
+            let q22_va = mgr.initdata.g15_perfctr_runtime.q22_gpu_va();
             let q23_va = mgr.initdata.g15_q23.gpu_va().get();
             let (q22_state_va, q22_ring_va, q22_ring_empty) = {
                 let notifier = mgr.initdata.g15_mapping_notifier.lock();
@@ -1037,7 +1051,7 @@ impl GpuManager::ver {
                     && raw.g15_q23.0 == q23_va
             });
 
-            let q22_ok = mgr.initdata.g15_q22.with(|raw, _inner| {
+            let q22_ok = mgr.initdata.g15_perfctr_runtime.with_q22(|raw| {
                 // Root importer FUN_fffffc00000066dc snapshots q22 +0x008
                 // before firmware_ready. Apple clears both bootstrap words.
                 raw.host_zero_0000.0 == 0
@@ -3101,6 +3115,34 @@ impl GpuManager::ver {
         guard.gpu_ro.collect_garbage(garbage_count_gpuro);
 
         Ok(())
+    }
+
+    /// Prepare the exact G15 RDE observer's runtime source context for the
+    /// same VM that owns the selected Compute submission. This remains
+    /// deliberately zero-caller in E739 and sends no DeviceControl message.
+    pub(crate) fn g15_prepare_rde_observer_context(
+        &self,
+        vm: &mmu::Vm,
+    ) -> Result<G15RdeObserverRuntime> {
+        #[ver(G != G15)]
+        {
+            let _ = vm;
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            let sampler_context = self.uat.bind_g15_sampler_context(vm)?;
+            let context_id = sampler_context.slot();
+            let perfctr_runtime = self.initdata.g15_perfctr_runtime.clone();
+            if !perfctr_runtime.patch_source_context(context_id) {
+                return Err(EINVAL);
+            }
+            Ok(G15RdeObserverRuntime {
+                sampler_context,
+                perfctr_runtime,
+            })
+        }
     }
 
     #[cfg(CONFIG_DEV_COREDUMP)]

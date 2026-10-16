@@ -1602,6 +1602,133 @@ impl<'a> InitDataBuilder::ver<'a> {
             (notifier.state_gpu_va(), notifier.ring_gpu_va())
         };
         #[ver(G == G15)]
+        let g15_perfctr_backings = {
+            // E735 closes these as bootstrap bank-1 allocations. Preserve
+            // Apple's preactivation policy: initial mappings are silent, but
+            // teardown after q22 activation can publish the corresponding
+            // unmap through the retained notifier.
+            let bank1 = self.g15_shared_bank1.clone().ok_or(EINVAL)?;
+            let notifier = Some(g15_mapping_notifier.arc());
+
+            let aps_sampler_count = self.dyncfg.id.num_cores;
+            if aps_sampler_count == 0 {
+                return Err(EINVAL);
+            }
+            let logical_state_count = 3u32.checked_add(aps_sampler_count).ok_or(EINVAL)?;
+            let state_backing_bytes = logical_state_count.checked_mul(0x4090).ok_or(EINVAL)?;
+            let sample_cache_bytes = aps_sampler_count
+                .checked_mul(0x20)
+                .and_then(|v| v.checked_add(0x720))
+                .ok_or(EINVAL)?;
+            let control_backing_bytes = sample_cache_bytes.checked_add(0x4000).ok_or(EINVAL)?;
+
+            let mut range7 = alloc::G15SharedBank1Allocator::new_range7_sampler(
+                self.dev, bank1.clone(), mmu::UAT_PGSZ, true, notifier.clone(),
+            ).after_q22_activation();
+            let mut sources = range7
+                .array_empty_shared_data::<raw::G15PerfCtrSourceRecord>(6)?;
+            let mut states = range7
+                .array_empty_shared_data::<u8>(state_backing_bytes as usize)?;
+            let aps_usc = range7.array_empty_shared_data::<u8>(0x8000)?;
+            let mut rde0_source_buffer = range7.array_empty_shared_data::<u8>(0x8000)?;
+            let rde0_source_buffer_va = u64::from(rde0_source_buffer.weak_pointer());
+            if rde0_source_buffer_va == 0 || rde0_source_buffer_va & 0x3fff != 0 {
+                return Err(EINVAL);
+            }
+
+            // E737 reproduces the command-3 attachment state for RDE_0 while
+            // still leaving all selector/trigger activation fields zero. The
+            // complete minimum source buffer is one ordinary range-7 mapping;
+            // for this page-base kernel-owned object the exact client-buffer
+            // bias represented by Apple's IOGPUSysMemory +0x78 is zero.
+            let (rde0_state, rde0_trailer) = raw::G15PerfCtrSamplerState::ordinary_rde_one(
+                1,
+                0x4000,
+                rde0_source_buffer_va,
+                rde0_source_buffer_va.checked_add(0x4000).ok_or(EINVAL)?,
+                0,
+            ).ok_or(EINVAL)?;
+
+            {
+                let state_bytes = states.as_mut_slice();
+                let off = 0x38usize; // RDE_0 owns global sampler-state index 1.
+                if state_bytes.len() < off + core::mem::size_of::<raw::G15PerfCtrSamplerState>() {
+                    return Err(EINVAL);
+                }
+                // SAFETY: the exact state backing is CPU-mapped, `off` selects
+                // the second 0x38 record, and the bounds check above covers the
+                // full repr(C) object. `write_unaligned` avoids assuming the u8
+                // slice's Rust alignment even though the backing is page-aligned.
+                unsafe {
+                    core::ptr::write_unaligned(
+                        state_bytes.as_mut_ptr().add(off).cast::<raw::G15PerfCtrSamplerState>(),
+                        rde0_state,
+                    );
+                }
+            }
+            {
+                let source_bytes = rde0_source_buffer.as_mut_slice();
+                let off = 0x4000usize;
+                if source_bytes.len() < off + core::mem::size_of::<raw::G15PerfCtrSamplerTrailer>() {
+                    return Err(EINVAL);
+                }
+                // SAFETY: the minimum 0x8000 source buffer is CPU-mapped and
+                // zeroed; offset 0x4000 is the exact final trailer page.
+                unsafe {
+                    core::ptr::write_unaligned(
+                        source_bytes.as_mut_ptr().add(off).cast::<raw::G15PerfCtrSamplerTrailer>(),
+                        rde0_trailer,
+                    );
+                }
+            }
+
+            // Publish the exact six-source topology. RDE_0 has its source
+            // buffer/state attached, but every source remains inactive: no
+            // selected counters, trigger bits, generated command list, or
+            // DeviceControl sender is made reachable in this slice.
+            {
+                let src = sources.as_mut_slice();
+                src[0] = raw::G15PerfCtrSourceRecord::firmware_inactive();
+                src[1] = raw::G15PerfCtrSourceRecord::rde0_observer(
+                    rde0_source_buffer_va,
+                    raw::G15_PERFCTR_TIMER_NCLOCK_REFERENCE_PERIOD,
+                ).ok_or(EINVAL)?;
+                src[2] = raw::G15PerfCtrSourceRecord::rde1_inactive();
+                src[3] = raw::G15PerfCtrSourceRecord::bmpr_rde0_inactive();
+                src[4] = raw::G15PerfCtrSourceRecord::bmpr_rde1_inactive();
+                src[5] = raw::G15PerfCtrSourceRecord::aps_usc_inactive(aps_sampler_count)
+                    .ok_or(EINVAL)?;
+            }
+
+            let mut range8 = alloc::G15SharedBank1Allocator::new_range8_sampler_control(
+                self.dev, bank1, mmu::UAT_PGSZ, true, notifier,
+            ).after_q22_activation();
+            let control = range8
+                .array_empty_shared_data::<u8>(control_backing_bytes as usize)?;
+
+            G15PerfCtrBackings {
+                sources, states, rde0_source_buffer, control, aps_usc,
+            }
+        };
+        #[ver(G == G15)]
+        let (
+            g15_perfctr_sources_va,
+            g15_perfctr_states_va,
+            g15_perfctr_control_va,
+            g15_perfctr_aps_va,
+            g15_perfctr_state_count,
+        ) = {
+            let aps_sampler_count = self.dyncfg.id.num_cores;
+            let logical_state_count = 3u32.checked_add(aps_sampler_count).ok_or(EINVAL)?;
+            (
+                u64::from(g15_perfctr_backings.sources.weak_pointer()),
+                u64::from(g15_perfctr_backings.states.weak_pointer()),
+                u64::from(g15_perfctr_backings.control.weak_pointer()),
+                u64::from(g15_perfctr_backings.aps_usc.weak_pointer()),
+                logical_state_count,
+            )
+        };
+        #[ver(G == G15)]
         let g15_q22 = self.alloc.shared.new_object(
             Default::default(),
             |_inner| raw::G15Q22Shared {
@@ -1611,6 +1738,37 @@ impl<'a> InitDataBuilder::ver<'a> {
                 // these bootstrap objects use the same shared bank-1 PTE class
                 // as later range-7 PM resources. The q22 producer is not yet
                 // attached while these two self-hosting mappings are created.
+                // E736 bootstrap sampler publication. Every backing is fully
+                // allocated/initialized before q22 becomes visible. Active/mask
+                // fields remain zero; E737 initializes only the dormant RDE_0
+                // buffer/state transaction and still exposes no START sender.
+                sampler_commands_0018: {
+                    let mut cmds: Array<0x200, raw::G15PerfCtrGeneratedRdeCommand> =
+                        Default::default();
+                    cmds[0] = raw::G15PerfCtrGeneratedRdeCommand::rde0_dcdm_first(0x3003_07ff)
+                        .expect("exact first DCDM selector");
+                    cmds
+                },
+                sampler_command_count_4018: U32(1),
+                // The source context ID is intentionally not fabricated here.
+                // Apple allocates it dynamically from the owning AGXShared/GART
+                // selector-0 domain before committing the sampler source.
+                sampler_source_context_id_4064: 0,
+                sampler_source_context_zero_4066: 0,
+                pad_4067: 0,
+                sampler_control_ptr_4038: U64(g15_perfctr_control_va),
+                sampler_control_size_4040: U32(0x4000),
+                sampler_control_end_4044: U64(g15_perfctr_control_va + 0x4000),
+                sampler_sources_ptr_404c: U64(g15_perfctr_sources_va),
+                sampler_source_count_4054: U32(6),
+                sampler_states_ptr_4058: U64(g15_perfctr_states_va),
+                sampler_state_count_4060: U32(g15_perfctr_state_count),
+                aps_usc_mapped_4078: U64(g15_perfctr_aps_va + 0x4000),
+                aps_usc_second_half_4080: U64(g15_perfctr_aps_va + 0x4000),
+                aps_usc_base_4088: U64(g15_perfctr_aps_va),
+                aps_usc_generation_4090: U32(0),
+                aps_usc_coord_4094: 0,
+                aps_usc_source_index_4098: U32(5),
                 shared_ptr_4568: U64(g15_cache_flush_state_va),
                 shared_ptr_4570: U64(g15_cache_flush_ring_va),
                 // Apple sets +0x45c4 to one before firmware starts. G15's
@@ -1624,6 +1782,17 @@ impl<'a> InitDataBuilder::ver<'a> {
                 ..Default::default()
             },
         )?;
+        #[ver(G == G15)]
+        let g15_perfctr_runtime = G15PerfCtrRuntimeHandle::new(Arc::pin_init(
+            new_mutex!(
+                G15PerfCtrRuntimeState {
+                    backings: g15_perfctr_backings,
+                    q22: g15_q22,
+                },
+                "g15_perfctr_runtime"
+            ),
+            GFP_KERNEL,
+        )?);
         #[ver(G == G15)]
         let g15_q23 = self.alloc.shared.new_object(
             Default::default(),
@@ -1683,7 +1852,7 @@ impl<'a> InitDataBuilder::ver<'a> {
                 #[ver(G == G15)]
                 g15_mapping_notifier,
                 #[ver(G == G15)]
-                g15_q22,
+                g15_perfctr_runtime,
                 #[ver(G == G15)]
                 g15_q23,
             }),
@@ -1768,7 +1937,7 @@ impl<'a> InitDataBuilder::ver<'a> {
                     #[ver(G == G15)]
                     g15_q21: U64(inner.g15_q21.gpu_va().get()),
                     #[ver(G == G15)]
-                    g15_q22: U64(inner.g15_q22.gpu_va().get()),
+                    g15_q22: U64(inner.g15_perfctr_runtime.q22_gpu_va()),
                     #[ver(G == G15)]
                     g15_q23: U64(inner.g15_q23.gpu_va().get()),
                     #[ver(G == G15)]

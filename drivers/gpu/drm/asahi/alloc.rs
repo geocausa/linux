@@ -597,6 +597,31 @@ impl G15SharedBank1Allocator {
         }
     }
 
+    /// Dedicated ordinary eGartRange-7 allocator for the exact G15
+    /// performance-counter sampler source/state/Gen15 bootstrap backings.
+    /// E735 closes these descriptors as zero-extra-option range 7, i.e. the
+    /// existing compact-0x007 / leaf-0x...0447 class.
+    #[allow(dead_code)]
+    pub(crate) fn new_range7_sampler(
+        dev: &AsahiDevice,
+        bank1: mmu::G15SharedBank1,
+        min_align: usize,
+        mut cpu_maps: bool,
+        notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
+    ) -> Self {
+        if debug_enabled(DebugFlags::ForceCPUMaps) { cpu_maps = true; }
+        Self {
+            dev: dev.into(),
+            bank1,
+            aperture: mmu::G15SharedBank1Aperture::Range7,
+            prot: mmu::PROT_G15_RANGE7_FW,
+            min_align,
+            cpu_maps,
+            notifier,
+            notify_mode: mmu::G15MappingNotifyMode::Immediate,
+        }
+    }
+
     /// Dedicated normal eGartRange-7 allocator for exact G15 command-buffer
     /// stamp/shared-event storage. E092 proves this is the compact-0x007 /
     /// 0x...0447 class, distinct from the FList FW-Uncached 0x...044b class.
@@ -711,6 +736,30 @@ impl G15SharedBank1Allocator {
             bank1,
             aperture: mmu::G15SharedBank1Aperture::Range7HWMetrics,
             prot: mmu::PROT_GPU_FW_SHARED_RW,
+            min_align,
+            cpu_maps,
+            notifier,
+            notify_mode: mmu::G15MappingNotifyMode::Immediate,
+        }
+    }
+
+    /// Dedicated ordinary eGartRange-8 allocator for the exact G15
+    /// performance-counter sampler control/sample-cache backing. E735 proves
+    /// zero extra mapping options, matching compact 0x003 / leaf 0x...0443.
+    #[allow(dead_code)]
+    pub(crate) fn new_range8_sampler_control(
+        dev: &AsahiDevice,
+        bank1: mmu::G15SharedBank1,
+        min_align: usize,
+        mut cpu_maps: bool,
+        notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
+    ) -> Self {
+        if debug_enabled(DebugFlags::ForceCPUMaps) { cpu_maps = true; }
+        Self {
+            dev: dev.into(),
+            bank1,
+            aperture: mmu::G15SharedBank1Aperture::Range8,
+            prot: mmu::PROT_G15_RANGE8_FW,
             min_align,
             cpu_maps,
             notifier,

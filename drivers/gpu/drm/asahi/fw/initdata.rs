@@ -4,7 +4,10 @@
 
 use super::channels;
 use super::types::*;
+use kernel::sync::{Arc, Mutex};
+
 use crate::{
+    alloc,
     default_zeroed,
     gem,
     mmu,
@@ -316,6 +319,696 @@ pub(crate) mod raw {
     const _: [(); 0x1840] = [(); core::mem::size_of::<G15MappingRingBacking>()];
     const _: [(); 0x40] = [(); core::mem::offset_of!(G15MappingRingBacking, ring)];
 
+    /// Exact 0xb8-byte static descriptor tail copied into an ordinary G15
+    /// performance-counter source record at +0x20. The offset-neutral qword
+    /// names preserve exact target bytes while avoiding semantic guesses.
+    #[derive(Debug)]
+    #[repr(C)]
+    pub(crate) struct G15PerfCtrRdeDescriptorTail {
+        pub(crate) value_20: U64,
+        pub(crate) value_28: U64,
+        pub(crate) value_30: U64,
+        pub(crate) value_38: U64,
+        pub(crate) value_40: U64,
+        pub(crate) value_48: U64,
+        pub(crate) value_50: U64,
+        pub(crate) value_58: U64,
+        pub(crate) value_60: U64,
+        pub(crate) value_68: U64,
+        pub(crate) value_70: U64,
+        pub(crate) value_78: U64,
+        pub(crate) value_80: U64,
+        pub(crate) value_88: U64,
+        pub(crate) value_90: U64,
+        pub(crate) value_98: U64,
+        pub(crate) value_a0: U64,
+        pub(crate) value_a8: U64,
+        pub(crate) value_b0: U64,
+        pub(crate) value_b8: U64,
+        pub(crate) value_c0: U64,
+        pub(crate) host_pointer_c8: U64,
+        pub(crate) value_d0: U64,
+    }
+    default_zeroed!(G15PerfCtrRdeDescriptorTail);
+    const _: [(); 0xb8] = [(); core::mem::size_of::<G15PerfCtrRdeDescriptorTail>()];
+    const _: [(); 0x00] = [(); core::mem::offset_of!(G15PerfCtrRdeDescriptorTail, value_20)];
+    const _: [(); 0x18] = [(); core::mem::offset_of!(G15PerfCtrRdeDescriptorTail, value_38)];
+    const _: [(); 0x70] = [(); core::mem::offset_of!(G15PerfCtrRdeDescriptorTail, value_90)];
+    const _: [(); 0xa8] = [(); core::mem::offset_of!(G15PerfCtrRdeDescriptorTail, host_pointer_c8)];
+    const _: [(); 0xb0] = [(); core::mem::offset_of!(G15PerfCtrRdeDescriptorTail, value_d0)];
+
+    impl G15PerfCtrRdeDescriptorTail {
+        /// Firmware-facing exact 23J220 RDE_0 descriptor tail.
+        ///
+        /// The exact host descriptor contains macOS kernel pointer
+        /// 0xfffffe000be01570 at +0xc8. E735's exhaustive firmware source-stride
+        /// sweep plus the recursively inspected RDE refresh helper found no
+        /// firmware consumer for +0xc8, so Linux deliberately strips that host
+        /// pointer after materializing the generated RDE program explicitly.
+        pub(crate) const fn rde0_firmware_view() -> Self {
+            Self {
+                value_20: U64(0x0000_1478_0000_1170),
+                value_28: U64(0x0000_1128_0000_1138),
+                value_30: U64(0x0000_0000_0000_1120),
+                value_38: U64(0x0000_ea20_0000_ea18),
+                value_40: U64(0x0000_ea28_0000_e000),
+                value_48: U64(0x0000_ea50_0000_ea48),
+                value_50: U64(0x0000_ea60_0000_ea58),
+                value_58: U64(0x0000_ea38_0000_ea40),
+                value_60: U64(0x0000_e800_0000_ea30),
+                value_68: U64(0x0000_e840_0000_e830),
+                value_70: U64(0x0000_003c_0000_ea68),
+                value_78: U64(0x0000_1498_0000_14a0),
+                value_80: U64(0x0000_0001_0000_14a8),
+                value_88: U64(0x0000_0000_0000_00ff),
+                value_90: U64(0x0000_ffff_ffff_fff0),
+                value_98: U64(0x8000_0000_0000_0000),
+                value_a0: U64(0x00ff_00ff_0fff_0fff),
+                value_a8: U64(0x0040_0040_0000_0000),
+                value_b0: U64(0x0000_0000_0000_0001),
+                value_b8: U64(0),
+                value_c0: U64(0),
+                host_pointer_c8: U64(0),
+                value_d0: U64(0x0000_0010_0000_000c),
+            }
+        }
+
+        /// Exact 23J220 RDE_1 descriptor tail. The macOS host-only +0xc8
+        /// pointer is stripped exactly as for RDE_0.
+        pub(crate) const fn rde1_firmware_view() -> Self {
+            Self {
+                value_20: U64(0x0000_1478_0000_1170),
+                value_28: U64(0x0000_1128_0000_1138),
+                value_30: U64(0x0000_0000_0000_1120),
+                value_38: U64(0x0000_fa20_0000_fa18),
+                value_40: U64(0x0000_fa28_0000_f000),
+                value_48: U64(0x0000_fa50_0000_fa48),
+                value_50: U64(0x0000_fa60_0000_fa58),
+                value_58: U64(0x0000_fa38_0000_fa40),
+                value_60: U64(0x0000_f800_0000_fa30),
+                value_68: U64(0x0000_f840_0000_f830),
+                value_70: U64(0x0000_003c_0000_fa68),
+                value_78: U64(0x0000_1498_0000_14a0),
+                value_80: U64(0x0000_0001_0000_14a8),
+                value_88: U64(0x0000_0000_0000_00ff),
+                value_90: U64(0x0000_ffff_ffff_fff0),
+                value_98: U64(0x8000_0000_0000_0000),
+                value_a0: U64(0x00ff_00ff_0fff_0fff),
+                value_a8: U64(0x0040_0040_0000_0000),
+                value_b0: U64(0x0000_0000_0000_0001),
+                value_b8: U64(0),
+                value_c0: U64(0),
+                host_pointer_c8: U64(0),
+                value_d0: U64(0x0000_0010_0000_000c),
+            }
+        }
+    }
+
+    /// Exact 23J220 G15 performance-counter firmware source record.
+    ///
+    /// The first 0xd8 bytes are copied from the static source descriptor. The
+    /// tail is firmware/host runtime state; only mechanically recovered fields
+    /// are named here.
+    #[derive(Debug)]
+    #[repr(C)]
+    pub(crate) struct G15PerfCtrSourceRecord {
+        pub(crate) source_type_00: U32,
+        pub(crate) source_flags_04: U32,
+        pub(crate) source_name_08: Array<0x10, u8>,
+        pub(crate) sampler_count_18: U32,
+        pub(crate) sampler_state_base_1c: U32,
+        pub(crate) descriptor_tail_20: G15PerfCtrRdeDescriptorTail,
+        pub(crate) runtime_active_d8: U32,
+        pub(crate) selection_mask_dc: U32,
+        pub(crate) runtime_e0: U32,
+        pub(crate) runtime_e4: U32,
+        pub(crate) runtime_e8: U32,
+        pub(crate) runtime_pad_ec: Pad<0x0c>,
+        // Exact RDE source program/register list. commitSourceCounterList()
+        // clears this 0x800-byte region and materializes qword entries here.
+        pub(crate) generated_entries_f8: Array<0x100, U64>,
+        // Exact commitSourceCounterList() output: number of generated
+        // register/program entries materialized at source-record +0xf8.
+        // This is not the 0x20-byte RDE command-list byte size.
+        pub(crate) generated_entry_count_8f8: U32,
+        pub(crate) runtime_pad_8fc: Pad<0x04>,
+        pub(crate) source_buffer_size_900: U64,
+        pub(crate) source_buffer_addr_908: U64,
+        pub(crate) source_buffer_trailer_addr_910: U64,
+        pub(crate) source_buffer_trailer_map_918: U64,
+    }
+    default_zeroed!(G15PerfCtrSourceRecord);
+    const _: [(); 0x920] = [(); core::mem::size_of::<G15PerfCtrSourceRecord>()];
+    const _: [(); 0x18] = [(); core::mem::offset_of!(G15PerfCtrSourceRecord, sampler_count_18)];
+    const _: [(); 0x1c] = [(); core::mem::offset_of!(G15PerfCtrSourceRecord, sampler_state_base_1c)];
+    const _: [(); 0x20] = [(); core::mem::offset_of!(G15PerfCtrSourceRecord, descriptor_tail_20)];
+    const _: [(); 0xd8] = [(); core::mem::offset_of!(G15PerfCtrSourceRecord, runtime_active_d8)];
+    const _: [(); 0xdc] = [(); core::mem::offset_of!(G15PerfCtrSourceRecord, selection_mask_dc)];
+    const _: [(); 0xe0] = [(); core::mem::offset_of!(G15PerfCtrSourceRecord, runtime_e0)];
+    const _: [(); 0xe4] = [(); core::mem::offset_of!(G15PerfCtrSourceRecord, runtime_e4)];
+    const _: [(); 0xe8] = [(); core::mem::offset_of!(G15PerfCtrSourceRecord, runtime_e8)];
+    const _: [(); 0xf8] = [(); core::mem::offset_of!(G15PerfCtrSourceRecord, generated_entries_f8)];
+    const _: [(); 0x8f8] = [(); core::mem::offset_of!(G15PerfCtrSourceRecord, generated_entry_count_8f8)];
+
+    /// Exact 23J220 RDE_0 program/register entries copied by the ordinary
+    /// source commit path before publication. The source-specific patch at
+    /// index 1 resolves to the same 0x1d08 value already present here.
+    pub(crate) const G15_PERFCTR_RDE0_FIXED_ENTRIES: [u64; 12] = [
+        0x0000_0000_0000_028f,
+        0x0000_0000_0000_1d08,
+        0x0000_0000_0000_0225,
+        0x0000_0000_0000_0227,
+        0x0000_0000_0000_0294,
+        0x0000_0000_0004_0294,
+        0x0000_0000_0000_0293,
+        0x0000_0000_0004_0293,
+        0x0000_0000_0008_0293,
+        0x0000_0000_0000_0295,
+        0x0000_0000_0004_0295,
+        0x0000_0000_0008_0295,
+    ];
+
+    /// Exact first selected-counter qword appended after the 12 fixed RDE_0
+    /// entries for DCDM partition 4, slot 0, 64/64 geometry. E738 derives
+    /// this mechanically from the DCDM partition object and generator patcher.
+    pub(crate) const G15_PERFCTR_RDE0_DCDM_FIRST_SELECTED_ENTRY: u64 =
+        0x0000_0008_1800_352c;
+    pub(crate) const G15_PERFCTR_RDE0_DCDM_FIRST_ENTRY_COUNT: u32 = 13;
+
+    impl G15PerfCtrSourceRecord {
+        /// Exact 23J220 source-0 descriptor in its inactive observer state.
+        /// Firmware owns sampler-state index 0 for this source, but START skips
+        /// it while selection_mask_dc is zero, so state 0 remains zeroed.
+        pub(crate) fn firmware_inactive() -> Self {
+            Self {
+                source_type_00: U32(0),
+                source_flags_04: U32(1),
+                source_name_08: Array::new(*b"Firmware\0\0\0\0\0\0\0\0"),
+                sampler_count_18: U32(1),
+                sampler_state_base_1c: U32(0),
+                ..Default::default()
+            }
+        }
+
+        pub(crate) fn rde0_inactive() -> Self {
+            Self {
+                source_type_00: U32(1),
+                source_flags_04: U32(2),
+                source_name_08: Array::new(*b"RDE_0\0\0\0\0\0\0\0\0\0\0\0"),
+                sampler_count_18: U32(1),
+                sampler_state_base_1c: U32(1),
+                descriptor_tail_20: G15PerfCtrRdeDescriptorTail::rde0_firmware_view(),
+                ..Default::default()
+            }
+        }
+
+        pub(crate) fn rde1_inactive() -> Self {
+            Self {
+                source_type_00: U32(2),
+                source_flags_04: U32(4),
+                source_name_08: Array::new([b'R', b'D', b'E', b'_', b'1', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+                sampler_count_18: U32(1),
+                sampler_state_base_1c: U32(2),
+                descriptor_tail_20: G15PerfCtrRdeDescriptorTail::rde1_firmware_view(),
+                ..Default::default()
+            }
+        }
+
+        pub(crate) fn bmpr_rde0_inactive() -> Self {
+            Self {
+                source_type_00: U32(3),
+                source_flags_04: U32(8),
+                source_name_08: Array::new([b'B', b'M', b'P', b'R', b'_', b'R', b'D', b'E', b'_', b'0', 0, 0, 0, 0, 0, 0]),
+                sampler_count_18: U32(0),
+                sampler_state_base_1c: U32(3),
+                ..Default::default()
+            }
+        }
+
+        pub(crate) fn bmpr_rde1_inactive() -> Self {
+            Self {
+                source_type_00: U32(4),
+                source_flags_04: U32(0x10),
+                source_name_08: Array::new([b'B', b'M', b'P', b'R', b'_', b'R', b'D', b'E', b'_', b'1', 0, 0, 0, 0, 0, 0]),
+                sampler_count_18: U32(0),
+                sampler_state_base_1c: U32(3),
+                ..Default::default()
+            }
+        }
+
+        pub(crate) fn aps_usc_inactive(sampler_count: u32) -> Option<Self> {
+            if sampler_count == 0 {
+                return None;
+            }
+            Some(Self {
+                source_type_00: U32(5),
+                source_flags_04: U32(0x20),
+                source_name_08: Array::new([b'A', b'P', b'S', b'_', b'U', b'S', b'C', 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+                sampler_count_18: U32(sampler_count),
+                sampler_state_base_1c: U32(3),
+                ..Default::default()
+            })
+        }
+
+        /// Exact ordinary RDE_0 source record after the command-3 source-buffer
+        /// transaction, but before any counter selection/trigger activation.
+        ///
+        /// E737 deliberately maps the complete minimum 0x8000 diagnostic buffer
+        /// in ordinary range 7. The final 0x4000 therefore already has the FW
+        /// address class that macOS obtains with a separate range-7 alias. Exact
+        /// firmware type dispatch shows source +0x918 is APS_USC-only for the
+        /// relevant map/unmap path, so ordinary RDE_0 leaves it zero.
+        pub(crate) fn rde0_buffer_attached(source_buffer_fw_addr: u64) -> Option<Self> {
+            if source_buffer_fw_addr == 0 || source_buffer_fw_addr & 0x3fff != 0 {
+                return None;
+            }
+            Some(Self {
+                source_type_00: U32(1),
+                source_flags_04: U32(2),
+                source_name_08: Array::new(*b"RDE_0\0\0\0\0\0\0\0\0\0\0\0"),
+                sampler_count_18: U32(1),
+                sampler_state_base_1c: U32(1),
+                descriptor_tail_20: G15PerfCtrRdeDescriptorTail::rde0_firmware_view(),
+                source_buffer_size_900: U64(0x8000),
+                source_buffer_addr_908: U64(source_buffer_fw_addr),
+                source_buffer_trailer_addr_910: U64(source_buffer_fw_addr.checked_add(0x4000)?),
+                source_buffer_trailer_map_918: U64(0),
+                ..Default::default()
+            })
+        }
+
+        /// Compile-only exact-target RDE_0 observer source record.
+        ///
+        /// `source_buffer_fw_addr` is the firmware-visible base of a 0x8000
+        /// ordinary source buffer: 0x4000 data followed by the final 0x4000
+        /// control/trailer region. The macOS-only descriptor pointer at +0xc8
+        /// remains stripped by rde0_firmware_view().
+        pub(crate) fn rde0_observer(source_buffer_fw_addr: u64, period: u32) -> Option<Self> {
+            if source_buffer_fw_addr == 0 || source_buffer_fw_addr & 0x3fff != 0 || period == 0 {
+                return None;
+            }
+            let trailer_fw_addr = source_buffer_fw_addr.checked_add(0x4000)?;
+            let control = G15PerfCtrSourceConfigControl::rde0_timer_nclock(period)?;
+            let mut source = Self {
+                source_type_00: U32(1),
+                source_flags_04: U32(2),
+                source_name_08: Array::new(*b"RDE_0\0\0\0\0\0\0\0\0\0\0\0"),
+                sampler_count_18: U32(1),
+                // Source 0 owns state index 0; RDE_0 therefore starts at 1.
+                sampler_state_base_1c: U32(1),
+                descriptor_tail_20: G15PerfCtrRdeDescriptorTail::rde0_firmware_view(),
+                runtime_active_d8: U32(0),
+                selection_mask_dc: control.packed_triggers_08,
+                runtime_e0: control.packed_flags_0c,
+                runtime_e4: control.period_10,
+                // The first selected partition is DCDM/4 (>=3), so the exact
+                // Gen11 commit path sets this derived source flag to one.
+                runtime_e8: U32(1),
+                generated_entry_count_8f8: U32(G15_PERFCTR_RDE0_DCDM_FIRST_ENTRY_COUNT),
+                source_buffer_size_900: U64(0x8000),
+                source_buffer_addr_908: U64(source_buffer_fw_addr),
+                source_buffer_trailer_addr_910: U64(trailer_fw_addr),
+                // Ordinary RDE initialization/event publication does not use
+                // this APS/cleanup-side mapped trailer handle. Keep it zero
+                // until its Linux ownership contract is separately closed.
+                source_buffer_trailer_map_918: U64(0),
+                ..Default::default()
+            };
+            let mut i = 0;
+            while i < G15_PERFCTR_RDE0_FIXED_ENTRIES.len() {
+                source.generated_entries_f8[i] = U64(G15_PERFCTR_RDE0_FIXED_ENTRIES[i]);
+                i += 1;
+            }
+            source.generated_entries_f8[G15_PERFCTR_RDE0_FIXED_ENTRIES.len()] =
+                U64(G15_PERFCTR_RDE0_DCDM_FIRST_SELECTED_ENTRY);
+            Some(source)
+        }
+    }
+    const _: [(); 0x900] = [(); core::mem::offset_of!(G15PerfCtrSourceRecord, source_buffer_size_900)];
+    const _: [(); 0x918] = [(); core::mem::offset_of!(G15PerfCtrSourceRecord, source_buffer_trailer_map_918)];
+
+    /// Exact ordinary G15 performance-counter sampler state record.
+    #[derive(Debug)]
+    #[repr(C)]
+    pub(crate) struct G15PerfCtrSamplerState {
+        pub(crate) source_index_00: U32,
+        pub(crate) source_config_04: u16,
+        pub(crate) source_config_06: u8,
+        pub(crate) pad_07: u8,
+        pub(crate) subbuffer_size_08: U64,
+        pub(crate) subbuffer_base_10: U64,
+        pub(crate) subbuffer_addr_18: U64,
+        pub(crate) write_ptr_20: U64,
+        pub(crate) trailer_20_ptr_28: U64,
+        pub(crate) trailer_30_ptr_30: U64,
+    }
+    default_zeroed!(G15PerfCtrSamplerState);
+    const _: [(); 0x38] = [(); core::mem::size_of::<G15PerfCtrSamplerState>()];
+    const _: [(); 0x08] = [(); core::mem::offset_of!(G15PerfCtrSamplerState, subbuffer_size_08)];
+    const _: [(); 0x10] = [(); core::mem::offset_of!(G15PerfCtrSamplerState, subbuffer_base_10)];
+    const _: [(); 0x20] = [(); core::mem::offset_of!(G15PerfCtrSamplerState, write_ptr_20)];
+    const _: [(); 0x30] = [(); core::mem::offset_of!(G15PerfCtrSamplerState, trailer_30_ptr_30)];
+
+    /// Exact 0x40-byte per-sampler host-visible trailer shape used by the
+    /// ordinary RDE sampler path. Address-domain semantics for unresolved
+    /// fields remain deliberately offset-named. Firmware publishes completion
+    /// by replacing +0x30 with the new wrapped byte offset after a barrier.
+    #[derive(Debug)]
+    #[repr(C)]
+    pub(crate) struct G15PerfCtrSamplerTrailer {
+        pub(crate) value_00: U64,
+        pub(crate) value_08: U64,
+        pub(crate) value_10: U64,
+        pub(crate) size_18: U64,
+        pub(crate) value_20: U64,
+        pub(crate) zero_28: U64,
+        pub(crate) completion_cursor_30: U64,
+        pub(crate) zero_38: U64,
+    }
+    default_zeroed!(G15PerfCtrSamplerTrailer);
+    const _: [(); 0x40] = [(); core::mem::size_of::<G15PerfCtrSamplerTrailer>()];
+    const _: [(); 0x30] = [(); core::mem::offset_of!(G15PerfCtrSamplerTrailer, completion_cursor_30)];
+
+    /// Exact 23J220 ordinary-RDE host control command 5.
+    ///
+    /// This is the 0x20-byte user-client control record consumed by
+    /// AGXPerfCtrSampler::processControlCommand(), not a DeviceControl message.
+    /// E735 has closed the exact 23J220 trigger transport and Period consumer;
+    /// this remains compile-only and is not wired to allocation publication or
+    /// DeviceControl start/stop.
+    #[derive(Debug, Copy, Clone)]
+    #[repr(C)]
+    pub(crate) struct G15PerfCtrSourceConfigControl {
+        pub(crate) command_00: U32,
+        pub(crate) source_index_04: u8,
+        pub(crate) pad_05: Pad<0x03>,
+        pub(crate) packed_triggers_08: U32,
+        pub(crate) packed_flags_0c: U32,
+        pub(crate) period_10: U32,
+        pub(crate) pad_14: Pad<0x0c>,
+    }
+    default_zeroed!(G15PerfCtrSourceConfigControl);
+    const _: [(); 0x20] = [(); core::mem::size_of::<G15PerfCtrSourceConfigControl>()];
+    const _: [(); 0x08] = [(); core::mem::offset_of!(G15PerfCtrSourceConfigControl, packed_triggers_08)];
+    const _: [(); 0x0c] = [(); core::mem::offset_of!(G15PerfCtrSourceConfigControl, packed_flags_0c)];
+    const _: [(); 0x10] = [(); core::mem::offset_of!(G15PerfCtrSourceConfigControl, period_10)];
+
+    /// Exact 23J220 ordinary SourceImpl accepts trigger values 1, 2, 4 and 8.
+    /// Current Apple AGX/GPUTools code independently maps those stable values to
+    /// TimerNClock, TimerFixed, KickBoundary and CPMS respectively.
+    pub(crate) const G15_PERFCTR_TRIGGER_TIMER_NCLOCK: u32 = 0x1;
+    pub(crate) const G15_PERFCTR_TRIGGER_TIMER_FIXED: u32 = 0x2;
+    pub(crate) const G15_PERFCTR_TRIGGER_KICK_BOUNDARY: u32 = 0x4;
+    pub(crate) const G15_PERFCTR_TRIGGER_CPMS: u32 = 0x8;
+
+    /// Current Apple GPUTools uses TimerNClock Period=0xf0 in
+    /// GTUSCSamplingStreamingManagerHelper::InitRDELimiterCounters(). This is an
+    /// operational cross-build reference, not claimed as a 23J220 default.
+    pub(crate) const G15_PERFCTR_TIMER_NCLOCK_REFERENCE_PERIOD: u32 = 0xf0;
+
+    impl G15PerfCtrSourceConfigControl {
+        /// Exact 23J220 SourceImpl trigger-bit packing used by startSampling().
+        pub(crate) const fn pack_triggers(v: u32) -> u32 {
+            ((v >> 0) & 1) << 0
+                | ((v >> 1) & 1) << 3
+                | ((v >> 2) & 1) << 1
+                | ((v >> 3) & 1) << 2
+                | ((v >> 4) & 1) << 5
+                | ((v >> 5) & 1) << 6
+                | ((v >> 31) & 1) << 4
+        }
+
+        /// Exact 23J220 SourceImpl flag packing used by startSampling().
+        pub(crate) const fn pack_flags(v: u32) -> u32 {
+            0x40 | ((v >> 0) & 1) << 0 | ((v >> 1) & 1) << 7 | ((v >> 2) & 1) << 8
+        }
+
+        pub(crate) fn ordinary(source_index: u8, triggers: u32, flags: u32, period: u32) -> Option<Self> {
+            // 23J220 addTrigger() rejects values outside 1/2/4/8. Multiple
+            // accepted triggers accumulate in the same mask, so combinations
+            // within the low nibble are valid. Do not rely on the kernel's
+            // zero->1 Period normalization for timer triggers.
+            if !matches!(source_index, 1 | 2)
+                || triggers == 0
+                || triggers & !0x0f != 0
+                || (triggers & (G15_PERFCTR_TRIGGER_TIMER_NCLOCK | G15_PERFCTR_TRIGGER_TIMER_FIXED) != 0
+                    && period == 0)
+            {
+                return None;
+            }
+            Some(Self {
+                command_00: U32(5),
+                source_index_04: source_index,
+                pad_05: Default::default(),
+                packed_triggers_08: U32(Self::pack_triggers(triggers)),
+                packed_flags_0c: U32(Self::pack_flags(flags)),
+                period_10: U32(period),
+                pad_14: Default::default(),
+            })
+        }
+
+        /// Compile-only first-observer control: RDE_0 + TimerNClock.
+        pub(crate) fn rde0_timer_nclock(period: u32) -> Option<Self> {
+            Self::ordinary(1, G15_PERFCTR_TRIGGER_TIMER_NCLOCK, 0, period)
+        }
+
+        /// Compile-only Apple operational reference used by E735.
+        pub(crate) fn rde0_timer_nclock_reference() -> Self {
+            Self::rde0_timer_nclock(G15_PERFCTR_TIMER_NCLOCK_REFERENCE_PERIOD)
+                .expect("nonzero fixed TimerNClock reference Period")
+        }
+    }
+
+    /// Exact 23J220 ordinary-RDE host control command 7 selection record.
+    #[derive(Debug, Copy, Clone)]
+    #[repr(C)]
+    pub(crate) struct G15PerfCtrSelectControl {
+        pub(crate) command_00: U32,
+        pub(crate) source_index_04: u8,
+        pub(crate) pad_05: Pad<0x03>,
+        pub(crate) partition_08: u8,
+        pub(crate) geometry1_09: u8,
+        pub(crate) geometry2_0a: u8,
+        pub(crate) pad_0b: u8,
+        pub(crate) descriptor_flags_0c: U32,
+        pub(crate) selector_10: U64,
+        pub(crate) pad_18: Pad<0x08>,
+    }
+    default_zeroed!(G15PerfCtrSelectControl);
+    const _: [(); 0x20] = [(); core::mem::size_of::<G15PerfCtrSelectControl>()];
+    const _: [(); 0x08] = [(); core::mem::offset_of!(G15PerfCtrSelectControl, partition_08)];
+    const _: [(); 0x0c] = [(); core::mem::offset_of!(G15PerfCtrSelectControl, descriptor_flags_0c)];
+    const _: [(); 0x10] = [(); core::mem::offset_of!(G15PerfCtrSelectControl, selector_10)];
+
+    impl G15PerfCtrSelectControl {
+        /// One exact DCDM/CSInvocation selection on RDE_0.
+        pub(crate) fn rde0_dcdm_cs_invocation(selector: u64) -> Option<Self> {
+            if !matches!(selector, 0x3003_07ff | 0x3004_07ff | 0x3005_07ff | 0x3006_07ff) {
+                return None;
+            }
+            Some(Self {
+                command_00: U32(7),
+                source_index_04: 1,
+                pad_05: Default::default(),
+                partition_08: 4,
+                geometry1_09: 64,
+                geometry2_0a: 64,
+                pad_0b: 0,
+                descriptor_flags_0c: U32(1),
+                selector_10: U64(selector),
+                pad_18: Default::default(),
+            })
+        }
+    }
+
+    /// Exact 0x20-byte RDE command image emitted by the 23J220
+    /// PerfCtrCommandGen11::generatePerfCtrCommandList() path for the first
+    /// 64-bit DCDM selection on RDE_0. Unknown control words remain offset-named.
+    #[derive(Debug, Copy, Clone)]
+    #[repr(C)]
+    pub(crate) struct G15PerfCtrGeneratedRdeCommand {
+        pub(crate) word_00: U32,
+        pub(crate) word_04: U32,
+        pub(crate) word_08: U32,
+        pub(crate) word_0c: U32,
+        pub(crate) selector_10: U32,
+        pub(crate) word_14: U32,
+        pub(crate) word_18: U32,
+        pub(crate) word_1c: U32,
+    }
+    default_zeroed!(G15PerfCtrGeneratedRdeCommand);
+    const _: [(); 0x20] = [(); core::mem::size_of::<G15PerfCtrGeneratedRdeCommand>()];
+    const _: [(); 0x10] = [(); core::mem::offset_of!(G15PerfCtrGeneratedRdeCommand, selector_10)];
+
+    impl G15PerfCtrGeneratedRdeCommand {
+        pub(crate) fn rde0_dcdm_first(selector: u32) -> Option<Self> {
+            if !matches!(selector, 0x3003_07ff | 0x3004_07ff | 0x3005_07ff | 0x3006_07ff) {
+                return None;
+            }
+            Some(Self {
+                word_00: U32(0x181a_9104),
+                word_04: U32(0x1a96_01a9),
+                word_08: U32(0x0000_003d),
+                word_0c: U32(0xff00_183f),
+                selector_10: U32(selector),
+                word_14: U32(0x0001_a900),
+                word_18: U32(0x0000_0401),
+                word_1c: U32(0),
+            })
+        }
+    }
+
+    /// Pure compile-only image of the first bounded E735 RDE_0/DCDM observer.
+    ///
+    /// This intentionally owns no GpuObject, publishes no q22 pointer and has
+    /// no DeviceControl path. It preserves Apple's exact six-source topology
+    /// while activating only source 1 / RDE_0.
+    #[derive(Debug)]
+    pub(crate) struct G15PerfCtrRde0ObserverPlan {
+        pub(crate) source0: G15PerfCtrSourceRecord,
+        pub(crate) source1: G15PerfCtrSourceRecord,
+        pub(crate) source2: G15PerfCtrSourceRecord,
+        pub(crate) source3: G15PerfCtrSourceRecord,
+        pub(crate) source4: G15PerfCtrSourceRecord,
+        pub(crate) source5: G15PerfCtrSourceRecord,
+        pub(crate) logical_state_count: U32,
+        pub(crate) state1: G15PerfCtrSamplerState,
+        pub(crate) trailer1: G15PerfCtrSamplerTrailer,
+        pub(crate) source_control: G15PerfCtrSourceConfigControl,
+        pub(crate) select_control: G15PerfCtrSelectControl,
+        pub(crate) generated_command: G15PerfCtrGeneratedRdeCommand,
+        pub(crate) source_backing_bytes: U32,
+        pub(crate) state_backing_bytes: U32,
+        pub(crate) logical_state_bytes: U32,
+        pub(crate) sample_cache_bytes: U32,
+        pub(crate) control_backing_bytes: U32,
+    }
+
+    impl G15PerfCtrRde0ObserverPlan {
+        pub(crate) fn first(
+            source_buffer_fw_addr: u64,
+            source_buffer_other_addr: u64,
+            period: u32,
+            aps_sampler_count: u32,
+        ) -> Option<Self> {
+            if source_buffer_other_addr == 0 || source_buffer_other_addr & 0x3fff != 0 {
+                return None;
+            }
+            let trailer_fw_addr = source_buffer_fw_addr.checked_add(0x4000)?;
+            let (state1, trailer1) = G15PerfCtrSamplerState::ordinary_rde_one(
+                1,
+                0x4000,
+                source_buffer_fw_addr,
+                trailer_fw_addr,
+                source_buffer_other_addr,
+            )?;
+
+            // Exact target topology: Firmware(1), RDE_0(1), RDE_1(1),
+            // BMPR_RDE_0(0), BMPR_RDE_1(0), APS_USC(core-count).
+            let logical_state_count = 3u32.checked_add(aps_sampler_count)?;
+            let source_backing_bytes = 6u32.checked_mul(0x920)?;
+            // Raw 23J220 Base::fwSourceDataAlloc assembly requests 0x4090
+            // bytes of backing per logical sampler even though only the first
+            // count*0x38 bytes are zeroed/published as sampler-state records.
+            let state_backing_bytes = logical_state_count.checked_mul(0x4090)?;
+            let logical_state_bytes = logical_state_count.checked_mul(0x38)?;
+            // Exact Gen11::fwSampleCacheBufferSize(): cores*0x20 + 0x720.
+            // Base::fwSourceDataAlloc adds the fixed first 0x4000 region.
+            let sample_cache_bytes = aps_sampler_count.checked_mul(0x20)?.checked_add(0x720)?;
+            let control_backing_bytes = sample_cache_bytes.checked_add(0x4000)?;
+            let selector = 0x3003_07ff;
+
+            Some(Self {
+                source0: G15PerfCtrSourceRecord::firmware_inactive(),
+                source1: G15PerfCtrSourceRecord::rde0_observer(source_buffer_fw_addr, period)?,
+                source2: G15PerfCtrSourceRecord::rde1_inactive(),
+                source3: G15PerfCtrSourceRecord::bmpr_rde0_inactive(),
+                source4: G15PerfCtrSourceRecord::bmpr_rde1_inactive(),
+                source5: G15PerfCtrSourceRecord::aps_usc_inactive(aps_sampler_count)?,
+                logical_state_count: U32(logical_state_count),
+                state1,
+                trailer1,
+                source_control: G15PerfCtrSourceConfigControl::rde0_timer_nclock(period)?,
+                select_control: G15PerfCtrSelectControl::rde0_dcdm_cs_invocation(selector as u64)?,
+                generated_command: G15PerfCtrGeneratedRdeCommand::rde0_dcdm_first(selector)?,
+                source_backing_bytes: U32(source_backing_bytes),
+                state_backing_bytes: U32(state_backing_bytes),
+                logical_state_bytes: U32(logical_state_bytes),
+                sample_cache_bytes: U32(sample_cache_bytes),
+                control_backing_bytes: U32(control_backing_bytes),
+            })
+        }
+
+        /// Current-Apple operational TimerNClock Period plus this J615's
+        /// independently observed ten-core G15 topology (ID_COUNTS_1 low byte
+        /// = 0x0a). This remains compile-only: 0xf0 is an operational
+        /// cross-build reference, not an asserted 23J220 default.
+        pub(crate) fn first_reference(
+            source_buffer_fw_addr: u64,
+            source_buffer_other_addr: u64,
+        ) -> Option<Self> {
+            Self::first(
+                source_buffer_fw_addr,
+                source_buffer_other_addr,
+                G15_PERFCTR_TIMER_NCLOCK_REFERENCE_PERIOD,
+                10,
+            )
+        }
+    }
+
+    impl G15PerfCtrSamplerState {
+        /// Construct the exact one-sampler ordinary RDE state/trailer seed
+        /// recovered from 23J220 Base::allocateSubBufferStateList().
+        ///
+        /// This is intentionally not wired to any DeviceControl path. E737
+        /// closes `value_00_addr` as the host/client-buffer page bias used in
+        /// the trailer seed. A kernel-owned page-base mapping therefore uses 0.
+        pub(crate) fn ordinary_rde_one(
+            source_index: u32,
+            subbuffer_size: u64,
+            subbuffer_fw_addr: u64,
+            trailer_fw_addr: u64,
+            value_00_addr: u64,
+        ) -> Option<(Self, G15PerfCtrSamplerTrailer)> {
+            if !matches!(source_index, 1 | 2)
+                || subbuffer_size == 0
+                || subbuffer_size > 0x4000_0000
+                || subbuffer_size & 0x3fff != 0
+            {
+                return None;
+            }
+
+            let trailer_20 = trailer_fw_addr.checked_add(0x20)?;
+            let trailer_30 = trailer_fw_addr.checked_add(0x30)?;
+
+            let state = Self {
+                source_index_00: U32(source_index),
+                source_config_04: 0xffff,
+                source_config_06: 0,
+                pad_07: 0,
+                subbuffer_size_08: U64(subbuffer_size),
+                subbuffer_base_10: U64(subbuffer_fw_addr),
+                subbuffer_addr_18: U64(subbuffer_fw_addr),
+                write_ptr_20: U64(subbuffer_fw_addr),
+                trailer_20_ptr_28: U64(trailer_20),
+                trailer_30_ptr_30: U64(trailer_30),
+            };
+
+            let trailer = G15PerfCtrSamplerTrailer {
+                value_00: U64(value_00_addr),
+                value_08: U64(subbuffer_fw_addr),
+                value_10: U64(0),
+                size_18: U64(subbuffer_size & 0xffff_ffff),
+                value_20: U64(subbuffer_fw_addr),
+                zero_28: U64(0),
+                completion_cursor_30: U64(subbuffer_fw_addr),
+                zero_38: U64(0),
+            };
+
+            Some((state, trailer))
+        }
+    }
+
     /// G15 root q22: exact 0xc3d0-byte host/FW shared object.
     ///
     /// Apple maps CPU/GPU pair +0x620/+0x630 into root q22. The fields below
@@ -327,12 +1020,36 @@ pub(crate) mod raw {
         pub(crate) host_zero_0000: U32,
         pub(crate) pad_0004: Pad<0x04>,
         pub(crate) host_zero_0008: U32,
-        pub(crate) pad_000c: Pad<0x4024>,
-        pub(crate) trace_enable_4030: U32,
-        pub(crate) pad_4034: Pad<0x18>,
-        pub(crate) trace_desc_ptr_404c: U64,
-        pub(crate) trace_desc_count_4054: U32,
-        pub(crate) pad_4058: Pad<0x510>,
+        pub(crate) pad_000c: Pad<0x0c>,
+        /// Exact host-generated sampler/RDE command-list region. The Gen11
+        /// commit path clears 0x4000 bytes here and emits 0x20-byte commands.
+        pub(crate) sampler_commands_0018: Array<0x200, G15PerfCtrGeneratedRdeCommand>,
+        pub(crate) sampler_command_count_4018: U32,
+        pub(crate) pad_401c: Pad<0x14>,
+        pub(crate) sampler_active_4030: U32,
+        pub(crate) pad_4034: Pad<0x04>,
+        pub(crate) sampler_control_ptr_4038: U64,
+        pub(crate) sampler_control_size_4040: U32,
+        pub(crate) sampler_control_end_4044: U64,
+        pub(crate) sampler_sources_ptr_404c: U64,
+        pub(crate) sampler_source_count_4054: U32,
+        pub(crate) sampler_states_ptr_4058: U64,
+        pub(crate) sampler_state_count_4060: U32,
+        /// Gen11 source context ID allocated from the AGXShared/GART selector-0
+        /// domain. E738 types this field but does not fabricate an ID.
+        pub(crate) sampler_source_context_id_4064: u16,
+        pub(crate) sampler_source_context_zero_4066: u8,
+        pub(crate) pad_4067: u8,
+        pub(crate) sampler_mask_4068: U64,
+        pub(crate) sampler_mask_4070: U64,
+        pub(crate) aps_usc_mapped_4078: U64,
+        pub(crate) aps_usc_second_half_4080: U64,
+        pub(crate) aps_usc_base_4088: U64,
+        pub(crate) aps_usc_generation_4090: U32,
+        pub(crate) aps_usc_coord_4094: u8,
+        pub(crate) pad_4095: Pad<0x03>,
+        pub(crate) aps_usc_source_index_4098: U32,
+        pub(crate) pad_409c: Pad<0x4cc>,
         pub(crate) shared_ptr_4568: U64,
         pub(crate) shared_ptr_4570: U64,
         pub(crate) pad_4578: Pad<0x08>,
@@ -352,9 +1069,26 @@ pub(crate) mod raw {
     }
     default_zeroed!(G15Q22Shared);
     const _: [(); 0xc3d0] = [(); core::mem::size_of::<G15Q22Shared>()];
-    const _: [(); 0x4030] = [(); core::mem::offset_of!(G15Q22Shared, trace_enable_4030)];
-    const _: [(); 0x404c] = [(); core::mem::offset_of!(G15Q22Shared, trace_desc_ptr_404c)];
-    const _: [(); 0x4054] = [(); core::mem::offset_of!(G15Q22Shared, trace_desc_count_4054)];
+    const _: [(); 0x18] = [(); core::mem::offset_of!(G15Q22Shared, sampler_commands_0018)];
+    const _: [(); 0x4018] = [(); core::mem::offset_of!(G15Q22Shared, sampler_command_count_4018)];
+    const _: [(); 0x4030] = [(); core::mem::offset_of!(G15Q22Shared, sampler_active_4030)];
+    const _: [(); 0x4038] = [(); core::mem::offset_of!(G15Q22Shared, sampler_control_ptr_4038)];
+    const _: [(); 0x4040] = [(); core::mem::offset_of!(G15Q22Shared, sampler_control_size_4040)];
+    const _: [(); 0x4044] = [(); core::mem::offset_of!(G15Q22Shared, sampler_control_end_4044)];
+    const _: [(); 0x404c] = [(); core::mem::offset_of!(G15Q22Shared, sampler_sources_ptr_404c)];
+    const _: [(); 0x4054] = [(); core::mem::offset_of!(G15Q22Shared, sampler_source_count_4054)];
+    const _: [(); 0x4058] = [(); core::mem::offset_of!(G15Q22Shared, sampler_states_ptr_4058)];
+    const _: [(); 0x4060] = [(); core::mem::offset_of!(G15Q22Shared, sampler_state_count_4060)];
+    const _: [(); 0x4064] = [(); core::mem::offset_of!(G15Q22Shared, sampler_source_context_id_4064)];
+    const _: [(); 0x4066] = [(); core::mem::offset_of!(G15Q22Shared, sampler_source_context_zero_4066)];
+    const _: [(); 0x4068] = [(); core::mem::offset_of!(G15Q22Shared, sampler_mask_4068)];
+    const _: [(); 0x4070] = [(); core::mem::offset_of!(G15Q22Shared, sampler_mask_4070)];
+    const _: [(); 0x4078] = [(); core::mem::offset_of!(G15Q22Shared, aps_usc_mapped_4078)];
+    const _: [(); 0x4080] = [(); core::mem::offset_of!(G15Q22Shared, aps_usc_second_half_4080)];
+    const _: [(); 0x4088] = [(); core::mem::offset_of!(G15Q22Shared, aps_usc_base_4088)];
+    const _: [(); 0x4090] = [(); core::mem::offset_of!(G15Q22Shared, aps_usc_generation_4090)];
+    const _: [(); 0x4094] = [(); core::mem::offset_of!(G15Q22Shared, aps_usc_coord_4094)];
+    const _: [(); 0x4098] = [(); core::mem::offset_of!(G15Q22Shared, aps_usc_source_index_4098)];
     const _: [(); 0x4568] = [(); core::mem::offset_of!(G15Q22Shared, shared_ptr_4568)];
     const _: [(); 0x4580] = [(); core::mem::offset_of!(G15Q22Shared, epoch_4580)];
     const _: [(); 0x45c4] = [(); core::mem::offset_of!(G15Q22Shared, host_flag_45c4)];
@@ -2544,6 +3278,117 @@ impl GpuStruct for RuntimePointers::ver {
 #[versions(AGX)]
 trivial_gpustruct!(Globals::ver);
 
+#[derive(Debug)]
+pub(crate) struct G15PerfCtrBackings {
+    /// Six exact 0x920 source records. The allocator page-rounds the 0x36c0
+    /// request while q22 publishes the object base and logical count only.
+    pub(crate) sources: alloc::G15SharedGpuArray<raw::G15PerfCtrSourceRecord>,
+    /// Exact `logical_sampler_count * 0x4090` backing. Only the leading
+    /// count*0x38 prefix is the firmware-visible state array. E737 initializes
+    /// only state index 1 for the attached-but-inactive RDE_0 observer.
+    pub(crate) states: alloc::G15SharedGpuArray<u8>,
+    /// Minimum exact 0x8000 ordinary RDE_0 source buffer. The first 0x4000 is
+    /// sample/ring data and the final 0x4000 is the host-visible trailer area.
+    pub(crate) rde0_source_buffer: alloc::G15SharedGpuArray<u8>,
+    /// Range-8 control + sample-cache allocation. q22 +0x4040 publishes the
+    /// fixed 0x4000 split while +0x4044 points at the adjacent cache region.
+    pub(crate) control: alloc::G15SharedGpuArray<u8>,
+    /// Gen15-only range-7 0x8000 backing required by q22 +0x4078..+0x4098.
+    pub(crate) aps_usc: alloc::G15SharedGpuArray<u8>,
+}
+
+/// Mutable G15 sampler image owned under one lock. The exact sampler context
+/// ID is allocated only after a user VM exists, so both the state backing and
+/// q22 must be patched together after InitData construction.
+pub(crate) struct G15PerfCtrRuntimeState {
+    pub(crate) backings: G15PerfCtrBackings,
+    pub(crate) q22: GpuObject<G15Q22Shared>,
+}
+
+impl G15PerfCtrRuntimeState {
+    fn patch_source_context(&mut self, context_id: u32) -> bool {
+        let context_id: u16 = match context_id.try_into() {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        let state = self.backings.states.as_mut_slice();
+        // RDE_0 is global sampler-state index 1; +0x04 is the exact source
+        // context ID and +0x06 is the exact zero byte copied from sampler +0x50.
+        let off = 0x38usize + 0x04;
+        if state.len() < off + 3 {
+            return false;
+        }
+        let id = context_id.to_le_bytes();
+        state[off] = id[0];
+        state[off + 1] = id[1];
+        state[off + 2] = 0;
+        self.q22.with_mut(|raw, _inner| {
+            raw.sampler_source_context_id_4064 = context_id;
+            raw.sampler_source_context_zero_4066 = 0;
+        });
+        true
+    }
+
+    fn clear_source_context(&mut self, expected_id: u32) {
+        let expected: u16 = match expected_id.try_into() {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        let state = self.backings.states.as_mut_slice();
+        let off = 0x38usize + 0x04;
+        if state.len() >= off + 3 {
+            state[off] = 0xff;
+            state[off + 1] = 0xff;
+            state[off + 2] = 0;
+        }
+        self.q22.with_mut(|raw, _inner| {
+            if raw.sampler_source_context_id_4064 == expected {
+                raw.sampler_source_context_id_4064 = 0;
+                raw.sampler_source_context_zero_4066 = 0;
+            }
+        });
+    }
+}
+
+/// Cloneable, debug-safe owner for the mutable sampler image. Kernel Mutex is
+/// intentionally hidden from InitData's Debug implementation.
+pub(crate) struct G15PerfCtrRuntimeHandle(Arc<Mutex<G15PerfCtrRuntimeState>>);
+
+impl G15PerfCtrRuntimeHandle {
+    pub(crate) fn new(inner: Arc<Mutex<G15PerfCtrRuntimeState>>) -> Self {
+        Self(inner)
+    }
+
+    pub(crate) fn q22_gpu_va(&self) -> u64 {
+        self.0.lock().q22.gpu_va().get()
+    }
+
+    pub(crate) fn patch_source_context(&self, context_id: u32) -> bool {
+        self.0.lock().patch_source_context(context_id)
+    }
+
+    pub(crate) fn clear_source_context(&self, expected_id: u32) {
+        self.0.lock().clear_source_context(expected_id)
+    }
+
+    pub(crate) fn with_q22<Ret>(&self, callback: impl FnOnce(&raw::G15Q22Shared) -> Ret) -> Ret {
+        let guard = self.0.lock();
+        guard.q22.with(|raw, _inner| callback(raw))
+    }
+}
+
+impl Clone for G15PerfCtrRuntimeHandle {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl core::fmt::Debug for G15PerfCtrRuntimeHandle {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("G15PerfCtrRuntimeHandle")
+    }
+}
+
 #[versions(AGX)]
 #[derive(Debug)]
 pub(crate) struct InitData {
@@ -2569,7 +3414,7 @@ pub(crate) struct InitData {
     #[ver(G == G15)]
     pub(crate) g15_mapping_notifier: mmu::G15MappingNotifierHandle,
     #[ver(G == G15)]
-    pub(crate) g15_q22: GpuObject<G15Q22Shared>,
+    pub(crate) g15_perfctr_runtime: G15PerfCtrRuntimeHandle,
     #[ver(G == G15)]
     pub(crate) g15_q23: GpuObject<G15Q23Shared>,
 }
