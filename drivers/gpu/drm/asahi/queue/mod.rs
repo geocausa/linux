@@ -2389,19 +2389,86 @@ impl sched::JobImpl for QueueJob::ver {
                 || job.notification_count != 1
                 || job.sj_vtx.as_ref().and_then(|sj| sj.job.as_ref()).is_some()
                 || job.sj_frag.as_ref().and_then(|sj| sj.job.as_ref()).is_some()
+                || job._g15_rde_observer_runtime.is_none()
             {
                 return Err(EIO);
             }
 
-            let mut comp_job = job
-                .sj_comp
-                .as_mut()
-                .and_then(|sj| sj.job.take())
-                .ok_or(EIO)?;
-            let selected = comp_job.submit_g15_selected_stock_empty()?;
-            gpu.run_g15_selected_job(selected)?;
-            core::mem::drop(comp_job);
-            job.did_run = true;
+            // E742: all host-side validation is complete before START. The
+            // sampler image is tied to this QueueJob's VM and carries exactly
+            // one RDE_0/DCDM/CSInvocation selector. START itself waits for the
+            // exact DeviceControl completion before any Compute ring mutation.
+            gpu.g15_perfctr_start()?;
+            dev_info!(
+                job.dev.as_ref(),
+                "T8122 G15 E742 RDE observer START complete for QueueJob {}\n",
+                job.id
+            );
+
+            // Keep all post-START operations inside a result value so STOP is
+            // attempted even when selected Compute submission/transport fails.
+            let compute_result = (|| -> Result {
+                let mut comp_job = job
+                    .sj_comp
+                    .as_mut()
+                    .and_then(|sj| sj.job.take())
+                    .ok_or(EIO)?;
+                let selected = comp_job.submit_g15_selected_stock_empty()?;
+                gpu.run_g15_selected_job(selected)?;
+                core::mem::drop(comp_job);
+                Ok(())
+            })();
+
+            if compute_result.is_ok() {
+                // The selected Compute has crossed its existing scheduler/
+                // observation boundary even if a later sampler STOP fails.
+                job.did_run = true;
+            }
+
+            // One bounded CPU-side observer read. This is deliberately a
+            // single snapshot, not a selector/counter scan.
+            let sample_result = gpu.g15_perfctr_first_sample();
+            match sample_result {
+                Ok(sample) => dev_info!(
+                    job.dev.as_ref(),
+                    "T8122 G15 E742 RDE sample active={:#010x} base={:#018x} cursor={:#018x} header={:#018x} valid={}\n",
+                    sample.active,
+                    sample.source_base,
+                    sample.completion_cursor,
+                    sample.first_header,
+                    sample.valid,
+                ),
+                Err(err) => dev_err!(
+                    job.dev.as_ref(),
+                    "T8122 G15 E742 RDE sample read failed: {:?}\n",
+                    err
+                ),
+            }
+
+            // Always attempt STOP after a successful START. If the selected
+            // Compute path fail-stopped the GPU manager this can itself fail;
+            // retain the original Compute error while logging STOP separately.
+            let stop_result = gpu.g15_perfctr_stop();
+            match &stop_result {
+                Ok(()) => dev_info!(
+                    job.dev.as_ref(),
+                    "T8122 G15 E742 RDE observer STOP complete for QueueJob {}\n",
+                    job.id
+                ),
+                Err(err) => dev_err!(
+                    job.dev.as_ref(),
+                    "T8122 G15 E742 RDE observer STOP failed for QueueJob {}: {:?}\n",
+                    job.id,
+                    err
+                ),
+            }
+
+            if let Err(err) = compute_result {
+                return Err(err);
+            }
+            if let Err(err) = stop_result {
+                return Err(err);
+            }
             return Ok(Some(Fence::from_fence(&job.fence)));
         }
 
