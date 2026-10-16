@@ -608,7 +608,15 @@ pub(crate) mod raw {
                 return None;
             }
             let trailer_fw_addr = source_buffer_fw_addr.checked_add(0x4000)?;
-            let control = G15PerfCtrSourceConfigControl::rde0_timer_nclock(period)?;
+            // E745 adds exactly one trigger bit to the E743 observer image:
+            // retain TimerNClock and Period, and add KickBoundary. Exact 23J220
+            // userspace values 1|4 pack to firmware source +0xdc = 1|2 = 3.
+            let control = G15PerfCtrSourceConfigControl::ordinary(
+                1,
+                G15_PERFCTR_TRIGGER_TIMER_NCLOCK | G15_PERFCTR_TRIGGER_KICK_BOUNDARY,
+                0,
+                period,
+            )?;
             let mut source = Self {
                 source_type_00: U32(1),
                 source_flags_04: U32(2),
