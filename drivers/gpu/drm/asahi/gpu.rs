@@ -3117,6 +3117,73 @@ impl GpuManager::ver {
         Ok(())
     }
 
+    /// Exact G15 sampler DeviceControl transport. E732 proves ordinary START
+    /// and STOP are otherwise-zero 0x38-byte entries with discriminants 4/5.
+    /// Keep this private and zero-caller in E741.
+    fn g15_perfctr_device_control(&self, start: bool) -> Result {
+        #[ver(G != G15)]
+        {
+            let _ = start;
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            if self.is_crashed() || !self.g15_firmware_command_gate_enabled() {
+                return Err(ENODEV);
+            }
+            let dc = if start {
+                fw::channels::DeviceControlMsg::ver::PerfCounterStart(Default::default())
+            } else {
+                fw::channels::DeviceControlMsg::ver::PerfCounterStop(Default::default())
+            };
+            let tag = unsafe {
+                core::ptr::read_unaligned(core::ptr::addr_of!(dc).cast::<u32>())
+            };
+            let expected = if start { 4 } else { 5 };
+            if tag != expected {
+                return Err(EIO);
+            }
+
+            let mut txch = self.tx_channels.lock();
+            let token = txch.device_control.send(&dc);
+            {
+                let mut guard = self.rtkit.lock();
+                let mut rtk = guard.as_mut().as_pin_mut().ok_or(ENODEV)?;
+                if !rtk.as_mut().has_endpoint(EP_DOORBELL) {
+                    return Err(ENODEV);
+                }
+                rtk.send_message(EP_DOORBELL, MSG_TX_DOORBELL | DOORBELL_DEVCTRL)?;
+            }
+            txch.device_control.wait_for(token)
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn g15_perfctr_start(&self) -> Result {
+        self.g15_perfctr_device_control(true)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn g15_perfctr_stop(&self) -> Result {
+        self.g15_perfctr_device_control(false)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn g15_perfctr_first_sample(
+        &self,
+    ) -> Result<fw::initdata::G15PerfCtrFirstSample> {
+        #[ver(G != G15)]
+        {
+            return Err(EINVAL);
+        }
+        #[ver(G == G15)]
+        {
+            mem::sync();
+            Ok(self.initdata.g15_perfctr_runtime.first_sample())
+        }
+    }
+
     /// Prepare the exact G15 RDE observer's runtime source context for the
     /// same VM that owns the selected Compute submission. This remains
     /// deliberately zero-caller in E739 and sends no DeviceControl message.

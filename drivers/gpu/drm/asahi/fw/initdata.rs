@@ -3297,6 +3297,19 @@ pub(crate) struct G15PerfCtrBackings {
     pub(crate) aps_usc: alloc::G15SharedGpuArray<u8>,
 }
 
+/// CPU-side snapshot of the first ordinary RDE sample ring/trailer. Firmware
+/// copies the sample first, executes its data barrier, then replaces trailer
+/// +0x30 with the wrapped byte offset. Therefore an offset plus a 0xfeed high
+/// word in the first ring qword is the exact strong first-sample predicate.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct G15PerfCtrFirstSample {
+    pub(crate) active: u32,
+    pub(crate) source_base: u64,
+    pub(crate) completion_cursor: u64,
+    pub(crate) first_header: u64,
+    pub(crate) valid: bool,
+}
+
 /// Mutable G15 sampler image owned under one lock. The exact sampler context
 /// ID is allocated only after a user VM exists, so both the state backing and
 /// q22 must be patched together after InitData construction.
@@ -3327,6 +3340,39 @@ impl G15PerfCtrRuntimeState {
             raw.sampler_source_context_zero_4066 = 0;
         });
         true
+    }
+
+    fn first_sample(&self) -> G15PerfCtrFirstSample {
+        let bytes = self.backings.rde0_source_buffer.as_slice();
+        let source_base = u64::from(self.backings.rde0_source_buffer.weak_pointer());
+        let read_u64 = |off: usize| -> u64 {
+            if bytes.len() < off + 8 {
+                return 0;
+            }
+            let mut raw = [0u8; 8];
+            let mut i = 0;
+            while i < 8 {
+                // SAFETY: bounds are checked above. Volatile byte reads prevent
+                // the compiler from reusing a stale CPU view while firmware is
+                // the concurrent writer. The caller performs `mem::sync()` first.
+                raw[i] = unsafe { core::ptr::read_volatile(bytes.as_ptr().add(off + i)) };
+                i += 1;
+            }
+            u64::from_le_bytes(raw)
+        };
+        let completion_cursor = read_u64(0x4000 + 0x30);
+        let first_header = read_u64(0);
+        let active = self.q22.with(|raw, _inner| raw.sampler_active_4030.0);
+        let cursor_is_offset = completion_cursor < 0x4000
+            && completion_cursor != source_base;
+        let valid = cursor_is_offset && (first_header >> 48) == 0xfeed;
+        G15PerfCtrFirstSample {
+            active,
+            source_base,
+            completion_cursor,
+            first_header,
+            valid,
+        }
     }
 
     fn clear_source_context(&mut self, expected_id: u32) {
@@ -3369,6 +3415,10 @@ impl G15PerfCtrRuntimeHandle {
 
     pub(crate) fn clear_source_context(&self, expected_id: u32) {
         self.0.lock().clear_source_context(expected_id)
+    }
+
+    pub(crate) fn first_sample(&self) -> G15PerfCtrFirstSample {
+        self.0.lock().first_sample()
     }
 
     pub(crate) fn with_q22<Ret>(&self, callback: impl FnOnce(&raw::G15Q22Shared) -> Ret) -> Ret {

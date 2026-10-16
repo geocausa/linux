@@ -953,6 +953,11 @@ impl super::QueueInner::ver {
                     return Err(EIO);
                 }
             };
+            // E741 ties the compile-only RDE observer context to the same VM
+            // and QueueJob lifetime as this one bounded selected Compute. It
+            // patches storage/context only; START/STOP remain zero-caller.
+            job.prepare_g15_rde_observer_runtime(gpu)?;
+
             let vm_bind = job.vm_bind.clone();
             let ev_comp = job.get_comp()?.event_info();
 

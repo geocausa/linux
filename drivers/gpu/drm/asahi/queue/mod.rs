@@ -2012,6 +2012,11 @@ pub(crate) struct QueueJob {
     // acquisition method remains zero-caller; None is the only live value.
     #[ver(G == G15)]
     _g15_stock_empty_assets: Option<G15QueueJobStockEmptyAssets::ver>,
+    /// E741 retains Apple's independent selector-0 sampler context for exactly
+    /// the same VM/GART and QueueJob lifetime as the selected Compute attempt.
+    /// No DeviceControl START/STOP is reachable in this slice.
+    #[ver(G == G15)]
+    _g15_rde_observer_runtime: Option<gpu::G15RdeObserverRuntime>,
     // E196 marks the one-command stock-empty selected scheduler route. The
     // public G15 file::submit gate still prevents userspace from reaching it.
     #[ver(G == G15)]
@@ -2030,6 +2035,28 @@ pub(crate) struct QueueJob {
 
 #[versions(AGX)]
 impl QueueJob::ver {
+    /// Bind E739's exact sampler selector-0 context to this QueueJob's VM.
+    /// The owner stays in QueueJob through scheduler execution and completion
+    /// teardown. This method does not send a sampler DeviceControl message.
+    fn prepare_g15_rde_observer_runtime(&mut self, gpu: &gpu::GpuManager::ver) -> Result {
+        #[ver(G != G15)]
+        {
+            let _ = gpu;
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            if self._g15_rde_observer_runtime.is_some() {
+                return Err(EBUSY);
+            }
+            let vm = self.vm_bind.vm();
+            self._g15_rde_observer_runtime =
+                Some(gpu.g15_prepare_rde_observer_context(&vm)?);
+            Ok(())
+        }
+    }
+
     /// Dormant E175 entry point for the exact E134 phase-1 transaction. It
     /// requires the E168 lazy channel to already exist, acquires assets through
     /// that exact slot, and immediately moves the armed token into the RAII
@@ -3065,6 +3092,8 @@ impl Queue for Queue::ver {
                     .and_then(|subqueue| subqueue._g15_compute_channel.clone()),
                 #[ver(G == G15)]
                 _g15_stock_empty_assets: None,
+                #[ver(G == G15)]
+                _g15_rde_observer_runtime: None,
                 #[ver(G == G15)]
                 g15_stock_empty_selected: true,
                 #[ver(G == G15)]

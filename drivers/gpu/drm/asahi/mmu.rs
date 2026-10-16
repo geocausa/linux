@@ -779,6 +779,13 @@ impl VmBind {
     pub(crate) fn generation(&self) -> u8 {
         self.2
     }
+
+    /// Clone the exact VM/GART owned by this binding. E741 uses this only to
+    /// allocate Apple's independent selector-0 sampler context for the same
+    /// roots as the selected Compute selector-2 context.
+    pub(crate) fn vm(&self) -> Vm {
+        self.0.clone()
+    }
 }
 
 impl Drop for VmBind {
