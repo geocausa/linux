@@ -225,6 +225,18 @@ pub(crate) struct G15RdeObserverRuntime {
     split_source: Option<G15RdeSplitSourceBacking>,
 }
 
+/// E767 bounded raw view of one inactive G15 ordinary-RDE ring.
+/// The exact 23J220 userspace consumer treats trailer +0x30 as an absolute
+/// producer pointer and consumes a 0x60-byte G15 raw sample header.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct G15RdeRawRingSnapshot {
+    pub(crate) source_base: u64,
+    pub(crate) producer: u64,
+    pub(crate) producer_offset: u32,
+    pub(crate) producer_in_ring: bool,
+    pub(crate) raw_header: [u64; 12],
+}
+
 impl G15RdeObserverRuntime {
     /// Take one inactive-boundary snapshot from the exact selected split
     /// source backing while source/state/q22 metadata is synchronized through
@@ -238,6 +250,13 @@ impl G15RdeObserverRuntime {
         self.perfctr_runtime
             .state_snapshot_synced_external(source_base, completion_cursor, first_header)
             .ok_or(EIO)
+    }
+
+    /// E767: snapshot exactly the raw bytes consumed by G15
+    /// `ParseSampleHeader()` after STOP. This is observation-only and does not
+    /// attempt to decode counter payloads.
+    pub(crate) fn raw_ring_snapshot_synced(&self) -> Result<G15RdeRawRingSnapshot> {
+        self.split_source.as_ref().ok_or(EIO)?.raw_ring_snapshot_synced()
     }
 }
 
@@ -418,6 +437,50 @@ impl G15RdeSplitSourceBacking {
             (Some(cursor), Some(header)) => Ok((self.main_fwva(), cursor, header)),
             _ => Err(EINVAL),
         };
+        let dev_result = self.main.dma_sync_for_device();
+        match (result, dev_result) {
+            (Ok(v), Ok(())) => Ok(v),
+            (Err(e), _) => Err(e),
+            (_, Err(e)) => Err(e),
+        }
+    }
+
+    /// E767 exact-consumer diagnostic. Apple's G15 RingBufferImpl stores an
+    /// absolute producer pointer in trailer +0x30; the raw sample header is
+    /// 0x60 bytes and its first qword is not the normalized `0xfeed` token.
+    pub(crate) fn raw_ring_snapshot_synced(&self) -> Result<G15RdeRawRingSnapshot> {
+        self.main.dma_sync_for_cpu()?;
+        let bytes = self.main.as_slice();
+        let read_u64 = |off: usize| -> Option<u64> {
+            let raw: [u8; 8] = bytes.get(off..off + 8)?.try_into().ok()?;
+            Some(u64::from_le_bytes(raw))
+        };
+
+        let result = (|| {
+            let source_base = self.main_fwva();
+            let producer = read_u64(0x4000 + 0x30).ok_or(EINVAL)?;
+            let ring_end = source_base.checked_add(0x4000).ok_or(EOVERFLOW)?;
+            let producer_in_ring = producer >= source_base && producer < ring_end;
+            let producer_offset = if producer_in_ring {
+                u32::try_from(producer - source_base).map_err(|_| EOVERFLOW)?
+            } else {
+                0
+            };
+            let mut raw_header = [0u64; 12];
+            let mut i = 0usize;
+            while i < raw_header.len() {
+                raw_header[i] = read_u64(i * 8).ok_or(EINVAL)?;
+                i += 1;
+            }
+            Ok(G15RdeRawRingSnapshot {
+                source_base,
+                producer,
+                producer_offset,
+                producer_in_ring,
+                raw_header,
+            })
+        })();
+
         let dev_result = self.main.dma_sync_for_device();
         match (result, dev_result) {
             (Ok(v), Ok(())) => Ok(v),

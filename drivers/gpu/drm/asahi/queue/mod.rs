@@ -2580,9 +2580,6 @@ impl sched::JobImpl for QueueJob::ver {
                     .state_snapshot_synced()
                 {
                     Ok(s) => {
-                        let valid = s.completion_cursor < 0x4000
-                            && s.completion_cursor != s.source_buffer_addr_908
-                            && (s.first_header >> 48) == 0xfeed;
                         dev_info!(
                             job.dev.as_ref(),
                             "T8122 G15 E743 post-stop q22 cmd={} active={:#x} ctx={} masks={:#018x}/{:#018x} src d8={:#x} dc={:#x} e0={:#x} e4={:#x} e8={:#x} gen={} sel12={:#018x}\n",
@@ -2594,18 +2591,47 @@ impl sched::JobImpl for QueueJob::ver {
                         );
                         dev_info!(
                             job.dev.as_ref(),
-                            "T8122 G15 E743 post-stop buffer size={:#x} base={:#018x} trailer={:#018x} map={:#018x} state src={} ctx={} cfg={} size={:#x} base={:#018x} a18={:#018x} w20={:#018x} t28={:#018x} t30={:#018x} cursor={:#018x} hdr={:#018x} valid={}\n",
+                            "T8122 G15 E743 post-stop buffer size={:#x} base={:#018x} trailer={:#018x} map={:#018x} state src={} ctx={} cfg={} size={:#x} base={:#018x} a18={:#018x} w20={:#018x} t28={:#018x} t30={:#018x} producer={:#018x} raw_q0={:#018x}\n",
                             s.source_buffer_size_900, s.source_buffer_addr_908,
                             s.source_buffer_trailer_910, s.source_buffer_map_918,
                             s.state_source_00, s.state_context_04, s.state_config_06,
                             s.state_size_08, s.state_base_10, s.state_addr_18,
                             s.state_write_20, s.state_trailer20_28, s.state_trailer30_30,
-                            s.completion_cursor, s.first_header, valid,
+                            s.completion_cursor, s.first_header,
                         );
                     }
                     Err(err) => dev_err!(
                         job.dev.as_ref(),
                         "T8122 G15 E743 synchronized post-stop snapshot failed: {:?}\n",
+                        err
+                    ),
+                }
+
+                match job
+                    ._g15_rde_observer_runtime
+                    .as_ref()
+                    .ok_or(EIO)?
+                    .raw_ring_snapshot_synced()
+                {
+                    Ok(raw) => {
+                        dev_info!(
+                            job.dev.as_ref(),
+                            "T8122 G15 E767 raw-ring base={:#018x} producer={:#018x} off={:#x} in_ring={} q0..5={:016x},{:016x},{:016x},{:016x},{:016x},{:016x}\n",
+                            raw.source_base, raw.producer, raw.producer_offset,
+                            raw.producer_in_ring, raw.raw_header[0], raw.raw_header[1],
+                            raw.raw_header[2], raw.raw_header[3], raw.raw_header[4],
+                            raw.raw_header[5],
+                        );
+                        dev_info!(
+                            job.dev.as_ref(),
+                            "T8122 G15 E767 raw-ring q6..11={:016x},{:016x},{:016x},{:016x},{:016x},{:016x}\n",
+                            raw.raw_header[6], raw.raw_header[7], raw.raw_header[8],
+                            raw.raw_header[9], raw.raw_header[10], raw.raw_header[11],
+                        );
+                    }
+                    Err(err) => dev_err!(
+                        job.dev.as_ref(),
+                        "T8122 G15 E767 synchronized raw-ring snapshot failed: {:?}\n",
                         err
                     ),
                 }
