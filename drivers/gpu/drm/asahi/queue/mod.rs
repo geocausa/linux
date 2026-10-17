@@ -2691,6 +2691,43 @@ impl sched::JobImpl for QueueJob::ver {
                         err
                     ),
                 }
+                match job
+                    ._g15_rde_observer_runtime
+                    .as_ref()
+                    .ok_or(EIO)?
+                    .payload_stats_snapshot_synced()
+                {
+                    Ok(stats) => {
+                        dev_info!(
+                            job.dev.as_ref(),
+                            "T8122 G15 E773 payload records={}/{} nonzero={} min={:#018x} max={:#018x} first_valid={}\n",
+                            stats.payload_records, stats.framed_records,
+                            stats.nonzero_records, stats.min_value, stats.max_value,
+                            stats.first_values_valid,
+                        );
+                        dev_info!(
+                            job.dev.as_ref(),
+                            "T8122 G15 E773 payload first0..7={:016x},{:016x},{:016x},{:016x},{:016x},{:016x},{:016x},{:016x}\n",
+                            stats.first_values[0], stats.first_values[1],
+                            stats.first_values[2], stats.first_values[3],
+                            stats.first_values[4], stats.first_values[5],
+                            stats.first_values[6], stats.first_values[7],
+                        );
+                        dev_info!(
+                            job.dev.as_ref(),
+                            "T8122 G15 E773 payload first8..15={:016x},{:016x},{:016x},{:016x},{:016x},{:016x},{:016x},{:016x}\n",
+                            stats.first_values[8], stats.first_values[9],
+                            stats.first_values[10], stats.first_values[11],
+                            stats.first_values[12], stats.first_values[13],
+                            stats.first_values[14], stats.first_values[15],
+                        );
+                    }
+                    Err(err) => dev_err!(
+                        job.dev.as_ref(),
+                        "T8122 G15 E773 synchronized payload statistic failed: {:?}\n",
+                        err
+                    ),
+                }
             }
 
             // Close the Apple-exact runtime trace window regardless of the

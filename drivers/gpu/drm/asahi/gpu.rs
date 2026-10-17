@@ -248,6 +248,19 @@ pub(crate) struct G15RdeMagicScanSnapshot {
     pub(crate) first_record_qwords: [u64; 32],
 }
 
+/// E773 bounded statistics for the one selected 64-bit DCDM payload lane.
+/// Exact userspace default flags place that lane at raw record +0x60.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct G15RdePayloadStatsSnapshot {
+    pub(crate) framed_records: u32,
+    pub(crate) payload_records: u32,
+    pub(crate) nonzero_records: u32,
+    pub(crate) min_value: u64,
+    pub(crate) max_value: u64,
+    pub(crate) first_values_valid: u32,
+    pub(crate) first_values: [u64; 16],
+}
+
 impl G15RdeObserverRuntime {
     /// Take one inactive-boundary snapshot from the exact selected split
     /// source backing while source/state/q22 metadata is synchronized through
@@ -278,6 +291,16 @@ impl G15RdeObserverRuntime {
             .as_ref()
             .ok_or(EIO)?
             .magic_scan_snapshot_synced()
+    }
+
+
+    /// E773: evaluate the exact one-counter payload qword across the bounded
+    /// magic-framed ring after STOP. No decode or GPU-visible mutation.
+    pub(crate) fn payload_stats_snapshot_synced(&self) -> Result<G15RdePayloadStatsSnapshot> {
+        self.split_source
+            .as_ref()
+            .ok_or(EIO)?
+            .payload_stats_snapshot_synced()
     }
 }
 
@@ -572,6 +595,99 @@ impl G15RdeSplitSourceBacking {
                 first_record_size,
                 record_qwords_valid,
                 first_record_qwords,
+            })
+        })();
+
+        let dev_result = self.main.dma_sync_for_device();
+        match (result, dev_result) {
+            (Ok(v), Ok(())) => Ok(v),
+            (Err(e), _) => Err(e),
+            (_, Err(e)) => Err(e),
+        }
+    }
+
+    /// E773 exact default-flags one-counter payload statistic. The hardware
+    /// payload starts at raw +0x60; use exact magic-to-magic framing and wrap
+    /// every read inside the 0x4000 source ring.
+    pub(crate) fn payload_stats_snapshot_synced(&self) -> Result<G15RdePayloadStatsSnapshot> {
+        const RING_SIZE: usize = 0x4000;
+        const MAGIC: u64 = 0xfeed_cba9_8765_4321;
+        const PAYLOAD_OFFSET: usize = 0x60;
+
+        self.main.dma_sync_for_cpu()?;
+        let bytes = self.main.as_slice();
+        let read_u64 = |off: usize| -> Option<u64> {
+            let off = off % RING_SIZE;
+            let raw: [u8; 8] = bytes.get(off..off + 8)?.try_into().ok()?;
+            Some(u64::from_le_bytes(raw))
+        };
+
+        let result = (|| {
+            if bytes.len() < RING_SIZE {
+                return Err(EINVAL);
+            }
+
+            let mut first_magic = None;
+            let mut previous_magic = None;
+            let mut framed_records = 0u32;
+            let mut payload_records = 0u32;
+            let mut nonzero_records = 0u32;
+            let mut min_value = u64::MAX;
+            let mut max_value = 0u64;
+            let mut first_values_valid = 0u32;
+            let mut first_values = [0u64; 16];
+
+            let mut consume_record = |record_start: usize, record_size: usize| -> Result {
+                framed_records = framed_records.checked_add(1).ok_or(EOVERFLOW)?;
+                if record_size < PAYLOAD_OFFSET + 8 || record_size & 7 != 0 {
+                    return Ok(());
+                }
+                let value = read_u64(record_start + PAYLOAD_OFFSET).ok_or(EINVAL)?;
+                payload_records = payload_records.checked_add(1).ok_or(EOVERFLOW)?;
+                if value != 0 {
+                    nonzero_records = nonzero_records.checked_add(1).ok_or(EOVERFLOW)?;
+                }
+                min_value = core::cmp::min(min_value, value);
+                max_value = core::cmp::max(max_value, value);
+                if (first_values_valid as usize) < first_values.len() {
+                    first_values[first_values_valid as usize] = value;
+                    first_values_valid += 1;
+                }
+                Ok(())
+            };
+
+            let mut off = 0usize;
+            while off < RING_SIZE {
+                if read_u64(off).ok_or(EINVAL)? == MAGIC {
+                    if first_magic.is_none() {
+                        first_magic = Some(off);
+                    }
+                    if let Some(previous) = previous_magic {
+                        consume_record(previous, off - previous)?;
+                    }
+                    previous_magic = Some(off);
+                }
+                off += 8;
+            }
+
+            if let (Some(first), Some(last)) = (first_magic, previous_magic) {
+                if first != last {
+                    consume_record(last, RING_SIZE - last + first)?;
+                }
+            }
+
+            if payload_records == 0 {
+                min_value = 0;
+            }
+
+            Ok(G15RdePayloadStatsSnapshot {
+                framed_records,
+                payload_records,
+                nonzero_records,
+                min_value,
+                max_value,
+                first_values_valid,
+                first_values,
             })
         })();
 
