@@ -56,7 +56,7 @@ use kernel::{
     time::msecs_to_jiffies, //
 };
 
-use crate::alloc::Allocator;
+use crate::alloc::{Allocator, DmaSyncAllocation};
 use crate::debug::*;
 use crate::driver::{
     AsahiDevRef,
@@ -227,40 +227,52 @@ impl Drop for G15RdeObserverRuntime {
     }
 }
 
-/// E762 compile-only owner for Apple's ordinary-RDE command-3 split mapping.
+/// E763 compile-only collision-safe owner for Apple's ordinary-RDE command-3
+/// split mapping.
 ///
-/// One physical 0x8000 GEM backing is visible through two GPU mappings: the
-/// complete object in the selected client VM's range-5/PPL308 aperture and
-/// only its final 0x4000 page through the accelerator-shared range-7 aperture.
-/// No live path constructs this object in E762.
+/// The main source allocation comes from the Queue-owned range-5/PPL308 heap,
+/// so its VA is reserved by the same allocator as every other Queue resource.
+/// Only the final physical page of that exact allocation is additionally
+/// aliased through accelerator-shared range 7. No live path constructs this
+/// object in E763.
 #[allow(dead_code)]
 pub(crate) struct G15RdeSplitSourceBacking {
-    object: gem::ObjectRef,
-    main_mapping: mmu::KernelMapping,
+    main: fw::types::GpuArray<u8>,
     trailer_alias: mmu::G15SharedBank1Mapping,
 }
 
 #[allow(dead_code)]
 impl G15RdeSplitSourceBacking {
     pub(crate) fn new_compile_only(
-        dev: &AsahiDevice,
-        vm: &mmu::Vm,
+        range5: &mut alloc::DefaultAllocator,
         bank1: &mmu::G15SharedBank1,
         notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
     ) -> Result<Self> {
-        let mut object = gem::new_kernel_object(dev, 0x8000)?;
-        let main_mapping = object.map_range_into_range(
-            vm,
-            0..0x8000,
-            mmu::G15_GART_RANGE5_PPL308,
-            mmu::UAT_PGSZ as u64,
-            mmu::PROT_G15_RANGE5_PPL308,
-            false,
-        )?;
+        // Take CPU ownership before constructing the typed array. This keeps
+        // the non-coherent J615 ownership transition ordered before the zero
+        // initialization performed by GpuArray::empty().
+        let main_alloc = range5.alloc_generic::<u8>(0x8000, mmu::UAT_PGSZ, None)?;
+        main_alloc.dma_sync_for_cpu()?;
+        let main = fw::types::GpuArray::<u8>::empty(main_alloc, 0x8000)?;
+
+        let main_fwva = main.gpu_va().get();
+        let trailer_fwva = main_fwva.checked_add(0x4000).ok_or(EOVERFLOW)?;
+        if main_fwva & 0x3fff != 0
+            || trailer_fwva & 0x3fff != 0
+            || !mmu::G15_GART_RANGE5_PPL308.contains(&main_fwva)
+        {
+            return Err(EINVAL);
+        }
+
+        // Resolve the exact physical GEM page that backs bytes 0x4000..0x7fff
+        // of this heap allocation. Heap/debug-allocation prefixes are already
+        // accounted for by BackingObjectAllocation.
+        let (trailer_object, trailer_object_offset) =
+            main.backing_object_range(0x4000, 0x4000)?;
         let trailer_alias = bank1.map_subrange(
             mmu::G15SharedBank1Aperture::Range7,
-            &object.gem,
-            0x4000,
+            &trailer_object.gem,
+            trailer_object_offset,
             0x4000,
             mmu::UAT_PGSZ as u64,
             mmu::PROT_G15_RANGE7_FW,
@@ -268,35 +280,23 @@ impl G15RdeSplitSourceBacking {
             notifier,
             mmu::G15MappingNotifyMode::Immediate,
         )?;
-
-        let main_fwva = main_mapping.iova();
-        let trailer_fwva = main_fwva.checked_add(0x4000).ok_or(EOVERFLOW)?;
         let alias_fwva = trailer_alias.iova();
-        if main_fwva & 0x3fff != 0
-            || trailer_fwva & 0x3fff != 0
-            || alias_fwva & 0x3fff != 0
-            || !mmu::G15_GART_RANGE5_PPL308.contains(&main_fwva)
-            || !mmu::G15_GART_RANGE7.contains(&alias_fwva)
-        {
+        if alias_fwva & 0x3fff != 0 || !mmu::G15_GART_RANGE7.contains(&alias_fwva) {
             return Err(EINVAL);
         }
 
-        // Both GPU mappings now own the same streaming-DMA object. Retake CPU
-        // ownership once, initialize the complete physical backing, then return
-        // it once to the device domain so both aliases observe identical bytes.
-        object.dma_sync_for_cpu()?;
-        object.vmap()?.memset(0);
-        object.dma_sync_for_device()?;
+        // The range-5 mapping and range-7 alias refer to the same physical
+        // backing. Publish the CPU-authored zeros once for both aliases.
+        main.dma_sync_for_device()?;
 
         Ok(Self {
-            object,
-            main_mapping,
+            main,
             trailer_alias,
         })
     }
 
     pub(crate) fn main_fwva(&self) -> u64 {
-        self.main_mapping.iova()
+        self.main.gpu_va().get()
     }
 
     pub(crate) fn trailer_alias_fwva(&self) -> u64 {
@@ -331,11 +331,11 @@ impl G15RdeSplitSourceBacking {
     }
 
     pub(crate) fn dma_sync_for_cpu(&self) -> Result {
-        self.object.dma_sync_for_cpu()
+        self.main.dma_sync_for_cpu()
     }
 
     pub(crate) fn dma_sync_for_device(&self) -> Result {
-        self.object.dma_sync_for_device()
+        self.main.dma_sync_for_device()
     }
 }
 

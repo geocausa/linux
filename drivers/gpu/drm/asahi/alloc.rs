@@ -81,6 +81,17 @@ pub(crate) trait RawDmaSyncAllocation: RawAllocation {
     fn dma_sync_range_for_device(&self, offset: usize, size: usize) -> Result;
 }
 
+/// Raw allocations that can identify the exact GEM backing and byte offset for
+/// one contained range. This is used when the same physical pages need a second
+/// GPU alias without allocating or copying a second backing object.
+pub(crate) trait RawBackingObjectAllocation: RawAllocation {
+    fn backing_object_range(
+        &self,
+        offset: usize,
+        size: usize,
+    ) -> Result<(crate::gem::ObjectRef, usize)>;
+}
+
 /// Represents a typed allocation.
 pub(crate) trait Allocation<T>: Debug {
     /// Returns the typed CPU-side pointer (if CPU mapping is enabled).
@@ -135,6 +146,17 @@ pub(crate) trait DmaSyncAllocation<T>: Allocation<T> {
     fn dma_sync_for_device(&self) -> Result;
 }
 
+/// Typed allocations that can expose the backing GEM/object offset for an exact
+/// usable subrange. The returned offset is relative to the physical GEM object,
+/// not the allocation's GPU VA.
+pub(crate) trait BackingObjectAllocation<T>: Allocation<T> {
+    fn backing_object_range(
+        &self,
+        offset: usize,
+        size: usize,
+    ) -> Result<(crate::gem::ObjectRef, usize)>;
+}
+
 impl<T, U: RawDmaSyncAllocation> DmaSyncAllocation<T> for GenericAlloc<T, U> {
     fn dma_sync_for_cpu(&self) -> Result {
         self.alloc
@@ -144,6 +166,21 @@ impl<T, U: RawDmaSyncAllocation> DmaSyncAllocation<T> for GenericAlloc<T, U> {
     fn dma_sync_for_device(&self) -> Result {
         self.alloc
             .dma_sync_range_for_device(self.debug_offset, self.alloc_size)
+    }
+}
+
+impl<T, U: RawBackingObjectAllocation> BackingObjectAllocation<T> for GenericAlloc<T, U> {
+    fn backing_object_range(
+        &self,
+        offset: usize,
+        size: usize,
+    ) -> Result<(crate::gem::ObjectRef, usize)> {
+        let end = offset.checked_add(size).ok_or(EOVERFLOW)?;
+        if end > self.alloc_size {
+            return Err(EINVAL);
+        }
+        let raw_offset = self.debug_offset.checked_add(offset).ok_or(EOVERFLOW)?;
+        self.alloc.backing_object_range(raw_offset, size)
     }
 }
 
@@ -978,6 +1015,26 @@ impl RawDmaSyncAllocation for SimpleAllocation {
     }
 }
 
+impl RawBackingObjectAllocation for SimpleAllocation {
+    fn backing_object_range(
+        &self,
+        offset: usize,
+        size: usize,
+    ) -> Result<(crate::gem::ObjectRef, usize)> {
+        let base: usize = self
+            .gpu_ptr
+            .checked_sub(self._mapping.iova())
+            .ok_or(EOVERFLOW)?
+            .try_into()?;
+        let object_offset = base.checked_add(offset).ok_or(EOVERFLOW)?;
+        let end = object_offset.checked_add(size).ok_or(EOVERFLOW)?;
+        if end > self.obj.size() {
+            return Err(EINVAL);
+        }
+        Ok((crate::gem::ObjectRef::new(self.obj.gem.clone()), object_offset))
+    }
+}
+
 /// A simple allocator that allocates each object as its own GEM object, aligned to the end of a
 /// page.
 ///
@@ -1183,6 +1240,41 @@ impl RawDmaSyncAllocation for HeapAllocation {
 
     fn dma_sync_range_for_device(&self, offset: usize, size: usize) -> Result {
         self.dma_sync_range(offset, size, false)
+    }
+}
+
+impl RawBackingObjectAllocation for HeapAllocation {
+    fn backing_object_range(
+        &self,
+        offset: usize,
+        size: usize,
+    ) -> Result<(crate::gem::ObjectRef, usize)> {
+        let node = self.0.as_ref().ok_or(EINVAL)?;
+        let start = node
+            .start()
+            .checked_add(offset.try_into()?)
+            .ok_or(EOVERFLOW)?;
+        let end = start.checked_add(size.try_into()?).ok_or(EOVERFLOW)?;
+        let alloc_end = node.start().checked_add(node.size()).ok_or(EOVERFLOW)?;
+        if end > alloc_end {
+            return Err(EINVAL);
+        }
+
+        node.alloc_ref().with(|inner| {
+            for (obj, _, gpu_base) in inner.backing_objects.iter() {
+                let obj_end = gpu_base
+                    .checked_add(obj.size() as u64)
+                    .ok_or(EOVERFLOW)?;
+                if start >= *gpu_base && end <= obj_end {
+                    let object_offset: usize = (start - *gpu_base).try_into()?;
+                    return Ok((
+                        crate::gem::ObjectRef::new(obj.gem.clone()),
+                        object_offset,
+                    ));
+                }
+            }
+            Err(EIO)
+        })
     }
 }
 

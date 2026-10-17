@@ -63,7 +63,7 @@ use core::ops::{
 };
 use core::{mem, ptr, slice};
 
-use crate::alloc::{Allocation, DmaSyncAllocation};
+use crate::alloc::{Allocation, BackingObjectAllocation, DmaSyncAllocation};
 use crate::debug::*;
 use crate::fw::types::Zeroable;
 use crate::mmu;
@@ -710,6 +710,18 @@ impl<T, U: DmaSyncAllocation<T>> GpuArray<T, U> {
     /// Publish this exact typed array backing to the DMA domain.
     pub(crate) fn dma_sync_for_device(&self) -> Result {
         self.array.alloc.dma_sync_for_device()
+    }
+}
+
+impl<T, U: BackingObjectAllocation<T>> GpuArray<T, U> {
+    /// Return the exact GEM backing and object-relative byte offset for a
+    /// subrange of this typed allocation.
+    pub(crate) fn backing_object_range(
+        &self,
+        offset: usize,
+        size: usize,
+    ) -> Result<(crate::gem::ObjectRef, usize)> {
+        self.array.alloc.backing_object_range(offset, size)
     }
 }
 
