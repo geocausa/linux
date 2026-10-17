@@ -986,22 +986,31 @@ impl super::QueueInner::ver {
                     return Err(EIO);
                 }
             };
-            // E764 replaces E737's all-range7 source pointer graph only for
-            // this bounded selected observer. The main 0x8000 source comes from
-            // this Queue's retained PPL308 allocator; only its final physical
-            // page is additionally aliased through shared range 7.
+            // E790 replaces the prior ordinary-RDE selected observer with
+            // E789's exact APS_USC source-5 split backing. J615 is all-active:
+            // ten active cores out of ten total, one 0x4000 ring per core plus
+            // the final page aliased through shared range 7.
             let split_source = {
                 let range5 = self._g15_range5_ppl308.as_ref().ok_or(EINVAL)?;
                 let bank1 = self._g15_shared_bank1.as_ref().ok_or(EINVAL)?;
                 let notifier = self._g15_mapping_notifier.clone();
+                let dyncfg = gpu.get_dyncfg();
+                let active_core_count = dyncfg.id.total_active_cores;
+                let total_core_count = dyncfg
+                    .id
+                    .num_cores
+                    .checked_mul(dyncfg.id.num_clusters)
+                    .ok_or(EOVERFLOW)?;
                 let mut range5 = range5.lock();
-                gpu::G15RdeSplitSourceBacking::new_for_observer(
+                gpu::G15ApsSplitSourceBacking::new_for_observer(
                     &mut range5,
                     bank1,
                     notifier,
+                    active_core_count,
+                    total_core_count,
                 )?
             };
-            job.prepare_g15_rde_observer_runtime(gpu, split_source)?;
+            job.prepare_g15_aps_observer_runtime(gpu, split_source)?;
 
             let vm_bind = job.vm_bind.clone();
             let ev_comp = job.get_comp()?.event_info();

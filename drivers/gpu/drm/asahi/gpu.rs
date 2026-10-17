@@ -226,15 +226,32 @@ pub(crate) struct G15RdeObserverRuntime {
 }
 
 
-/// E789 compile-only owner for one fully installed APS_USC source-5 image.
-/// No normal execution path constructs this object yet. Drop restores the
-/// dormant bootstrap source/state image only at a proven inactive, non-pending
-/// APS boundary; otherwise it fails closed by retaining all GPU-visible owners.
+/// E790 bounded owner for one fully installed APS_USC source-5 image.
+/// The selected-observer path may construct this owner, but E790 itself is not
+/// loaded live. Explicit completion restores the dormant bootstrap image after
+/// STOP; Drop remains the fail-closed fallback for every unwind path.
 pub(crate) struct G15ApsObserverRuntime {
     sampler_context: Option<mmu::G15SamplerVmBind>,
     perfctr_runtime: fw::initdata::G15PerfCtrRuntimeHandle,
     split_source: Option<G15ApsSplitSourceBacking>,
     sampler_count: u32,
+}
+
+
+impl G15ApsObserverRuntime {
+    /// E790 bounded lifecycle audit. This is observation-only: it reads the
+    /// exact q22 fields that gate safe APS teardown and selector-0 release.
+    pub(crate) fn lifecycle_state(&self) -> (u32, u8, u16, u64, u64) {
+        self.perfctr_runtime.with_q22(|raw| {
+            (
+                raw.sampler_active_4030.0,
+                raw.aps_usc_coord_4094,
+                raw.sampler_source_context_id_4064,
+                raw.sampler_mask_4068.0,
+                raw.sampler_mask_4070.0,
+            )
+        })
+    }
 }
 
 /// E767 bounded raw view of one inactive G15 ordinary-RDE ring.
@@ -931,8 +948,9 @@ impl G15RdeSplitSourceBacking {
 /// Exact 23J220 userspace rounds the all-active source image to one 0x4000
 /// data ring per active core plus one final 0x4000 control page. The main
 /// allocation is client/range-5; the final physical page is additionally
-/// aliased through shared range 7 and published as source +0x918. This type is
-/// deliberately not constructed by any live path yet.
+/// aliased through shared range 7 and published as source +0x918. E790 wires
+/// this owner only into the existing one-command selected-observer path; the
+/// E790 module itself remains non-live.
 pub(crate) struct G15ApsSplitSourceBacking {
     main: fw::types::GpuArray<u8>,
     trailer_alias: mmu::G15SharedBank1Mapping,
@@ -941,7 +959,7 @@ pub(crate) struct G15ApsSplitSourceBacking {
 }
 
 impl G15ApsSplitSourceBacking {
-    pub(crate) fn new_compile_only(
+    pub(crate) fn new_for_observer(
         range5: &mut alloc::DefaultAllocator,
         bank1: &mmu::G15SharedBank1,
         notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
@@ -1079,18 +1097,8 @@ impl G15ApsSplitSourceBacking {
     }
 }
 
-impl Drop for G15ApsObserverRuntime {
-    fn drop(&mut self) {
-        let Some(slot) = self.sampler_context.as_ref().map(|ctx| ctx.slot()) else {
-            return;
-        };
-        if self
-            .perfctr_runtime
-            .restore_bootstrap_aps_usc(slot, self.sampler_count)
-        {
-            return;
-        }
-
+impl G15ApsObserverRuntime {
+    fn fail_closed(&mut self) {
         // A pending +0x4094 idle-coordination state or any ownership failure
         // means firmware may still retain source-5 state. Preserve mappings and
         // selector-0 context rather than releasing memory it could dereference.
@@ -1100,6 +1108,48 @@ impl Drop for G15ApsObserverRuntime {
         if let Some(context) = self.sampler_context.take() {
             core::mem::forget(context);
         }
+    }
+
+    /// E790 explicit post-STOP rollback. Returning success proves that the
+    /// bootstrap source/state image replaced every APS pointer before either
+    /// retained GPU-visible owner is released. Failure keeps both owners mapped.
+    pub(crate) fn finish(mut self) -> Result {
+        let Some(slot) = self.sampler_context.as_ref().map(|ctx| ctx.slot()) else {
+            self.fail_closed();
+            return Err(EIO);
+        };
+        if !self
+            .perfctr_runtime
+            .restore_bootstrap_aps_usc(slot, self.sampler_count)
+        {
+            self.fail_closed();
+            return Err(EBUSY);
+        }
+
+        // Disarm Drop and release only after the bootstrap image is visible.
+        let source = self.split_source.take();
+        let context = self.sampler_context.take();
+        core::mem::drop(source);
+        core::mem::drop(context);
+        Ok(())
+    }
+}
+
+impl Drop for G15ApsObserverRuntime {
+    fn drop(&mut self) {
+        let Some(slot) = self.sampler_context.as_ref().map(|ctx| ctx.slot()) else {
+            if self.split_source.is_some() {
+                self.fail_closed();
+            }
+            return;
+        };
+        if self
+            .perfctr_runtime
+            .restore_bootstrap_aps_usc(slot, self.sampler_count)
+        {
+            return;
+        }
+        self.fail_closed();
     }
 }
 
@@ -4187,10 +4237,9 @@ impl GpuManager::ver {
     }
 
 
-    /// E789 compile-only APS_USC runtime installer. This closes Apple's
-    /// pre-START ownership/publication sequence but intentionally has no caller
-    /// from Queue submission and sends no DeviceControl command.
-    #[allow(dead_code)]
+    /// E790 selected-observer APS_USC runtime installer. This closes Apple's
+    /// pre-START ownership/publication sequence but itself sends no DeviceControl
+    /// command; the bounded Queue transaction owns START/STOP ordering.
     pub(crate) fn g15_prepare_aps_observer_context(
         &self,
         vm: &mmu::Vm,

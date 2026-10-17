@@ -2076,6 +2076,10 @@ pub(crate) struct QueueJob {
     /// No DeviceControl START/STOP is reachable in this slice.
     #[ver(G == G15)]
     _g15_rde_observer_runtime: Option<gpu::G15RdeObserverRuntime>,
+    /// E790 retains the exact APS_USC source-5 owner across START, the one
+    /// selected Compute, STOP completion and explicit rollback verification.
+    #[ver(G == G15)]
+    _g15_aps_observer_runtime: Option<gpu::G15ApsObserverRuntime>,
     // E196 marks the one-command stock-empty selected scheduler route. The
     // public G15 file::submit gate still prevents userspace from reaching it.
     #[ver(G == G15)]
@@ -2116,6 +2120,34 @@ impl QueueJob::ver {
             let vm = self.vm_bind.vm();
             self._g15_rde_observer_runtime =
                 Some(gpu.g15_prepare_rde_observer_context(&vm, split_source)?);
+            Ok(())
+        }
+    }
+
+    /// E790 bind the exact E789 APS source/context image to this QueueJob's
+    /// VM. The owner then structurally outlives START and the selected Compute
+    /// until STOP has completed and rollback is explicitly verified.
+    fn prepare_g15_aps_observer_runtime(
+        &mut self,
+        gpu: &gpu::GpuManager::ver,
+        split_source: gpu::G15ApsSplitSourceBacking,
+    ) -> Result {
+        #[ver(G != G15)]
+        {
+            let _ = (gpu, split_source);
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            if self._g15_aps_observer_runtime.is_some()
+                || self._g15_rde_observer_runtime.is_some()
+            {
+                return Err(EBUSY);
+            }
+            let vm = self.vm_bind.vm();
+            self._g15_aps_observer_runtime =
+                Some(gpu.g15_prepare_aps_observer_context(&vm, split_source)?);
             Ok(())
         }
     }
@@ -2165,7 +2197,8 @@ impl QueueJob::ver {
 
         #[ver(G == G15)]
         {
-            let perfctr_observer = self._g15_rde_observer_runtime.is_some();
+            let perfctr_observer = self._g15_rde_observer_runtime.is_some()
+                || self._g15_aps_observer_runtime.is_some();
             self._g15_stock_empty_assets
                 .as_mut()
                 .ok_or(EINVAL)?
@@ -2453,44 +2486,28 @@ impl sched::JobImpl for QueueJob::ver {
                 || job.notification_count != 1
                 || job.sj_vtx.as_ref().and_then(|sj| sj.job.as_ref()).is_some()
                 || job.sj_frag.as_ref().and_then(|sj| sj.job.as_ref()).is_some()
-                || job._g15_rde_observer_runtime.is_none()
+                || job._g15_rde_observer_runtime.is_some()
+                || job._g15_aps_observer_runtime.is_none()
             {
                 return Err(EIO);
             }
 
-            // E743: take one DMA-synchronized inactive baseline before START.
-            // This also validates that E736/E737's streaming-DMA backings were
-            // published with the exact selector/context image before firmware
-            // can consume them.
-            match job
-                ._g15_rde_observer_runtime
+            // E790: the E789 installer already validated and DMA-published
+            // source 5 plus all ten state records. Immediately before START,
+            // mechanically re-check the teardown-critical q22 lifecycle fields.
+            let (active, coord, ctx, mask68, mask70) = job
+                ._g15_aps_observer_runtime
                 .as_ref()
                 .ok_or(EIO)?
-                .state_snapshot_synced()
-            {
-                Ok(s) => {
-                    dev_info!(
-                        job.dev.as_ref(),
-                        "T8122 G15 E743 pre-start q22 cmd={} active={:#x} ctx={} masks={:#018x}/{:#018x} src d8={:#x} dc={:#x} e0={:#x} e4={:#x} e8={:#x} gen={} sel12={:#018x}\n",
-                        s.q22_command_count, s.q22_active, s.q22_context_id,
-                        s.q22_mask_4068, s.q22_mask_4070,
-                        s.source_active_d8, s.source_triggers_dc, s.source_flags_e0,
-                        s.source_period_e4, s.source_derived_e8,
-                        s.generated_count_8f8, s.selected_entry_12,
-                    );
-                    dev_info!(
-                        job.dev.as_ref(),
-                        "T8122 G15 E743 pre-start buffer size={:#x} base={:#018x} trailer={:#018x} map={:#018x} state src={} ctx={} cfg={} size={:#x} base={:#018x} a18={:#018x} w20={:#018x} t28={:#018x} t30={:#018x} cursor={:#018x} hdr={:#018x}\n",
-                        s.source_buffer_size_900, s.source_buffer_addr_908,
-                        s.source_buffer_trailer_910, s.source_buffer_map_918,
-                        s.state_source_00, s.state_context_04, s.state_config_06,
-                        s.state_size_08, s.state_base_10, s.state_addr_18,
-                        s.state_write_20, s.state_trailer20_28, s.state_trailer30_30,
-                        s.completion_cursor, s.first_header,
-                    );
-                }
-                Err(err) => return Err(err),
+                .lifecycle_state();
+            if active != 0 || coord != 0 || mask68 != 0 || mask70 != 0 {
+                return Err(EIO);
             }
+            dev_info!(
+                job.dev.as_ref(),
+                "T8122 G15 E790 APS pre-start active={:#x} coord={:#x} ctx={} masks={:#018x}/{:#018x}\n",
+                active, coord, ctx, mask68, mask70,
+            );
 
             // E756: leave firmware tracing at stock zero through boot and
             // open only the exact sampler class-6 window immediately around
@@ -2517,13 +2534,13 @@ impl sched::JobImpl for QueueJob::ver {
             }
             dev_info!(
                 job.dev.as_ref(),
-                "T8122 G15 E756 RDE observer START complete for QueueJob {}\n",
+                "T8122 G15 E790 APS observer START complete for QueueJob {}\n",
                 job.id
             );
             if let Ok((cmd, active, ctx, mask68, mask70)) = gpu.g15_perfctr_q22_sampler_state() {
                 dev_info!(
                     job.dev.as_ref(),
-                    "T8122 G15 E743 post-start q22 cmd={} active={:#x} ctx={} masks={:#018x}/{:#018x}\n",
+                    "T8122 G15 E790 APS post-start q22 cmd={} active={:#x} ctx={} masks={:#018x}/{:#018x}\n",
                     cmd, active, ctx, mask68, mask70,
                 );
             }
@@ -2549,7 +2566,7 @@ impl sched::JobImpl for QueueJob::ver {
             if let Ok((cmd, active, ctx, mask68, mask70)) = gpu.g15_perfctr_q22_sampler_state() {
                 dev_info!(
                     job.dev.as_ref(),
-                    "T8122 G15 E743 pre-stop q22 cmd={} active={:#x} ctx={} masks={:#018x}/{:#018x}\n",
+                    "T8122 G15 E790 APS pre-stop q22 cmd={} active={:#x} ctx={} masks={:#018x}/{:#018x}\n",
                     cmd, active, ctx, mask68, mask70,
                 );
             }
@@ -2561,18 +2578,18 @@ impl sched::JobImpl for QueueJob::ver {
             match &stop_result {
                 Ok(()) => dev_info!(
                     job.dev.as_ref(),
-                    "T8122 G15 E743 RDE observer STOP complete for QueueJob {}\n",
+                    "T8122 G15 E790 APS observer STOP complete for QueueJob {}\n",
                     job.id
                 ),
                 Err(err) => dev_err!(
                     job.dev.as_ref(),
-                    "T8122 G15 E743 RDE observer STOP failed for QueueJob {}: {:?}\n",
+                    "T8122 G15 E790 APS observer STOP failed for QueueJob {}: {:?}\n",
                     job.id,
                     err
                 ),
             }
 
-            if stop_result.is_ok() {
+            if stop_result.is_ok() && job._g15_rde_observer_runtime.is_some() {
                 match job
                     ._g15_rde_observer_runtime
                     .as_ref()
@@ -2760,6 +2777,49 @@ impl sched::JobImpl for QueueJob::ver {
                 }
             }
 
+            // E790: only after successful STOP completion may APS ownership
+            // be rolled back. Refuse a false-success result if firmware still
+            // reports active or +0x4094 coordination pending. Taking and
+            // dropping the owner invokes E789's checked restore; if a race
+            // makes restore unsafe, Drop fails closed and the q22 verification
+            // below exposes the retained context rather than silently unmapping.
+            let aps_rollback_result = if stop_result.is_ok() {
+                let (active, coord, _ctx, _mask68, _mask70) = job
+                    ._g15_aps_observer_runtime
+                    .as_ref()
+                    .ok_or(EIO)?
+                    .lifecycle_state();
+                if active != 0 || coord != 0 {
+                    Err(EIO)
+                } else {
+                    let owner = job._g15_aps_observer_runtime.take().ok_or(EIO)?;
+                    owner.finish().and_then(|()| {
+                        match gpu.g15_perfctr_q22_sampler_state() {
+                            Ok((_cmd, active, ctx, mask68, mask70))
+                                if active == 0
+                                    && ctx == 0
+                                    && mask68 == 0
+                                    && mask70 == 0 => Ok(()),
+                            _ => Err(EIO),
+                        }
+                    })
+                }
+            } else {
+                Err(EIO)
+            };
+            match &aps_rollback_result {
+                Ok(()) => dev_info!(
+                    job.dev.as_ref(),
+                    "T8122 G15 E790 APS rollback complete for QueueJob {}\n",
+                    job.id
+                ),
+                Err(err) => dev_err!(
+                    job.dev.as_ref(),
+                    "T8122 G15 E790 APS rollback failed closed for QueueJob {}: {:?}\n",
+                    job.id, err
+                ),
+            }
+
             // Close the Apple-exact runtime trace window regardless of the
             // Compute/STOP result. This is DeviceControl 0x13 again with q21
             // restored to zero; no sampler/RDE configuration changes here.
@@ -2782,6 +2842,9 @@ impl sched::JobImpl for QueueJob::ver {
                 return Err(err);
             }
             if let Err(err) = stop_result {
+                return Err(err);
+            }
+            if let Err(err) = aps_rollback_result {
                 return Err(err);
             }
             if let Err(err) = trace_disable_result {
@@ -3479,6 +3542,8 @@ impl Queue for Queue::ver {
                 _g15_stock_empty_assets: None,
                 #[ver(G == G15)]
                 _g15_rde_observer_runtime: None,
+                #[ver(G == G15)]
+                _g15_aps_observer_runtime: None,
                 #[ver(G == G15)]
                 g15_stock_empty_selected: true,
                 #[ver(G == G15)]
