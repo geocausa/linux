@@ -858,9 +858,10 @@ pub(crate) mod raw {
         }
     }
 
-    /// Exact 0x20-byte RDE command image emitted by the 23J220
-    /// PerfCtrCommandGen11::generatePerfCtrCommandList() path for the first
-    /// 64-bit DCDM selection on RDE_0. Unknown control words remain offset-named.
+    /// Exact 0x20-byte RDE command record emitted by the 23J220
+    /// PerfCtrCommandGen11::generatePerfCtrCommandList() path. E776 materializes
+    /// Apple's four 32-bit CSInvocation DCDM records; unresolved words remain
+    /// offset-named.
     #[derive(Debug, Copy, Clone)]
     #[repr(C)]
     pub(crate) struct G15PerfCtrGeneratedRdeCommand {
