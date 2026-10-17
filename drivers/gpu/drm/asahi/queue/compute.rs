@@ -986,10 +986,22 @@ impl super::QueueInner::ver {
                     return Err(EIO);
                 }
             };
-            // E741 ties the compile-only RDE observer context to the same VM
-            // and QueueJob lifetime as this one bounded selected Compute. It
-            // patches storage/context only; START/STOP remain zero-caller.
-            job.prepare_g15_rde_observer_runtime(gpu)?;
+            // E764 replaces E737's all-range7 source pointer graph only for
+            // this bounded selected observer. The main 0x8000 source comes from
+            // this Queue's retained PPL308 allocator; only its final physical
+            // page is additionally aliased through shared range 7.
+            let split_source = {
+                let range5 = self._g15_range5_ppl308.as_ref().ok_or(EINVAL)?;
+                let bank1 = self._g15_shared_bank1.as_ref().ok_or(EINVAL)?;
+                let notifier = self._g15_mapping_notifier.clone();
+                let mut range5 = range5.lock();
+                gpu::G15RdeSplitSourceBacking::new_for_observer(
+                    &mut range5,
+                    bank1,
+                    notifier,
+                )?
+            };
+            job.prepare_g15_rde_observer_runtime(gpu, split_source)?;
 
             let vm_bind = job.vm_bind.clone();
             let ev_comp = job.get_comp()?.event_info();

@@ -216,14 +216,52 @@ pub(crate) struct OpGuard(Arc<dyn GpuManagerPriv>);
 /// Zero-caller E739 owner for Apple's separate sampler selector-0 context.
 /// Drop clears the published sampler context before returning the ASID slot.
 pub(crate) struct G15RdeObserverRuntime {
-    sampler_context: mmu::G15SamplerVmBind,
+    // Options let Drop fail closed if firmware is still active: retaining the
+    // ASID and source mappings is safer than releasing live GPU-visible state.
+    sampler_context: Option<mmu::G15SamplerVmBind>,
     perfctr_runtime: fw::initdata::G15PerfCtrRuntimeHandle,
+    // E764: retain the selected Queue-owned split source until after the
+    // global sampler image has been restored to its stable bootstrap backing.
+    split_source: Option<G15RdeSplitSourceBacking>,
+}
+
+impl G15RdeObserverRuntime {
+    /// Take one inactive-boundary snapshot from the exact selected split
+    /// source backing while source/state/q22 metadata is synchronized through
+    /// the retained global sampler runtime.
+    pub(crate) fn state_snapshot_synced(
+        &self,
+    ) -> Result<fw::initdata::G15PerfCtrStateSnapshot> {
+        let source = self.split_source.as_ref().ok_or(EIO)?;
+        let (source_base, completion_cursor, first_header) =
+            source.sample_fields_synced()?;
+        self.perfctr_runtime
+            .state_snapshot_synced_external(source_base, completion_cursor, first_header)
+            .ok_or(EIO)
+    }
 }
 
 impl Drop for G15RdeObserverRuntime {
     fn drop(&mut self) {
-        self.perfctr_runtime
-            .clear_source_context(self.sampler_context.slot());
+        let Some(slot) = self.sampler_context.as_ref().map(|ctx| ctx.slot()) else {
+            return;
+        };
+        // Replace every GPU-visible pointer that names the selected split
+        // source before either alias or its selector-0 ASID can be released.
+        if self.perfctr_runtime.restore_bootstrap_rde0(slot) {
+            return;
+        }
+
+        // If firmware is still active (or an ownership transition failed),
+        // fail closed by retaining both resources until reset/module lifetime.
+        // Unmapping either one while dRDE may still dereference it is worse
+        // than leaking this single bounded lab allocation.
+        if let Some(source) = self.split_source.take() {
+            core::mem::forget(source);
+        }
+        if let Some(context) = self.sampler_context.take() {
+            core::mem::forget(context);
+        }
     }
 }
 
@@ -235,15 +273,13 @@ impl Drop for G15RdeObserverRuntime {
 /// Only the final physical page of that exact allocation is additionally
 /// aliased through accelerator-shared range 7. No live path constructs this
 /// object in E763.
-#[allow(dead_code)]
 pub(crate) struct G15RdeSplitSourceBacking {
     main: fw::types::GpuArray<u8>,
     trailer_alias: mmu::G15SharedBank1Mapping,
 }
 
-#[allow(dead_code)]
 impl G15RdeSplitSourceBacking {
-    pub(crate) fn new_compile_only(
+    pub(crate) fn new_for_observer(
         range5: &mut alloc::DefaultAllocator,
         bank1: &mmu::G15SharedBank1,
         notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
@@ -336,6 +372,58 @@ impl G15RdeSplitSourceBacking {
 
     pub(crate) fn dma_sync_for_device(&self) -> Result {
         self.main.dma_sync_for_device()
+    }
+
+    /// Seed the exact trailer bytes on the common backing and return the
+    /// source/state records that must be installed atomically into q22's
+    /// retained source/state arrays before START.
+    pub(crate) fn prepare_runtime_image(
+        &mut self,
+        period: u32,
+    ) -> Result<(
+        fw::initdata::raw::G15PerfCtrSourceRecord,
+        fw::initdata::raw::G15PerfCtrSamplerState,
+    )> {
+        self.main.dma_sync_for_cpu()?;
+        let (state, trailer) = self.state_and_trailer().ok_or(EINVAL)?;
+        let bytes = self.main.as_mut_slice();
+        let off = 0x4000usize;
+        if bytes.len() < off + core::mem::size_of::<fw::initdata::raw::G15PerfCtrSamplerTrailer>() {
+            let _ = self.main.dma_sync_for_device();
+            return Err(EINVAL);
+        }
+        // SAFETY: `main` is one CPU-mapped 0x8000 allocation and `off` is the
+        // exact page-aligned trailer subrange proven above.
+        unsafe {
+            core::ptr::write_unaligned(
+                bytes.as_mut_ptr().add(off).cast::<fw::initdata::raw::G15PerfCtrSamplerTrailer>(),
+                trailer,
+            );
+        }
+        self.main.dma_sync_for_device()?;
+        let source = self.source_record(period).ok_or(EINVAL)?;
+        Ok((source, state))
+    }
+
+    /// Read the same physical source/trailer backing used by dRDE. The
+    /// ownership transition covers both GPU aliases because they name one GEM.
+    pub(crate) fn sample_fields_synced(&self) -> Result<(u64, u64, u64)> {
+        self.main.dma_sync_for_cpu()?;
+        let bytes = self.main.as_slice();
+        let read_u64 = |off: usize| -> Option<u64> {
+            let raw: [u8; 8] = bytes.get(off..off + 8)?.try_into().ok()?;
+            Some(u64::from_le_bytes(raw))
+        };
+        let result = match (read_u64(0x4000 + 0x30), read_u64(0)) {
+            (Some(cursor), Some(header)) => Ok((self.main_fwva(), cursor, header)),
+            _ => Err(EINVAL),
+        };
+        let dev_result = self.main.dma_sync_for_device();
+        match (result, dev_result) {
+            (Ok(v), Ok(())) => Ok(v),
+            (Err(e), _) => Err(e),
+            (_, Err(e)) => Err(e),
+        }
     }
 }
 
@@ -3391,24 +3479,33 @@ impl GpuManager::ver {
     pub(crate) fn g15_prepare_rde_observer_context(
         &self,
         vm: &mmu::Vm,
+        mut split_source: G15RdeSplitSourceBacking,
     ) -> Result<G15RdeObserverRuntime> {
         #[ver(G != G15)]
         {
-            let _ = vm;
+            let _ = (vm, split_source);
             return Err(EINVAL);
         }
 
         #[ver(G == G15)]
         {
+            let (source, state) = split_source.prepare_runtime_image(
+                fw::initdata::raw::G15_PERFCTR_TIMER_NCLOCK_REFERENCE_PERIOD,
+            )?;
             let sampler_context = self.uat.bind_g15_sampler_context(vm)?;
             let context_id = sampler_context.slot();
             let perfctr_runtime = self.initdata.g15_perfctr_runtime.clone();
+            if !perfctr_runtime.install_rde0_split_source(source, state) {
+                return Err(EINVAL);
+            }
             if !perfctr_runtime.patch_source_context(context_id) {
+                perfctr_runtime.restore_bootstrap_rde0(context_id);
                 return Err(EINVAL);
             }
             Ok(G15RdeObserverRuntime {
-                sampler_context,
+                sampler_context: Some(sampler_context),
                 perfctr_runtime,
+                split_source: Some(split_source),
             })
         }
     }

@@ -2097,10 +2097,14 @@ impl QueueJob::ver {
     /// Bind E739's exact sampler selector-0 context to this QueueJob's VM.
     /// The owner stays in QueueJob through scheduler execution and completion
     /// teardown. This method does not send a sampler DeviceControl message.
-    fn prepare_g15_rde_observer_runtime(&mut self, gpu: &gpu::GpuManager::ver) -> Result {
+    fn prepare_g15_rde_observer_runtime(
+        &mut self,
+        gpu: &gpu::GpuManager::ver,
+        split_source: gpu::G15RdeSplitSourceBacking,
+    ) -> Result {
         #[ver(G != G15)]
         {
-            let _ = gpu;
+            let _ = (gpu, split_source);
             return Err(EINVAL);
         }
 
@@ -2111,7 +2115,7 @@ impl QueueJob::ver {
             }
             let vm = self.vm_bind.vm();
             self._g15_rde_observer_runtime =
-                Some(gpu.g15_prepare_rde_observer_context(&vm)?);
+                Some(gpu.g15_prepare_rde_observer_context(&vm, split_source)?);
             Ok(())
         }
     }
@@ -2458,7 +2462,12 @@ impl sched::JobImpl for QueueJob::ver {
             // This also validates that E736/E737's streaming-DMA backings were
             // published with the exact selector/context image before firmware
             // can consume them.
-            match gpu.g15_perfctr_state_snapshot_synced() {
+            match job
+                ._g15_rde_observer_runtime
+                .as_ref()
+                .ok_or(EIO)?
+                .state_snapshot_synced()
+            {
                 Ok(s) => {
                     dev_info!(
                         job.dev.as_ref(),
@@ -2564,7 +2573,12 @@ impl sched::JobImpl for QueueJob::ver {
             }
 
             if stop_result.is_ok() {
-                match gpu.g15_perfctr_state_snapshot_synced() {
+                match job
+                    ._g15_rde_observer_runtime
+                    .as_ref()
+                    .ok_or(EIO)?
+                    .state_snapshot_synced()
+                {
                     Ok(s) => {
                         let valid = s.completion_cursor < 0x4000
                             && s.completion_cursor != s.source_buffer_addr_908

@@ -3446,7 +3446,12 @@ impl G15PerfCtrRuntimeState {
         }
     }
 
-    fn state_snapshot(&self) -> Option<G15PerfCtrStateSnapshot> {
+    fn state_snapshot_with_sample(
+        &self,
+        source_base: u64,
+        completion_cursor: u64,
+        first_header: u64,
+    ) -> Option<G15PerfCtrStateSnapshot> {
         let sources = self.backings.sources.as_slice();
         if sources.len() < 2 {
             return None;
@@ -3455,10 +3460,6 @@ impl G15PerfCtrRuntimeState {
         let states = self.backings.states.as_slice();
         let off = 0x38usize;
         if states.len() < off + 0x38 {
-            return None;
-        }
-        let sbuf = self.backings.rde0_source_buffer.as_slice();
-        if sbuf.len() < 0x4000 + 0x38 {
             return None;
         }
         let read_u16 = |bytes: &[u8], off: usize| -> u16 {
@@ -3509,9 +3510,127 @@ impl G15PerfCtrRuntimeState {
             state_write_20: read_u64(states, off + 0x20),
             state_trailer20_28: read_u64(states, off + 0x28),
             state_trailer30_30: read_u64(states, off + 0x30),
-            completion_cursor: read_u64(sbuf, 0x4000 + 0x30),
-            first_header: read_u64(sbuf, 0),
+            completion_cursor,
+            first_header,
         })
+    }
+
+    fn install_rde0_split_source(
+        &mut self,
+        source: raw::G15PerfCtrSourceRecord,
+        state: raw::G15PerfCtrSamplerState,
+    ) -> bool {
+        if self.q22.with(|raw, _inner| raw.sampler_active_4030.0) != 0 {
+            return false;
+        }
+        let src_cpu = self.backings.sources.dma_sync_for_cpu().is_ok();
+        let state_cpu = self.backings.states.dma_sync_for_cpu().is_ok();
+        if !(src_cpu && state_cpu) {
+            if src_cpu { let _ = self.backings.sources.dma_sync_for_device(); }
+            if state_cpu { let _ = self.backings.states.dma_sync_for_device(); }
+            return false;
+        }
+        let ok = {
+            let sources = self.backings.sources.as_mut_slice();
+            let states = self.backings.states.as_mut_slice();
+            let off = 0x38usize;
+            if sources.len() < 2
+                || states.len() < off + core::mem::size_of::<raw::G15PerfCtrSamplerState>()
+            {
+                false
+            } else {
+                sources[1] = source;
+                // SAFETY: bounds above cover the exact repr(C) state at global
+                // sampler index 1; unaligned write avoids u8-slice alignment assumptions.
+                unsafe {
+                    core::ptr::write_unaligned(
+                        states.as_mut_ptr().add(off).cast::<raw::G15PerfCtrSamplerState>(),
+                        state,
+                    );
+                }
+                true
+            }
+        };
+        let src_dev = self.backings.sources.dma_sync_for_device().is_ok();
+        let state_dev = self.backings.states.dma_sync_for_device().is_ok();
+        ok && src_dev && state_dev
+    }
+
+    fn restore_bootstrap_rde0(&mut self, expected_id: u32) -> bool {
+        if self.q22.with(|raw, _inner| raw.sampler_active_4030.0) != 0 {
+            return false;
+        }
+        let legacy_base = u64::from(self.backings.rde0_source_buffer.weak_pointer());
+        let Some(legacy_trailer) = legacy_base.checked_add(0x4000) else {
+            return false;
+        };
+        let Some((state, trailer)) = raw::G15PerfCtrSamplerState::ordinary_rde_one(
+            1, 0x4000, legacy_base, legacy_trailer, 0,
+        ) else {
+            return false;
+        };
+        let Some(source) = raw::G15PerfCtrSourceRecord::rde0_observer(
+            legacy_base, raw::G15_PERFCTR_TIMER_NCLOCK_REFERENCE_PERIOD,
+        ) else {
+            return false;
+        };
+
+        let src_cpu = self.backings.sources.dma_sync_for_cpu().is_ok();
+        let state_cpu = self.backings.states.dma_sync_for_cpu().is_ok();
+        let sample_cpu = self.backings.rde0_source_buffer.dma_sync_for_cpu().is_ok();
+        if !(src_cpu && state_cpu && sample_cpu) {
+            if src_cpu { let _ = self.backings.sources.dma_sync_for_device(); }
+            if state_cpu { let _ = self.backings.states.dma_sync_for_device(); }
+            if sample_cpu { let _ = self.backings.rde0_source_buffer.dma_sync_for_device(); }
+            return false;
+        }
+
+        let wrote = {
+            let sources = self.backings.sources.as_mut_slice();
+            let states = self.backings.states.as_mut_slice();
+            let sample = self.backings.rde0_source_buffer.as_mut_slice();
+            let off = 0x38usize;
+            if sources.len() < 2
+                || states.len() < off + core::mem::size_of::<raw::G15PerfCtrSamplerState>()
+                || sample.len() < 0x4000 + core::mem::size_of::<raw::G15PerfCtrSamplerTrailer>()
+            {
+                false
+            } else {
+                sources[1] = source;
+                // SAFETY: all exact repr(C) destinations are fully bounds-checked.
+                unsafe {
+                    core::ptr::write_unaligned(
+                        states.as_mut_ptr().add(off).cast::<raw::G15PerfCtrSamplerState>(), state,
+                    );
+                    core::ptr::write_unaligned(
+                        sample
+                            .as_mut_ptr()
+                            .add(0x4000)
+                            .cast::<raw::G15PerfCtrSamplerTrailer>(),
+                        trailer,
+                    );
+                }
+                true
+            }
+        };
+        let src_dev = self.backings.sources.dma_sync_for_device().is_ok();
+        let state_dev = self.backings.states.dma_sync_for_device().is_ok();
+        let sample_dev = self.backings.rde0_source_buffer.dma_sync_for_device().is_ok();
+        if !(wrote && src_dev && state_dev && sample_dev) {
+            return false;
+        }
+
+        let expected: u16 = match expected_id.try_into() {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        self.q22.with_mut(|raw, _inner| {
+            if raw.sampler_source_context_id_4064 == expected {
+                raw.sampler_source_context_id_4064 = 0;
+                raw.sampler_source_context_zero_4066 = 0;
+            }
+        });
+        true
     }
 
     fn clear_source_context(&mut self, expected_id: u32) {
@@ -3556,6 +3675,18 @@ impl G15PerfCtrRuntimeHandle {
         self.0.lock().patch_source_context(context_id)
     }
 
+    pub(crate) fn install_rde0_split_source(
+        &self,
+        source: raw::G15PerfCtrSourceRecord,
+        state: raw::G15PerfCtrSamplerState,
+    ) -> bool {
+        self.0.lock().install_rde0_split_source(source, state)
+    }
+
+    pub(crate) fn restore_bootstrap_rde0(&self, expected_id: u32) -> bool {
+        self.0.lock().restore_bootstrap_rde0(expected_id)
+    }
+
     pub(crate) fn clear_source_context(&self, expected_id: u32) {
         self.0.lock().clear_source_context(expected_id)
     }
@@ -3579,11 +3710,48 @@ impl G15PerfCtrRuntimeHandle {
             if sample_cpu { let _ = guard.backings.rde0_source_buffer.dma_sync_for_device(); }
             return None;
         }
-        let snapshot = guard.state_snapshot();
+        let sample = guard.backings.rde0_source_buffer.as_slice();
+        let read_u64 = |off: usize| -> Option<u64> {
+            let raw: [u8; 8] = sample.get(off..off + 8)?.try_into().ok()?;
+            Some(u64::from_le_bytes(raw))
+        };
+        let base = u64::from(guard.backings.rde0_source_buffer.weak_pointer());
+        let snapshot = match (read_u64(0x4000 + 0x30), read_u64(0)) {
+            (Some(cursor), Some(header)) => guard.state_snapshot_with_sample(base, cursor, header),
+            _ => None,
+        };
         let src_dev = guard.backings.sources.dma_sync_for_device().is_ok();
         let state_dev = guard.backings.states.dma_sync_for_device().is_ok();
         let sample_dev = guard.backings.rde0_source_buffer.dma_sync_for_device().is_ok();
         if !(src_dev && state_dev && sample_dev) {
+            return None;
+        }
+        snapshot
+    }
+
+    /// E764 selected-observer variant: the caller has already synchronized and
+    /// sampled the Queue-owned split source backing. Only the retained global
+    /// source/state arrays need a DMA ownership round-trip here.
+    pub(crate) fn state_snapshot_synced_external(
+        &self,
+        source_base: u64,
+        completion_cursor: u64,
+        first_header: u64,
+    ) -> Option<G15PerfCtrStateSnapshot> {
+        let guard = self.0.lock();
+        let src_cpu = guard.backings.sources.dma_sync_for_cpu().is_ok();
+        let state_cpu = guard.backings.states.dma_sync_for_cpu().is_ok();
+        if !(src_cpu && state_cpu) {
+            if src_cpu { let _ = guard.backings.sources.dma_sync_for_device(); }
+            if state_cpu { let _ = guard.backings.states.dma_sync_for_device(); }
+            return None;
+        }
+        let snapshot = guard.state_snapshot_with_sample(
+            source_base, completion_cursor, first_header,
+        );
+        let src_dev = guard.backings.sources.dma_sync_for_device().is_ok();
+        let state_dev = guard.backings.states.dma_sync_for_device().is_ok();
+        if !(src_dev && state_dev) {
             return None;
         }
         snapshot
