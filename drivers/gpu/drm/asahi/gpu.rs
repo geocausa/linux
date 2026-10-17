@@ -266,13 +266,17 @@ pub(crate) struct G15RdeRawRingSnapshot {
     pub(crate) raw_header: [u64; 12],
 }
 
-/// E792 raw final-page metadata for one APS core. These are the exact two
-/// authored fields of the 16-byte descriptor; the six padding bytes are not
-/// elevated into semantics.
+/// E795 exact 16-byte final-page control descriptor for one APS core.
+/// E794 closes the runtime consumer contract: +0x08 is the consumer-page
+/// cursor, +0x0c the producer-page cursor, and +0x0f the resynchronization
+/// flag. Preserve both raw qwords so the remaining bytes are not guessed.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct G15ApsControlSnapshot {
     pub(crate) packed_addr_size: u64,
-    pub(crate) pages_minus_one: u16,
+    pub(crate) runtime_tail_raw: u64,
+    pub(crate) consumer_page: u16,
+    pub(crate) producer_page: u16,
+    pub(crate) resync_flag: u8,
 }
 
 /// E792 bounded post-STOP snapshot for the all-active J615 APS_USC source.
@@ -1125,8 +1129,8 @@ impl G15ApsSplitSourceBacking {
         fw::initdata::raw::G15PerfCtrSamplerState::aps_usc_core(self.subbuffer_size, fwva)
     }
 
-    /// E792 copies the exact all-active J615 APS data region and the ten
-    /// descriptor fields from the final control page. DMA ownership is returned
+    /// E795 copies the exact all-active J615 APS data region and all ten
+    /// complete 16-byte descriptors from the final control page. DMA ownership is returned
     /// to the device before the snapshot escapes this method.
     fn raw_snapshot_synced(
         &self,
@@ -1164,14 +1168,17 @@ impl G15ApsSplitSourceBacking {
                     .ok_or(EINVAL)?
                     .try_into()
                     .map_err(|_| EINVAL)?;
-                let pages_raw: [u8; 2] = bytes
-                    .get(off + 8..off + 10)
+                let tail_raw: [u8; 8] = bytes
+                    .get(off + 8..off + 16)
                     .ok_or(EINVAL)?
                     .try_into()
                     .map_err(|_| EINVAL)?;
                 control[core] = G15ApsControlSnapshot {
                     packed_addr_size: u64::from_le_bytes(packed_raw),
-                    pages_minus_one: u16::from_le_bytes(pages_raw),
+                    runtime_tail_raw: u64::from_le_bytes(tail_raw),
+                    consumer_page: u16::from_le_bytes([tail_raw[0], tail_raw[1]]),
+                    producer_page: u16::from_le_bytes([tail_raw[4], tail_raw[5]]),
+                    resync_flag: tail_raw[7],
                 };
                 core += 1;
             }
