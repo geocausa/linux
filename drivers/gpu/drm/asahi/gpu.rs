@@ -275,6 +275,15 @@ pub(crate) struct G15RdeCsInvocationStatsSnapshot {
     pub(crate) first_values_valid: u32,
     pub(crate) first_values: [u64; 16],
     pub(crate) first_lanes: [[u32; 4]; 4],
+    pub(crate) first_timestamp: u64,
+    pub(crate) last_timestamp: u64,
+    pub(crate) positive_valid: u32,
+    pub(crate) positive_ordinals: [u16; 16],
+    pub(crate) positive_offsets: [u16; 16],
+    pub(crate) positive_timestamps: [u64; 16],
+    pub(crate) positive_aux: [u64; 16],
+    pub(crate) positive_values: [u64; 16],
+    pub(crate) positive_lanes: [[u32; 4]; 16],
 }
 
 impl G15RdeObserverRuntime {
@@ -783,12 +792,28 @@ impl G15RdeSplitSourceBacking {
             let mut first_values_valid = 0u32;
             let mut first_values = [0u64; 16];
             let mut first_lanes = [[0u32; 4]; 4];
+            let mut first_timestamp = 0u64;
+            let mut last_timestamp = 0u64;
+            let mut positive_valid = 0u32;
+            let mut positive_ordinals = [0u16; 16];
+            let mut positive_offsets = [0u16; 16];
+            let mut positive_timestamps = [0u64; 16];
+            let mut positive_aux = [0u64; 16];
+            let mut positive_values = [0u64; 16];
+            let mut positive_lanes = [[0u32; 4]; 16];
 
             let mut consume_record = |record_start: usize, record_size: usize| -> Result {
+                let record_ordinal = framed_records;
                 framed_records = framed_records.checked_add(1).ok_or(EOVERFLOW)?;
                 if record_size < PAYLOAD_OFFSET + PAYLOAD_BYTES || record_size & 7 != 0 {
                     return Ok(());
                 }
+                let timestamp = read_u64(record_start + 0x10).ok_or(EINVAL)?;
+                let aux = read_u64(record_start + 0x18).ok_or(EINVAL)?;
+                if payload_records == 0 {
+                    first_timestamp = timestamp;
+                }
+                last_timestamp = timestamp;
                 let lanes = [
                     read_u32(record_start + PAYLOAD_OFFSET).ok_or(EINVAL)?,
                     read_u32(record_start + PAYLOAD_OFFSET + 4).ok_or(EINVAL)?,
@@ -801,6 +826,18 @@ impl G15RdeSplitSourceBacking {
                 payload_records = payload_records.checked_add(1).ok_or(EOVERFLOW)?;
                 if value != 0 {
                     nonzero_records = nonzero_records.checked_add(1).ok_or(EOVERFLOW)?;
+                    if (positive_valid as usize) < positive_values.len() {
+                        let idx = positive_valid as usize;
+                        positive_ordinals[idx] =
+                            u16::try_from(record_ordinal).map_err(|_| EOVERFLOW)?;
+                        positive_offsets[idx] =
+                            u16::try_from(record_start).map_err(|_| EOVERFLOW)?;
+                        positive_timestamps[idx] = timestamp;
+                        positive_aux[idx] = aux;
+                        positive_values[idx] = value;
+                        positive_lanes[idx] = lanes;
+                        positive_valid += 1;
+                    }
                 }
                 let mut lane = 0;
                 while lane < lane_nonzero.len() {
@@ -855,6 +892,15 @@ impl G15RdeSplitSourceBacking {
                 first_values_valid,
                 first_values,
                 first_lanes,
+                first_timestamp,
+                last_timestamp,
+                positive_valid,
+                positive_ordinals,
+                positive_offsets,
+                positive_timestamps,
+                positive_aux,
+                positive_values,
+                positive_lanes,
             })
         })();
 

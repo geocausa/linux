@@ -2728,6 +2728,29 @@ impl sched::JobImpl for QueueJob::ver {
                             stats.first_lanes[3][0], stats.first_lanes[3][1],
                             stats.first_lanes[3][2], stats.first_lanes[3][3],
                         );
+                        dev_info!(
+                            job.dev.as_ref(),
+                            "T8122 G15 E778 CSInvocation timeline first_ts={:#x} last_ts={:#x} positives={}/{}\n",
+                            stats.first_timestamp, stats.last_timestamp,
+                            stats.positive_valid, stats.nonzero_records,
+                        );
+                        let mut positive = 0usize;
+                        while positive < stats.positive_valid as usize {
+                            dev_info!(
+                                job.dev.as_ref(),
+                                "T8122 G15 E778 positive[{}] record={} off={:#x} ts={:#x} aux={:#x} value={} lanes={:08x},{:08x},{:08x},{:08x}\n",
+                                positive, stats.positive_ordinals[positive],
+                                stats.positive_offsets[positive],
+                                stats.positive_timestamps[positive],
+                                stats.positive_aux[positive],
+                                stats.positive_values[positive],
+                                stats.positive_lanes[positive][0],
+                                stats.positive_lanes[positive][1],
+                                stats.positive_lanes[positive][2],
+                                stats.positive_lanes[positive][3],
+                            );
+                            positive += 1;
+                        }
                     }
                     Err(err) => dev_err!(
                         job.dev.as_ref(),
