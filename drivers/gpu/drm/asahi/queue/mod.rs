@@ -2777,6 +2777,22 @@ impl sched::JobImpl for QueueJob::ver {
                 }
             }
 
+            // E792: while the APS owner/context are still retained, copy the
+            // ten exact 0x4000 core rings plus final-page control descriptors
+            // into host-owned memory. Do not spend the retained-owner lifetime
+            // printing the dump: rollback follows immediately, and raw bytes
+            // are emitted only after GPU-visible ownership is restored. A
+            // pending +0x4094 blocks CPU ownership and fails closed into E791's
+            // reset-only recovery path.
+            let aps_snapshot_result = if stop_result.is_ok() {
+                job._g15_aps_observer_runtime
+                    .as_ref()
+                    .ok_or(EIO)?
+                    .raw_snapshot_synced()
+            } else {
+                Err(EIO)
+            };
+
             // E790: only after successful STOP completion may APS ownership
             // be rolled back. Refuse a false-success result if firmware still
             // reports active or +0x4094 coordination pending. Taking and
@@ -2838,10 +2854,72 @@ impl sched::JobImpl for QueueJob::ver {
                 ),
             }
 
+            // The heavy fixed-size E792 dump happens only after successful APS
+            // rollback has replaced all special source/state pointers. The
+            // snapshot itself is host-owned, so logging it cannot extend GPU
+            // mapping lifetime or delay a fail-closed reset decision.
+            if aps_rollback_result.is_ok() {
+                match &aps_snapshot_result {
+                    Ok(raw) => {
+                        dev_info!(
+                            job.dev.as_ref(),
+                            "T8122 G15 E792 APS raw base={:#018x} control={:#018x} alias={:#018x} rings={} ring_size={:#x} q22 active={:#x} coord={:#x} ctx={} masks={:#018x}/{:#018x} bytes={:#x}\n",
+                            raw.source_base, raw.control_page_fwva,
+                            raw.control_page_alias_fwva, raw.ring_count, raw.ring_size,
+                            raw.q22_active, raw.q22_coord, raw.q22_context,
+                            raw.q22_mask_4068, raw.q22_mask_4070, raw.rings.len(),
+                        );
+                        let mut core = 0usize;
+                        while core < raw.control.len() {
+                            let state = raw.state_runtime[core];
+                            let ctl = raw.control[core];
+                            dev_info!(
+                                job.dev.as_ref(),
+                                "T8122 G15 E792 core={} state18={:#018x} write20={:#018x} state28={:#018x} state30={:#018x} ctl00={:#018x} ctl08={:#06x}\n",
+                                core, state[0], state[1], state[2], state[3],
+                                ctl.packed_addr_size, ctl.pages_minus_one,
+                            );
+                            core += 1;
+                        }
+
+                        let bytes = &raw.rings[..];
+                        let mut off = 0usize;
+                        while off < bytes.len() {
+                            let read_u64 = |rel: usize| -> Result<u64> {
+                                let start = off.checked_add(rel).ok_or(EOVERFLOW)?;
+                                let end = start.checked_add(8).ok_or(EOVERFLOW)?;
+                                let v: [u8; 8] = bytes
+                                    .get(start..end)
+                                    .ok_or(EINVAL)?
+                                    .try_into()
+                                    .map_err(|_| EINVAL)?;
+                                Ok(u64::from_le_bytes(v))
+                            };
+                            dev_info!(
+                                job.dev.as_ref(),
+                                "T8122 G15 E792 raw off={:#06x} q={:016x},{:016x},{:016x},{:016x},{:016x},{:016x},{:016x},{:016x}\n",
+                                off, read_u64(0)?, read_u64(8)?, read_u64(16)?,
+                                read_u64(24)?, read_u64(32)?, read_u64(40)?,
+                                read_u64(48)?, read_u64(56)?,
+                            );
+                            off += 64;
+                        }
+                    }
+                    Err(err) => dev_err!(
+                        job.dev.as_ref(),
+                        "T8122 G15 E792 APS raw snapshot failed closed for QueueJob {}: {:?}\n",
+                        job.id, err
+                    ),
+                }
+            }
+
             if let Err(err) = compute_result {
                 return Err(err);
             }
             if let Err(err) = stop_result {
+                return Err(err);
+            }
+            if let Err(err) = aps_snapshot_result {
                 return Err(err);
             }
             if let Err(err) = aps_rollback_result {

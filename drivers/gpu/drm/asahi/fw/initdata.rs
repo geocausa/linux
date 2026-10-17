@@ -4221,6 +4221,52 @@ impl G15PerfCtrRuntimeHandle {
         ))
     }
 
+    /// E792 observation-only snapshot of the firmware-owned runtime qwords in
+    /// J615's ten APS sampler states. The read is permitted only at the exact
+    /// inactive/non-pending boundary established by E791; the state backing is
+    /// returned to device ownership before this method returns. No semantic
+    /// interpretation beyond the already-typed +0x18/+0x20/+0x28/+0x30 fields
+    /// is imposed here.
+    pub(crate) fn aps_state_runtime_snapshot_synced(&self) -> Option<[[u64; 4]; 10]> {
+        let guard = self.0.lock();
+        let safe = guard.q22.with(|raw, _inner| {
+            raw.sampler_active_4030.0 == 0
+                && raw.aps_usc_coord_4094 == 0
+                && raw.aps_active_core_count_401e == 10
+                && raw.aps_usc_source_index_4098.0 == 5
+        });
+        if !safe || guard.backings.states.dma_sync_for_cpu().is_err() {
+            return None;
+        }
+
+        let result = (|| {
+            let bytes = guard.backings.states.as_slice();
+            let mut out = [[0u64; 4]; 10];
+            let state_size = core::mem::size_of::<raw::G15PerfCtrSamplerState>();
+            let mut core = 0usize;
+            while core < out.len() {
+                let base = (3usize.checked_add(core)?)
+                    .checked_mul(state_size)?;
+                let read_u64 = |field: usize| -> Option<u64> {
+                    let off = base.checked_add(field)?;
+                    let raw: [u8; 8] = bytes.get(off..off + 8)?.try_into().ok()?;
+                    Some(u64::from_le_bytes(raw))
+                };
+                out[core] = [
+                    read_u64(0x18)?,
+                    read_u64(0x20)?,
+                    read_u64(0x28)?,
+                    read_u64(0x30)?,
+                ];
+                core += 1;
+            }
+            Some(out)
+        })();
+
+        let dev_ok = guard.backings.states.dma_sync_for_device().is_ok();
+        if dev_ok { result } else { None }
+    }
+
     pub(crate) fn with_q22<Ret>(&self, callback: impl FnOnce(&raw::G15Q22Shared) -> Ret) -> Ret {
         let guard = self.0.lock();
         guard.q22.with(|raw, _inner| callback(raw))

@@ -266,6 +266,35 @@ pub(crate) struct G15RdeRawRingSnapshot {
     pub(crate) raw_header: [u64; 12],
 }
 
+/// E792 raw final-page metadata for one APS core. These are the exact two
+/// authored fields of the 16-byte descriptor; the six padding bytes are not
+/// elevated into semantics.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct G15ApsControlSnapshot {
+    pub(crate) packed_addr_size: u64,
+    pub(crate) pages_minus_one: u16,
+}
+
+/// E792 bounded post-STOP snapshot for the all-active J615 APS_USC source.
+/// `rings` is exactly ten concatenated 0x4000 raw core rings (0x28000 bytes).
+/// No record format, producer scheme, or counter payload parser is assumed.
+pub(crate) struct G15ApsRawSnapshot {
+    pub(crate) source_base: u64,
+    pub(crate) control_page_fwva: u64,
+    pub(crate) control_page_alias_fwva: u64,
+    pub(crate) ring_count: u32,
+    pub(crate) ring_size: u32,
+    pub(crate) q22_active: u32,
+    pub(crate) q22_coord: u8,
+    pub(crate) q22_context: u16,
+    pub(crate) q22_mask_4068: u64,
+    pub(crate) q22_mask_4070: u64,
+    /// Per core: state +0x18, +0x20, +0x28, +0x30.
+    pub(crate) state_runtime: [[u64; 4]; 10],
+    pub(crate) control: [G15ApsControlSnapshot; 10],
+    pub(crate) rings: KVVec<u8>,
+}
+
 /// E770 bounded implementation of the exact userspace magic-to-magic framing
 /// scan. Offsets are byte offsets within the 0x4000 hardware ring.
 #[derive(Debug, Clone, Copy)]
@@ -1095,9 +1124,108 @@ impl G15ApsSplitSourceBacking {
         )?;
         fw::initdata::raw::G15PerfCtrSamplerState::aps_usc_core(self.subbuffer_size, fwva)
     }
+
+    /// E792 copies the exact all-active J615 APS data region and the ten
+    /// descriptor fields from the final control page. DMA ownership is returned
+    /// to the device before the snapshot escapes this method.
+    fn raw_snapshot_synced(
+        &self,
+        q22: (u32, u8, u16, u64, u64),
+        state_runtime: [[u64; 4]; 10],
+    ) -> Result<G15ApsRawSnapshot> {
+        const CORE_COUNT: usize = 10;
+        const RING_SIZE: usize = 0x4000;
+        const DATA_SIZE: usize = CORE_COUNT * RING_SIZE;
+        const CONTROL_BYTES: usize = CORE_COUNT * 0x10;
+
+        if self.sampler_count as usize != CORE_COUNT
+            || self.subbuffer_size as usize != RING_SIZE
+            || self.source_size() as usize != DATA_SIZE + 0x4000
+        {
+            return Err(EINVAL);
+        }
+
+        self.main.dma_sync_for_cpu()?;
+        let result = (|| -> Result<G15ApsRawSnapshot> {
+            let bytes = self.main.as_slice();
+            if bytes.len() < DATA_SIZE + CONTROL_BYTES {
+                return Err(EINVAL);
+            }
+
+            let mut rings = KVVec::new();
+            rings.extend_from_slice(&bytes[..DATA_SIZE], GFP_KERNEL)?;
+
+            let mut control = [G15ApsControlSnapshot::default(); CORE_COUNT];
+            let mut core = 0usize;
+            while core < CORE_COUNT {
+                let off = DATA_SIZE + core * 0x10;
+                let packed_raw: [u8; 8] = bytes
+                    .get(off..off + 8)
+                    .ok_or(EINVAL)?
+                    .try_into()
+                    .map_err(|_| EINVAL)?;
+                let pages_raw: [u8; 2] = bytes
+                    .get(off + 8..off + 10)
+                    .ok_or(EINVAL)?
+                    .try_into()
+                    .map_err(|_| EINVAL)?;
+                control[core] = G15ApsControlSnapshot {
+                    packed_addr_size: u64::from_le_bytes(packed_raw),
+                    pages_minus_one: u16::from_le_bytes(pages_raw),
+                };
+                core += 1;
+            }
+
+            let source_base = self.main.gpu_va().get();
+            let control_page_fwva = source_base
+                .checked_add(DATA_SIZE as u64)
+                .ok_or(EOVERFLOW)?;
+            Ok(G15ApsRawSnapshot {
+                source_base,
+                control_page_fwva,
+                control_page_alias_fwva: self.trailer_alias.iova(),
+                ring_count: CORE_COUNT as u32,
+                ring_size: RING_SIZE as u32,
+                q22_active: q22.0,
+                q22_coord: q22.1,
+                q22_context: q22.2,
+                q22_mask_4068: q22.3,
+                q22_mask_4070: q22.4,
+                state_runtime,
+                control,
+                rings,
+            })
+        })();
+
+        let dev_result = self.main.dma_sync_for_device();
+        match (result, dev_result) {
+            (Ok(v), Ok(())) => Ok(v),
+            (Err(e), _) => Err(e),
+            (_, Err(e)) => Err(e),
+        }
+    }
 }
 
 impl G15ApsObserverRuntime {
+    /// E792 observation-only post-STOP readout. Firmware must be fully inactive
+    /// and APS coordination settled before CPU ownership is taken. A pending
+    /// +0x4094 therefore returns EBUSY and leaves every GPU-visible owner intact
+    /// for E791's reset-only recovery path.
+    pub(crate) fn raw_snapshot_synced(&self) -> Result<G15ApsRawSnapshot> {
+        let q22 = self.lifecycle_state();
+        if q22.0 != 0 || q22.1 != 0 {
+            return Err(EBUSY);
+        }
+        let states = self
+            .perfctr_runtime
+            .aps_state_runtime_snapshot_synced()
+            .ok_or(EIO)?;
+        self.split_source
+            .as_ref()
+            .ok_or(EIO)?
+            .raw_snapshot_synced(q22, states)
+    }
+
     fn fail_closed(&mut self) {
         // A pending +0x4094 idle-coordination state or any ownership failure
         // means firmware may still retain source-5 state. Preserve mappings and
