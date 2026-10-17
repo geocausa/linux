@@ -227,6 +227,118 @@ impl Drop for G15RdeObserverRuntime {
     }
 }
 
+/// E762 compile-only owner for Apple's ordinary-RDE command-3 split mapping.
+///
+/// One physical 0x8000 GEM backing is visible through two GPU mappings: the
+/// complete object in the selected client VM's range-5/PPL308 aperture and
+/// only its final 0x4000 page through the accelerator-shared range-7 aperture.
+/// No live path constructs this object in E762.
+#[allow(dead_code)]
+pub(crate) struct G15RdeSplitSourceBacking {
+    object: gem::ObjectRef,
+    main_mapping: mmu::KernelMapping,
+    trailer_alias: mmu::G15SharedBank1Mapping,
+}
+
+#[allow(dead_code)]
+impl G15RdeSplitSourceBacking {
+    pub(crate) fn new_compile_only(
+        dev: &AsahiDevice,
+        vm: &mmu::Vm,
+        bank1: &mmu::G15SharedBank1,
+        notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
+    ) -> Result<Self> {
+        let mut object = gem::new_kernel_object(dev, 0x8000)?;
+        let main_mapping = object.map_range_into_range(
+            vm,
+            0..0x8000,
+            mmu::G15_GART_RANGE5_PPL308,
+            mmu::UAT_PGSZ as u64,
+            mmu::PROT_G15_RANGE5_PPL308,
+            false,
+        )?;
+        let trailer_alias = bank1.map_subrange(
+            mmu::G15SharedBank1Aperture::Range7,
+            &object.gem,
+            0x4000,
+            0x4000,
+            mmu::UAT_PGSZ as u64,
+            mmu::PROT_G15_RANGE7_FW,
+            false,
+            notifier,
+            mmu::G15MappingNotifyMode::Immediate,
+        )?;
+
+        let main_fwva = main_mapping.iova();
+        let trailer_fwva = main_fwva.checked_add(0x4000).ok_or(EOVERFLOW)?;
+        let alias_fwva = trailer_alias.iova();
+        if main_fwva & 0x3fff != 0
+            || trailer_fwva & 0x3fff != 0
+            || alias_fwva & 0x3fff != 0
+            || !mmu::G15_GART_RANGE5_PPL308.contains(&main_fwva)
+            || !mmu::G15_GART_RANGE7.contains(&alias_fwva)
+        {
+            return Err(EINVAL);
+        }
+
+        // Both GPU mappings now own the same streaming-DMA object. Retake CPU
+        // ownership once, initialize the complete physical backing, then return
+        // it once to the device domain so both aliases observe identical bytes.
+        object.dma_sync_for_cpu()?;
+        object.vmap()?.memset(0);
+        object.dma_sync_for_device()?;
+
+        Ok(Self {
+            object,
+            main_mapping,
+            trailer_alias,
+        })
+    }
+
+    pub(crate) fn main_fwva(&self) -> u64 {
+        self.main_mapping.iova()
+    }
+
+    pub(crate) fn trailer_alias_fwva(&self) -> u64 {
+        self.trailer_alias.iova()
+    }
+
+    pub(crate) fn state_and_trailer(
+        &self,
+    ) -> Option<(
+        fw::initdata::raw::G15PerfCtrSamplerState,
+        fw::initdata::raw::G15PerfCtrSamplerTrailer,
+    )> {
+        let main = self.main_fwva();
+        fw::initdata::raw::G15PerfCtrSamplerState::ordinary_rde_one(
+            1,
+            0x4000,
+            main,
+            main.checked_add(0x4000)?,
+            0,
+        )
+    }
+
+    pub(crate) fn source_record(
+        &self,
+        period: u32,
+    ) -> Option<fw::initdata::raw::G15PerfCtrSourceRecord> {
+        fw::initdata::raw::G15PerfCtrSourceRecord::rde0_observer_split(
+            self.main_fwva(),
+            self.trailer_alias_fwva(),
+            period,
+        )
+    }
+
+    pub(crate) fn dma_sync_for_cpu(&self) -> Result {
+        self.object.dma_sync_for_cpu()
+    }
+
+    pub(crate) fn dma_sync_for_device(&self) -> Result {
+        self.object.dma_sync_for_device()
+    }
+}
+
 impl Drop for OpGuard {
     fn drop(&mut self) {
         self.0.end_op();

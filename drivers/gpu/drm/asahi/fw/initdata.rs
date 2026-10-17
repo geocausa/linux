@@ -651,6 +651,22 @@ pub(crate) mod raw {
                 U64(G15_PERFCTR_RDE0_DCDM_FIRST_SELECTED_ENTRY);
             Some(source)
         }
+
+        /// E762 compile-only exact command-3 source record with Apple's split
+        /// mapping ownership: the main source/trailer address is range-5, while
+        /// +0x918 carries the separate range-7 alias of only the final page.
+        pub(crate) fn rde0_observer_split(
+            source_buffer_fw_addr: u64,
+            trailer_alias_fw_addr: u64,
+            period: u32,
+        ) -> Option<Self> {
+            if trailer_alias_fw_addr == 0 || trailer_alias_fw_addr & 0x3fff != 0 {
+                return None;
+            }
+            let mut source = Self::rde0_observer(source_buffer_fw_addr, period)?;
+            source.source_buffer_trailer_map_918 = U64(trailer_alias_fw_addr);
+            Some(source)
+        }
     }
     const _: [(); 0x900] = [(); core::mem::offset_of!(G15PerfCtrSourceRecord, source_buffer_size_900)];
     const _: [(); 0x918] = [(); core::mem::offset_of!(G15PerfCtrSourceRecord, source_buffer_trailer_map_918)];

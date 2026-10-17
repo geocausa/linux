@@ -2173,8 +2173,38 @@ impl G15SharedBank1 {
         notifier: Option<Arc<Mutex<G15MappingNotifier>>>,
         notify_mode: G15MappingNotifyMode,
     ) -> Result<G15SharedBank1Mapping> {
+        self.map_subrange(
+            aperture,
+            gem,
+            0,
+            size,
+            alignment,
+            prot,
+            guard,
+            notifier,
+            notify_mode,
+        )
+    }
+
+    /// Map a page-aligned subrange of one GEM object into the accelerator-shared
+    /// bank-1 aperture. E762 needs this only to model Apple's second alias of the
+    /// final 0x4000 page of the ordinary RDE source buffer; the full 0x8000
+    /// object remains independently mapped in the client bank-0 range-5 VM.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn map_subrange(
+        &self,
+        aperture: G15SharedBank1Aperture,
+        gem: &gem::Object,
+        object_offset: usize,
+        size: usize,
+        alignment: u64,
+        prot: Prot,
+        guard: bool,
+        notifier: Option<Arc<Mutex<G15MappingNotifier>>>,
+        notify_mode: G15MappingNotifyMode,
+    ) -> Result<G15SharedBank1Mapping> {
         let sgt = gem.owned_sg_table()?;
-        if size & UAT_PGMSK != 0 {
+        if (object_offset | size) & UAT_PGMSK != 0 {
             return Err(EINVAL);
         }
         let reserve_size = size + if guard { UAT_PGSZ } else { 0 };
@@ -2237,16 +2267,24 @@ impl G15SharedBank1 {
 
         let mut iova = base;
         let mut left = size;
+        let mut skip = object_offset;
         for range in sgt.iter() {
             if left == 0 {
                 break;
             }
-            let addr = range.dma_address() as usize;
-            let len = (range.dma_len() as usize).min(left);
+            let range_addr = range.dma_address() as usize;
+            let range_len = range.dma_len() as usize;
+            if skip >= range_len {
+                skip -= range_len;
+                continue;
+            }
+            let addr = range_addr.checked_add(skip).ok_or(EOVERFLOW)?;
+            let len = (range_len - skip).min(left);
+            skip = 0;
             if (addr | len | iova as usize) & UAT_PGMSK != 0 {
                 dev_err!(
                     self.dev.as_ref(),
-                    "MMU: G15 shared bank-1 mapping is not page-aligned\n"
+                    "MMU: G15 shared bank-1 subrange mapping is not page-aligned\n"
                 );
                 return Err(EINVAL);
             }
@@ -2264,10 +2302,10 @@ impl G15SharedBank1 {
             iova += len as u64;
             left -= len;
         }
-        if left != 0 {
+        if skip != 0 || left != 0 {
             dev_err!(
                 self.dev.as_ref(),
-                "MMU: G15 shared bank-1 SG table is shorter than mapping\n"
+                "MMU: G15 shared bank-1 SG table is shorter than requested subrange\n"
             );
             return Err(EINVAL);
         }
@@ -2285,9 +2323,6 @@ impl G15SharedBank1 {
             };
             if publish {
                 if let Err(err) = q22.publish_mapping(base, &phys_pages) {
-                    // Native G15 ordering is secure-GART map first, q22 publication
-                    // second. If publication fails, undo the just-created PTEs before
-                    // allowing the VA reservation to be released/reused.
                     let rollback = {
                         let mut shared = self.inner.lock();
                         match shared.g15_shared_bank1.as_mut() {
