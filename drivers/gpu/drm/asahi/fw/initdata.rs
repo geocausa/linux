@@ -71,7 +71,7 @@ pub(crate) mod raw {
     #[derive(Debug)]
     #[repr(C)]
     pub(crate) struct G15SharedStatus {
-        pub(crate) host_flags: u32,                // +0x00
+        pub(crate) host_flags: AtomicU32,          // +0x00
         pub(crate) banner_guard: AtomicU32,        // +0x04
         pub(crate) unk_08: u32,                    // +0x08
         pub(crate) busy: AtomicU32,                // +0x0c

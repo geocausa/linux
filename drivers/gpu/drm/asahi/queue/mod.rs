@@ -2423,12 +2423,32 @@ impl sched::JobImpl for QueueJob::ver {
                 Err(err) => return Err(err),
             }
 
-            // START waits for the exact DeviceControl completion before any
-            // Compute ring mutation.
-            gpu.g15_perfctr_start()?;
+            // E756: leave firmware tracing at stock zero through boot and
+            // open only the exact sampler class-6 window immediately around
+            // the already-bounded START -> one Compute -> STOP transaction.
+            if let Err(err) = gpu.g15_set_sampler_trace_mask(1 << 6) {
+                // The q21 store precedes DeviceControl. If transport failed
+                // after that store, make one bounded best-effort request to
+                // restore Apple's stock zero trace mask before returning.
+                let _ = gpu.g15_set_sampler_trace_mask(0);
+                return Err(err);
+            }
             dev_info!(
                 job.dev.as_ref(),
-                "T8122 G15 E743 RDE observer START complete for QueueJob {}\n",
+                "T8122 G15 E756 late sampler trace window requested (mask=0x40) for QueueJob {}\n",
+                job.id
+            );
+
+            // START waits for the exact DeviceControl completion before any
+            // Compute ring mutation. If START itself fails, close the late
+            // trace window before returning.
+            if let Err(err) = gpu.g15_perfctr_start() {
+                let _ = gpu.g15_set_sampler_trace_mask(0);
+                return Err(err);
+            }
+            dev_info!(
+                job.dev.as_ref(),
+                "T8122 G15 E756 RDE observer START complete for QueueJob {}\n",
                 job.id
             );
             if let Ok((cmd, active, ctx, mask68, mask70)) = gpu.g15_perfctr_q22_sampler_state() {
@@ -2517,10 +2537,31 @@ impl sched::JobImpl for QueueJob::ver {
                 }
             }
 
+            // Close the Apple-exact runtime trace window regardless of the
+            // Compute/STOP result. This is DeviceControl 0x13 again with q21
+            // restored to zero; no sampler/RDE configuration changes here.
+            let trace_disable_result = gpu.g15_set_sampler_trace_mask(0);
+            match &trace_disable_result {
+                Ok(()) => dev_info!(
+                    job.dev.as_ref(),
+                    "T8122 G15 E756 late sampler trace window closed for QueueJob {}\n",
+                    job.id
+                ),
+                Err(err) => dev_err!(
+                    job.dev.as_ref(),
+                    "T8122 G15 E756 late sampler trace disable failed for QueueJob {}: {:?}\n",
+                    job.id,
+                    err
+                ),
+            }
+
             if let Err(err) = compute_result {
                 return Err(err);
             }
             if let Err(err) = stop_result {
+                return Err(err);
+            }
+            if let Err(err) = trace_disable_result {
                 return Err(err);
             }
             return Ok(Some(Fence::from_fence(&job.fence)));

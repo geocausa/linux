@@ -619,6 +619,18 @@ impl KTraceChannel {
     /// Polls for new KTrace messages on this ring.
     pub(crate) fn poll(&mut self) {
         while let Some(msg) = self.ch.get(0) {
+            // E756: surface only the sampler control/deferred-arm markers used
+            // by the late trace window. The firmware trace mask itself remains
+            // zero outside the bounded observer transaction.
+            let id = ((msg.channel as u16) << 8) | msg.code as u16;
+            if matches!(id, 0x60c | 0x60d | 0x610 | 0x612 | 0x613 | 0x618) {
+                dev_info!(
+                    self.dev.as_ref(),
+                    "T8122 G15 E756 KTrace id=0x{:04x} {:?}\n",
+                    id,
+                    msg
+                );
+            }
             cls_dev_dbg!(KTraceCh, self.dev, "KTrace: {:?}\n", msg);
         }
     }

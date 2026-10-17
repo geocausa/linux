@@ -1160,7 +1160,7 @@ impl GpuManager::ver {
                     && raw.gpu_keepalive_off_mode_threshold_override_df5.0 == 0
                     && raw.soft_fault_settings_df9.0 == 1
             }) && mgr.initdata.g15_q21.with(|raw, _inner| {
-                raw.host_flags == 0
+                raw.host_flags.load(Ordering::Relaxed) == 0
                     && raw.banner_guard.load(Ordering::Relaxed) == 1
                     && raw.busy.load(Ordering::Relaxed) == 0
                     && raw.firmware_ready.load(Ordering::Relaxed) == 0
@@ -2714,7 +2714,15 @@ impl GpuManager::ver {
                 let rtk = guard.as_mut().as_pin_mut().ok_or(ENODEV)?;
                 rtk.send_message(EP_DOORBELL, MSG_TX_DOORBELL | DOORBELL_DEVCTRL)?;
             }
-            txch.device_control.wait_for(token)
+            txch.device_control.wait_for(token)?;
+
+            // Opcode 0x13 marks the firmware-side host configuration dirty;
+            // the exact refresh itself is deferred to firmware scheduling.
+            // Keep this finite and tiny: it is not evidence by itself (0x613
+            // remains the proof that bit 6 became active before START), but it
+            // avoids racing START immediately against the dirty-bit handoff.
+            fsleep(Delta::from_millis(2));
+            Ok(())
         }
     }
 
@@ -3142,6 +3150,56 @@ impl GpuManager::ver {
             };
             let expected = if start { 4 } else { 5 };
             if tag != expected {
+                return Err(EIO);
+            }
+
+            let mut txch = self.tx_channels.lock();
+            let token = txch.device_control.send(&dc);
+            {
+                let mut guard = self.rtkit.lock();
+                let mut rtk = guard.as_mut().as_pin_mut().ok_or(ENODEV)?;
+                if !rtk.as_mut().has_endpoint(EP_DOORBELL) {
+                    return Err(ENODEV);
+                }
+                rtk.send_message(EP_DOORBELL, MSG_TX_DOORBELL | DOORBELL_DEVCTRL)?;
+            }
+            txch.device_control.wait_for(token)
+        }
+    }
+
+    /// E756: update the exact G15 firmware trace mask using Apple's runtime
+    /// ForceConfigSnapshot sequence. q21 stays zero through boot; callers may
+    /// request only sampler/KTrace class 6 (bit 6), or zero to close the window.
+    ///
+    /// Exact 23J220 AGXArmFirmware::submitCmdFirmwareForceConfigSnapshot()
+    /// zero-fills a 0x38 DeviceControl entry, writes opcode 0x13, submits it,
+    /// and waits when requested. Firmware opcode 0x13 marks the host config
+    /// dirty so the next config refresh copies q21 host_flags into e89c.
+    pub(crate) fn g15_set_sampler_trace_mask(&self, mask: u32) -> Result {
+        #[ver(G != G15)]
+        {
+            let _ = mask;
+            return Err(EINVAL);
+        }
+        #[ver(G == G15)]
+        {
+            if mask & !(1 << 6) != 0 {
+                return Err(EINVAL);
+            }
+
+            self.initdata.g15_q21.with(|raw, _inner| {
+                raw.host_flags.store(mask, Ordering::Release);
+            });
+            // Publish q21 before the DeviceControl command can ask firmware to
+            // snapshot it. q21 itself is shared/coherent; this is the ordering
+            // edge matching Apple's host store -> command sequence.
+            mem::sync();
+
+            let dc = fw::channels::DeviceControlMsg::ver::Unk13(Default::default());
+            let tag = unsafe {
+                core::ptr::read_unaligned(core::ptr::addr_of!(dc).cast::<u32>())
+            };
+            if tag != 0x13 {
                 return Err(EIO);
             }
 

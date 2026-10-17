@@ -1563,7 +1563,7 @@ impl<'a> InitDataBuilder::ver<'a> {
         let g15_q21 = self.alloc.shared.new_object(
             Default::default(),
             |_inner| raw::G15SharedStatus {
-                host_flags: 0,
+                host_flags: AtomicU32::new(0),
                 banner_guard: AtomicU32::new(1),
                 unk_08: 0,
                 busy: AtomicU32::new(0),
