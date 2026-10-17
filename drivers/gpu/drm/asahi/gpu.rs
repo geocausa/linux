@@ -237,6 +237,17 @@ pub(crate) struct G15RdeRawRingSnapshot {
     pub(crate) raw_header: [u64; 12],
 }
 
+/// E770 bounded implementation of the exact userspace magic-to-magic framing
+/// scan. Offsets are byte offsets within the 0x4000 hardware ring.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct G15RdeMagicScanSnapshot {
+    pub(crate) magic_count: u32,
+    pub(crate) magic_offsets: [u16; 16],
+    pub(crate) first_record_size: u32,
+    pub(crate) record_qwords_valid: u32,
+    pub(crate) first_record_qwords: [u64; 32],
+}
+
 impl G15RdeObserverRuntime {
     /// Take one inactive-boundary snapshot from the exact selected split
     /// source backing while source/state/q22 metadata is synchronized through
@@ -257,6 +268,16 @@ impl G15RdeObserverRuntime {
     /// attempt to decode counter payloads.
     pub(crate) fn raw_ring_snapshot_synced(&self) -> Result<G15RdeRawRingSnapshot> {
         self.split_source.as_ref().ok_or(EIO)?.raw_ring_snapshot_synced()
+    }
+
+
+    /// E770: use the exact G15 sentinel to recover bounded record framing
+    /// after STOP without decoding or mutating ring contents.
+    pub(crate) fn magic_scan_snapshot_synced(&self) -> Result<G15RdeMagicScanSnapshot> {
+        self.split_source
+            .as_ref()
+            .ok_or(EIO)?
+            .magic_scan_snapshot_synced()
     }
 }
 
@@ -478,6 +499,79 @@ impl G15RdeSplitSourceBacking {
                 producer_offset,
                 producer_in_ring,
                 raw_header,
+            })
+        })();
+
+        let dev_result = self.main.dma_sync_for_device();
+        match (result, dev_result) {
+            (Ok(v), Ok(())) => Ok(v),
+            (Err(e), _) => Err(e),
+            (_, Err(e)) => Err(e),
+        }
+    }
+
+    /// E770 exact framing scan. The Apple consumer advances one qword at a
+    /// time until `HasMagicToken()` succeeds, then defines sample size by the
+    /// modular distance to the next token. Keep output bounded even if the
+    /// ring contains many samples.
+    pub(crate) fn magic_scan_snapshot_synced(&self) -> Result<G15RdeMagicScanSnapshot> {
+        const RING_SIZE: usize = 0x4000;
+        const MAGIC: u64 = 0xfeed_cba9_8765_4321;
+
+        self.main.dma_sync_for_cpu()?;
+        let bytes = self.main.as_slice();
+        let read_u64 = |off: usize| -> Option<u64> {
+            let raw: [u8; 8] = bytes.get(off..off + 8)?.try_into().ok()?;
+            Some(u64::from_le_bytes(raw))
+        };
+
+        let result = (|| {
+            if bytes.len() < RING_SIZE {
+                return Err(EINVAL);
+            }
+            let mut magic_offsets = [0u16; 16];
+            let mut magic_count = 0u32;
+            let mut off = 0usize;
+            while off < RING_SIZE {
+                if read_u64(off).ok_or(EINVAL)? == MAGIC {
+                    if (magic_count as usize) < magic_offsets.len() {
+                        magic_offsets[magic_count as usize] =
+                            u16::try_from(off).map_err(|_| EOVERFLOW)?;
+                    }
+                    magic_count = magic_count.checked_add(1).ok_or(EOVERFLOW)?;
+                }
+                off += 8;
+            }
+
+            let mut first_record_size = 0u32;
+            let mut record_qwords_valid = 0u32;
+            let mut first_record_qwords = [0u64; 32];
+            if magic_count >= 2 {
+                let first = magic_offsets[0] as usize;
+                let second = magic_offsets[1] as usize;
+                if second <= first {
+                    return Err(EINVAL);
+                }
+                let size = second - first;
+                if size < 0x60 || size & 7 != 0 {
+                    return Err(EINVAL);
+                }
+                first_record_size = u32::try_from(size).map_err(|_| EOVERFLOW)?;
+                let qwords = core::cmp::min(size / 8, first_record_qwords.len());
+                let mut i = 0usize;
+                while i < qwords {
+                    first_record_qwords[i] = read_u64(first + i * 8).ok_or(EINVAL)?;
+                    i += 1;
+                }
+                record_qwords_valid = u32::try_from(qwords).map_err(|_| EOVERFLOW)?;
+            }
+
+            Ok(G15RdeMagicScanSnapshot {
+                magic_count,
+                magic_offsets,
+                first_record_size,
+                record_qwords_valid,
+                first_record_qwords,
             })
         })();
 

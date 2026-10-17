@@ -2635,6 +2635,62 @@ impl sched::JobImpl for QueueJob::ver {
                         err
                     ),
                 }
+                match job
+                    ._g15_rde_observer_runtime
+                    .as_ref()
+                    .ok_or(EIO)?
+                    .magic_scan_snapshot_synced()
+                {
+                    Ok(scan) => {
+                        dev_info!(
+                            job.dev.as_ref(),
+                            "T8122 G15 E770 magic count={} first_record={:#x} qwords={} offsets0..7={:#x},{:#x},{:#x},{:#x},{:#x},{:#x},{:#x},{:#x}\n",
+                            scan.magic_count, scan.first_record_size,
+                            scan.record_qwords_valid, scan.magic_offsets[0],
+                            scan.magic_offsets[1], scan.magic_offsets[2],
+                            scan.magic_offsets[3], scan.magic_offsets[4],
+                            scan.magic_offsets[5], scan.magic_offsets[6],
+                            scan.magic_offsets[7],
+                        );
+                        dev_info!(
+                            job.dev.as_ref(),
+                            "T8122 G15 E770 offsets8..15={:#x},{:#x},{:#x},{:#x},{:#x},{:#x},{:#x},{:#x}\n",
+                            scan.magic_offsets[8], scan.magic_offsets[9],
+                            scan.magic_offsets[10], scan.magic_offsets[11],
+                            scan.magic_offsets[12], scan.magic_offsets[13],
+                            scan.magic_offsets[14], scan.magic_offsets[15],
+                        );
+                        dev_info!(
+                            job.dev.as_ref(),
+                            "T8122 G15 E770 rec q0..15={:016x},{:016x},{:016x},{:016x},{:016x},{:016x},{:016x},{:016x},{:016x},{:016x},{:016x},{:016x},{:016x},{:016x},{:016x},{:016x}\n",
+                            scan.first_record_qwords[0], scan.first_record_qwords[1],
+                            scan.first_record_qwords[2], scan.first_record_qwords[3],
+                            scan.first_record_qwords[4], scan.first_record_qwords[5],
+                            scan.first_record_qwords[6], scan.first_record_qwords[7],
+                            scan.first_record_qwords[8], scan.first_record_qwords[9],
+                            scan.first_record_qwords[10], scan.first_record_qwords[11],
+                            scan.first_record_qwords[12], scan.first_record_qwords[13],
+                            scan.first_record_qwords[14], scan.first_record_qwords[15],
+                        );
+                        dev_info!(
+                            job.dev.as_ref(),
+                            "T8122 G15 E770 rec q16..31={:016x},{:016x},{:016x},{:016x},{:016x},{:016x},{:016x},{:016x},{:016x},{:016x},{:016x},{:016x},{:016x},{:016x},{:016x},{:016x}\n",
+                            scan.first_record_qwords[16], scan.first_record_qwords[17],
+                            scan.first_record_qwords[18], scan.first_record_qwords[19],
+                            scan.first_record_qwords[20], scan.first_record_qwords[21],
+                            scan.first_record_qwords[22], scan.first_record_qwords[23],
+                            scan.first_record_qwords[24], scan.first_record_qwords[25],
+                            scan.first_record_qwords[26], scan.first_record_qwords[27],
+                            scan.first_record_qwords[28], scan.first_record_qwords[29],
+                            scan.first_record_qwords[30], scan.first_record_qwords[31],
+                        );
+                    }
+                    Err(err) => dev_err!(
+                        job.dev.as_ref(),
+                        "T8122 G15 E770 synchronized magic framing scan failed: {:?}\n",
+                        err
+                    ),
+                }
             }
 
             // Close the Apple-exact runtime trace window regardless of the
