@@ -576,6 +576,43 @@ pub(crate) mod raw {
             })
         }
 
+        /// E783 compile-only source-type-5 image after Apple's command-3
+        /// source-buffer transaction, while counter selection and START remain
+        /// unreachable.  The main source buffer is client/range-5; +0x918 is
+        /// the range-7 alias of only the final 0x4000 physical page.
+        pub(crate) fn aps_usc_buffer_attached(
+            sampler_count: u32,
+            source_buffer_size: u64,
+            source_buffer_fw_addr: u64,
+            trailer_alias_fw_addr: u64,
+        ) -> Option<Self> {
+            if sampler_count == 0
+                || source_buffer_size < 0x8000
+                || source_buffer_size & 0x3fff != 0
+                || source_buffer_fw_addr == 0
+                || source_buffer_fw_addr & 0x3fff != 0
+                || trailer_alias_fw_addr == 0
+                || trailer_alias_fw_addr & 0x3fff != 0
+            {
+                return None;
+            }
+            let trailer_fw_addr = source_buffer_fw_addr
+                .checked_add(source_buffer_size.checked_sub(0x4000)?)?;
+            Some(Self {
+                source_type_00: U32(5),
+                source_flags_04: U32(0x20),
+                source_name_08: Array::new([b'A', b'P', b'S', b'_', b'U', b'S', b'C', 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+                sampler_count_18: U32(sampler_count),
+                sampler_state_base_1c: U32(3),
+                source_buffer_size_900: U64(source_buffer_size),
+                source_buffer_addr_908: U64(source_buffer_fw_addr),
+                source_buffer_trailer_addr_910: U64(trailer_fw_addr),
+                source_buffer_trailer_map_918: U64(trailer_alias_fw_addr),
+                // Deliberately leave selection_mask_dc/runtime_active_d8 zero.
+                ..Default::default()
+            })
+        }
+
         /// Exact ordinary RDE_0 source record after the command-3 source-buffer
         /// transaction, but before any counter selection/trigger activation.
         ///
@@ -722,6 +759,41 @@ pub(crate) mod raw {
     default_zeroed!(G15PerfCtrSamplerTrailer);
     const _: [(); 0x40] = [(); core::mem::size_of::<G15PerfCtrSamplerTrailer>()];
     const _: [(); 0x30] = [(); core::mem::offset_of!(G15PerfCtrSamplerTrailer, completion_cursor_30)];
+
+
+    /// Exact 16-byte Gen15 APS_USC per-core descriptor written into the final
+    /// source-buffer control page by SourceAPSImpl/allocateSubBufferStateList.
+    #[derive(Debug)]
+    #[repr(C)]
+    pub(crate) struct G15PerfCtrApsControlEntry {
+        pub(crate) packed_addr_size_00: U64,
+        pub(crate) pages_minus_one_08: u16,
+        pub(crate) pad_0a: Pad<0x06>,
+    }
+    default_zeroed!(G15PerfCtrApsControlEntry);
+    const _: [(); 0x10] = [(); core::mem::size_of::<G15PerfCtrApsControlEntry>()];
+
+    impl G15PerfCtrApsControlEntry {
+        pub(crate) fn new(subbuffer_fw_addr: u64, subbuffer_size: u64) -> Option<Self> {
+            if subbuffer_fw_addr == 0
+                || subbuffer_fw_addr & 0x3fff != 0
+                || subbuffer_size == 0
+                || subbuffer_size > 0x0fff_c000
+                || subbuffer_size & 0x3fff != 0
+            {
+                return None;
+            }
+            let pages = subbuffer_size >> 12;
+            let pages_minus_one = u16::try_from(pages.checked_sub(1)?).ok()?;
+            Some(Self {
+                packed_addr_size_00: U64(
+                    (subbuffer_fw_addr & 0xffff_ffff_ffff_c000) | (subbuffer_size >> 14),
+                ),
+                pages_minus_one_08: pages_minus_one,
+                pad_0a: Default::default(),
+            })
+        }
+    }
 
     /// Exact 23J220 ordinary-RDE host control command 5.
     ///
@@ -1025,6 +1097,30 @@ pub(crate) mod raw {
     }
 
     impl G15PerfCtrSamplerState {
+        /// Construct one exact Gen15 source-type-5 core state. The type-5 host
+        /// branch writes only +0x00/+0x04/+0x06/+0x08/+0x10 at attachment time;
+        /// later firmware owns the remaining runtime fields.
+        pub(crate) fn aps_usc_core(subbuffer_size: u64, subbuffer_fw_addr: u64) -> Option<Self> {
+            if subbuffer_size == 0
+                || subbuffer_size > 0x0fff_c000
+                || subbuffer_size & 0x3fff != 0
+                || subbuffer_fw_addr == 0
+                || subbuffer_fw_addr & 0x3fff != 0
+            {
+                return None;
+            }
+            Some(Self {
+                source_index_00: U32(5),
+                // Exact Base_init() defaults copied by the Gen15 type-5 branch.
+                source_config_04: 0xffff,
+                source_config_06: 0,
+                pad_07: 0,
+                subbuffer_size_08: U64(subbuffer_size),
+                subbuffer_base_10: U64(subbuffer_fw_addr),
+                ..Default::default()
+            })
+        }
+
         /// Construct the exact one-sampler ordinary RDE state/trailer seed
         /// recovered from 23J220 Base::allocateSubBufferStateList().
         ///

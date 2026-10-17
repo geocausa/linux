@@ -913,6 +913,148 @@ impl G15RdeSplitSourceBacking {
     }
 }
 
+
+/// E783 compile-only owner for Apple's source-type-5 APS_USC source buffer.
+///
+/// Exact 23J220 userspace rounds the all-active source image to one 0x4000
+/// data ring per active core plus one final 0x4000 control page. The main
+/// allocation is client/range-5; the final physical page is additionally
+/// aliased through shared range 7 and published as source +0x918. This type is
+/// deliberately not constructed by any live path yet.
+pub(crate) struct G15ApsSplitSourceBacking {
+    main: fw::types::GpuArray<u8>,
+    trailer_alias: mmu::G15SharedBank1Mapping,
+    sampler_count: u32,
+    subbuffer_size: u64,
+}
+
+impl G15ApsSplitSourceBacking {
+    pub(crate) fn new_compile_only(
+        range5: &mut alloc::DefaultAllocator,
+        bank1: &mmu::G15SharedBank1,
+        notifier: Option<Arc<Mutex<mmu::G15MappingNotifier>>>,
+        active_core_count: u32,
+        total_core_count: u32,
+    ) -> Result<Self> {
+        // E782 closes only the exact all-active J615 geometry. A partial/FSTP
+        // topology uses Apple's two-page tail and remains outside this slice.
+        if active_core_count == 0 || active_core_count != total_core_count {
+            return Err(EINVAL);
+        }
+        let subbuffer_size = 0x4000u64;
+        let data_size = u64::from(active_core_count)
+            .checked_mul(subbuffer_size)
+            .ok_or(EOVERFLOW)?;
+        let source_size = data_size.checked_add(0x4000).ok_or(EOVERFLOW)?;
+        let source_size_usize = usize::try_from(source_size).map_err(|_| EOVERFLOW)?;
+        let trailer_offset = usize::try_from(data_size).map_err(|_| EOVERFLOW)?;
+
+        let main_alloc = range5.alloc_generic::<u8>(source_size_usize, mmu::UAT_PGSZ, None)?;
+        main_alloc.dma_sync_for_cpu()?;
+        let mut main = fw::types::GpuArray::<u8>::empty(main_alloc, source_size_usize)?;
+        let main_fwva = main.gpu_va().get();
+        let trailer_fwva = main_fwva.checked_add(data_size).ok_or(EOVERFLOW)?;
+        if main_fwva & 0x3fff != 0
+            || trailer_fwva & 0x3fff != 0
+            || !mmu::G15_GART_RANGE5_PPL308.contains(&main_fwva)
+        {
+            return Err(EINVAL);
+        }
+
+        let (trailer_object, trailer_object_offset) =
+            main.backing_object_range(trailer_offset, 0x4000)?;
+        let trailer_alias = bank1.map_subrange(
+            mmu::G15SharedBank1Aperture::Range7,
+            &trailer_object.gem,
+            trailer_object_offset,
+            0x4000,
+            mmu::UAT_PGSZ as u64,
+            mmu::PROT_G15_RANGE7_FW,
+            false,
+            notifier,
+            mmu::G15MappingNotifyMode::Immediate,
+        )?;
+        if trailer_alias.iova() & 0x3fff != 0
+            || !mmu::G15_GART_RANGE7.contains(&trailer_alias.iova())
+        {
+            return Err(EINVAL);
+        }
+
+        // Seed the exact 16-byte per-core control descriptors into the final
+        // physical page before publishing either mapping to the firmware.
+        let bytes = main.as_mut_slice();
+        for core in 0..active_core_count {
+            let subbuffer_fwva = main_fwva
+                .checked_add(
+                    u64::from(core)
+                        .checked_mul(subbuffer_size)
+                        .ok_or(EOVERFLOW)?,
+                )
+                .ok_or(EOVERFLOW)?;
+            let entry = fw::initdata::raw::G15PerfCtrApsControlEntry::new(
+                subbuffer_fwva,
+                subbuffer_size,
+            )
+            .ok_or(EINVAL)?;
+            let core_off = usize::try_from(core)
+                .map_err(|_| EOVERFLOW)?
+                .checked_mul(0x10)
+                .ok_or(EOVERFLOW)?;
+            let off = trailer_offset.checked_add(core_off).ok_or(EOVERFLOW)?;
+            if bytes.len()
+                < off + core::mem::size_of::<fw::initdata::raw::G15PerfCtrApsControlEntry>()
+            {
+                return Err(EINVAL);
+            }
+            // SAFETY: `main` is CPU-mapped, the final page is inside it, and
+            // E782 proves each normal J615 APS core owns one 16-byte slot.
+            unsafe {
+                core::ptr::write_unaligned(
+                    bytes
+                        .as_mut_ptr()
+                        .add(off)
+                        .cast::<fw::initdata::raw::G15PerfCtrApsControlEntry>(),
+                    entry,
+                );
+            }
+        }
+        main.dma_sync_for_device()?;
+
+        Ok(Self {
+            main,
+            trailer_alias,
+            sampler_count: active_core_count,
+            subbuffer_size,
+        })
+    }
+
+    pub(crate) fn source_size(&self) -> u64 {
+        u64::from(self.sampler_count) * self.subbuffer_size + 0x4000
+    }
+
+    pub(crate) fn source_record(&self) -> Option<fw::initdata::raw::G15PerfCtrSourceRecord> {
+        fw::initdata::raw::G15PerfCtrSourceRecord::aps_usc_buffer_attached(
+            self.sampler_count,
+            self.source_size(),
+            self.main.gpu_va().get(),
+            self.trailer_alias.iova(),
+        )
+    }
+
+    pub(crate) fn state_for_core(
+        &self,
+        core_index: u32,
+    ) -> Option<fw::initdata::raw::G15PerfCtrSamplerState> {
+        if core_index >= self.sampler_count {
+            return None;
+        }
+        let fwva = self.main.gpu_va().get().checked_add(
+            u64::from(core_index).checked_mul(self.subbuffer_size)?,
+        )?;
+        fw::initdata::raw::G15PerfCtrSamplerState::aps_usc_core(self.subbuffer_size, fwva)
+    }
+}
+
 impl Drop for OpGuard {
     fn drop(&mut self) {
         self.0.end_op();
