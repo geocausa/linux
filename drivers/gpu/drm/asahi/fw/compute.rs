@@ -546,6 +546,253 @@ impl G15StockEmptySkuStream {
     }
 }
 
+
+/// Exact sampler-active/performance-counter J615 G15 Compute SKU geometry.
+///
+/// E757 closes the same Apple feature predicate for both SKU and RegisterArray:
+/// active sampler state inserts a 0x14-byte signed type-4 packet before type-0xb
+/// and a 0x14-byte unsigned type-4 packet immediately after Compute WFI. The
+/// pre-round stream grows from 0x2b8 to 0x2e0 and therefore consumes the full
+/// existing 0x300-byte SKU slot.
+#[allow(dead_code)]
+pub(crate) const G15_PERFCTR_SKU_STREAM_SIZE: usize = 0x300;
+const G15_PERFCTR_SKU_PRE_ROUND_SIZE: usize = 0x2e0;
+const G15_PERFCTR_FEATURE_PACKET_SIZE: usize = 0x14;
+const G15_PERFCTR_PRE_PACKET_OFFSET: usize = 0x000;
+const G15_PERFCTR_TYPE0B_OFFSET: usize = 0x014;
+const G15_PERFCTR_START_TIMESTAMP_OFFSET: usize = 0x1d0;
+const G15_PERFCTR_WFI_OFFSET: usize = 0x20c;
+const G15_PERFCTR_POST_PACKET_OFFSET: usize = 0x210;
+const G15_PERFCTR_END_TIMESTAMP_OFFSET: usize = 0x224;
+const G15_PERFCTR_TYPE0C_OFFSET: usize = 0x260;
+const G15_PERFCTR_FINISH_OFFSET: usize = 0x2dc;
+const G15_PERFCTR_TYPE0C_BACKPOINTER_DELTA: u64 = 0x170;
+const G15_PERFCTR_TYPE0C_NEGATIVE_START: u32 = 0xffff_fda0;
+
+const _: [(); G15_PERFCTR_TYPE0B_OFFSET] =
+    [(); G15_PERFCTR_PRE_PACKET_OFFSET + G15_PERFCTR_FEATURE_PACKET_SIZE];
+const _: [(); G15_PERFCTR_START_TIMESTAMP_OFFSET] =
+    [(); G15_PERFCTR_TYPE0B_OFFSET + G15_SKU_TYPE0B_PACKET_SIZE];
+const _: [(); G15_PERFCTR_WFI_OFFSET] =
+    [(); G15_PERFCTR_START_TIMESTAMP_OFFSET + G15_SKU_TIMESTAMP_SIZE];
+const _: [(); G15_PERFCTR_POST_PACKET_OFFSET] = [(); G15_PERFCTR_WFI_OFFSET + 4];
+const _: [(); G15_PERFCTR_END_TIMESTAMP_OFFSET] =
+    [(); G15_PERFCTR_POST_PACKET_OFFSET + G15_PERFCTR_FEATURE_PACKET_SIZE];
+const _: [(); G15_PERFCTR_TYPE0C_OFFSET] =
+    [(); G15_PERFCTR_END_TIMESTAMP_OFFSET + G15_SKU_TIMESTAMP_SIZE];
+const _: [(); G15_PERFCTR_FINISH_OFFSET] =
+    [(); G15_PERFCTR_TYPE0C_OFFSET + G15_SKU_TYPE0C_PACKET_SIZE];
+const _: [(); G15_PERFCTR_SKU_PRE_ROUND_SIZE] = [(); G15_PERFCTR_FINISH_OFFSET + 4];
+const _: [(); G15_PERFCTR_SKU_STREAM_SIZE] = [(); G15_SKU_SLOT_STRIDE];
+
+/// Compile-only exact sampler-active Compute SKU image.
+///
+/// This helper deliberately has no backing-owner writer and no RunCompute
+/// consumer in E758. `raw_compute_a8` is descriptor +0x3e4; the bounded
+/// stock-empty observer passes zero, but keeping it explicit preserves the
+/// exact packet and RegisterArray value synthesis for later auditing.
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub(crate) struct G15PerfCounterSkuStream {
+    bytes: [u8; G15_PERFCTR_SKU_STREAM_SIZE],
+}
+
+#[allow(dead_code)]
+impl G15PerfCounterSkuStream {
+    fn write_feature_packet(
+        bytes: &mut [u8],
+        offset: usize,
+        opcode: u32,
+        input: &G15StockEmptySkuInputs,
+        raw_compute_a8: u32,
+    ) {
+        G15StockEmptySkuStream::put_u32(bytes, offset, opcode);
+        G15StockEmptySkuStream::put_u32(bytes, offset + 0x04, raw_compute_a8);
+        G15StockEmptySkuStream::put_u32(bytes, offset + 0x08, input.uuid);
+        G15StockEmptySkuStream::put_u64(bytes, offset + 0x0c, input.command_fwva);
+    }
+
+    pub(crate) fn new(input: G15StockEmptySkuInputs, raw_compute_a8: u32) -> Result<Self> {
+        if input.command_fwva == 0
+            || input.stream_fwva == 0
+            || input.firmware_state_fwva == 0
+            || input.channel_state_fwva == 0
+            || input.channel_command_region_base_fwva == 0
+            || input.event_control_fwva == 0
+            || input.page_pool_state_fwva == 0
+            || input.hwmetrics_fwva == 0
+            || input.fw_stamp_fwva == 0
+        {
+            return Err(EINVAL);
+        }
+
+        let mut bytes = [0u8; G15_PERFCTR_SKU_STREAM_SIZE];
+
+        // Exact signed type-4 packet. Its low six opcode bits are 4 and bit31
+        // is set, selecting RTKit-2419's 0x610 deferred ordinary-RDE arm path.
+        Self::write_feature_packet(
+            &mut bytes,
+            G15_PERFCTR_PRE_PACKET_OFFSET,
+            0x9000_0004,
+            &input,
+            raw_compute_a8,
+        );
+
+        // Type-0xb is byte-identical to stock-empty, shifted by one 0x14-byte
+        // feature record. The exact host still zeroes its complete 0x1b8-byte
+        // payload before filling these stock-empty sources.
+        G15StockEmptySkuStream::put_u32(&mut bytes, G15_PERFCTR_TYPE0B_OFFSET, 0x0000_000b);
+        let p = G15_PERFCTR_TYPE0B_OFFSET + 4;
+        G15StockEmptySkuStream::put_u64(
+            &mut bytes,
+            p + 0x10,
+            G15StockEmptySkuStream::add_addr(input.command_fwva, 0x20)?,
+        );
+        G15StockEmptySkuStream::put_u64(&mut bytes, p + 0x18, input.firmware_state_fwva);
+        G15StockEmptySkuStream::put_u64(&mut bytes, p + 0x20, input.channel_state_fwva);
+        G15StockEmptySkuStream::put_u32(&mut bytes, p + 0x28, input.context_id);
+        G15StockEmptySkuStream::put_u32(
+            &mut bytes,
+            p + 0x2c,
+            input.gart_soft_fault_enabled as u32,
+        );
+        G15StockEmptySkuStream::put_u32(&mut bytes, p + 0x30, input.state_sequence);
+        G15StockEmptySkuStream::put_u32(&mut bytes, p + 0x34, input.queue_event_sequence);
+        G15StockEmptySkuStream::put_u32(&mut bytes, p + 0x38, input.evctl_index);
+        G15StockEmptySkuStream::put_u64(
+            &mut bytes,
+            p + 0x40,
+            G15StockEmptySkuStream::add_addr(input.command_fwva, 0x76c)?,
+        );
+        G15StockEmptySkuStream::put_u32(&mut bytes, p + 0x4c, input.uuid);
+        G15StockEmptySkuStream::put_u64(&mut bytes, p + 0x158, input.page_pool_state_fwva);
+        G15StockEmptySkuStream::put_u64(&mut bytes, p + 0x170, input.hwmetrics_fwva);
+        bytes[p + 0x178] = input.accelerator_654_bit7 as u8;
+
+        let region0 = input.channel_command_region_base_fwva;
+        let region1 = G15StockEmptySkuStream::add_addr(region0, G15_J615_CL_SKU_REGION_STRIDE)?;
+        let region2 = G15StockEmptySkuStream::add_addr(region1, G15_J615_CL_SKU_REGION_STRIDE)?;
+        let region3 = G15StockEmptySkuStream::add_addr(region2, G15_J615_CL_SKU_MGPU_SPAN)?;
+        G15StockEmptySkuStream::put_u64(&mut bytes, p + 0x180, region0);
+        G15StockEmptySkuStream::put_u64(&mut bytes, p + 0x188, region1);
+        G15StockEmptySkuStream::put_u64(&mut bytes, p + 0x190, region2);
+        G15StockEmptySkuStream::put_u64(&mut bytes, p + 0x198, region3);
+        G15StockEmptySkuStream::put_u64(
+            &mut bytes,
+            p + 0x1a0,
+            G15StockEmptySkuStream::add_addr(input.command_fwva, 0x878)?,
+        );
+        G15StockEmptySkuStream::put_u64(&mut bytes, p + 0x1a8, input.command_counter);
+        G15StockEmptySkuStream::put_u64(
+            &mut bytes,
+            p + 0x1b0,
+            G15StockEmptySkuStream::add_addr(input.event_control_fwva, 0xa8)?,
+        );
+
+        G15StockEmptySkuStream::write_timestamp(
+            &mut bytes,
+            G15_PERFCTR_START_TIMESTAMP_OFFSET,
+            true,
+            &input,
+        )?;
+        G15StockEmptySkuStream::put_u32(&mut bytes, G15_PERFCTR_WFI_OFFSET, 1);
+
+        // Exact unsigned type-4 companion packet (bit31 clear -> 0x611 path).
+        Self::write_feature_packet(
+            &mut bytes,
+            G15_PERFCTR_POST_PACKET_OFFSET,
+            0x1000_0004,
+            &input,
+            raw_compute_a8,
+        );
+
+        G15StockEmptySkuStream::write_timestamp(
+            &mut bytes,
+            G15_PERFCTR_END_TIMESTAMP_OFFSET,
+            false,
+            &input,
+        )?;
+
+        // Exact type-0xc retirement packet with the feature-shifted backpointer
+        // and allocator bookkeeping. It points to type-0xb payload +0x158:
+        // stream + 0x14 feature + 4 opcode + 0x158 = stream + 0x170.
+        let c = G15_PERFCTR_TYPE0C_OFFSET;
+        G15StockEmptySkuStream::put_u32(&mut bytes, c, 0x0000_000c);
+        G15StockEmptySkuStream::put_u64(&mut bytes, c + 0x04, input.firmware_state_fwva);
+        G15StockEmptySkuStream::put_u64(&mut bytes, c + 0x0c, input.channel_state_fwva);
+        G15StockEmptySkuStream::put_u32(&mut bytes, c + 0x14, input.context_id);
+        G15StockEmptySkuStream::put_u64(
+            &mut bytes,
+            c + 0x18,
+            G15StockEmptySkuStream::add_addr(input.command_fwva, 0x76c)?,
+        );
+        G15StockEmptySkuStream::put_u32(&mut bytes, c + 0x24, input.uuid);
+        G15StockEmptySkuStream::put_u64(&mut bytes, c + 0x28, input.fw_stamp_fwva);
+        G15StockEmptySkuStream::put_u32(&mut bytes, c + 0x30, input.stamp_value);
+        G15StockEmptySkuStream::put_u64(
+            &mut bytes,
+            c + 0x58,
+            G15StockEmptySkuStream::add_addr(
+                input.stream_fwva,
+                G15_PERFCTR_TYPE0C_BACKPOINTER_DELTA,
+            )?,
+        );
+        G15StockEmptySkuStream::put_u32(
+            &mut bytes,
+            c + 0x60,
+            G15_PERFCTR_TYPE0C_NEGATIVE_START,
+        );
+        G15StockEmptySkuStream::put_u64(
+            &mut bytes,
+            c + 0x65,
+            G15StockEmptySkuStream::add_addr(input.command_fwva, 0x878)?,
+        );
+        G15StockEmptySkuStream::put_u64(
+            &mut bytes,
+            c + 0x6d,
+            G15StockEmptySkuStream::add_addr(input.command_fwva, 0x860)?,
+        );
+
+        G15StockEmptySkuStream::put_u32(&mut bytes, G15_PERFCTR_FINISH_OFFSET, 0x4000_0002);
+        // 0x2e0..0x2ff is exact 0x40-byte report-size alignment padding.
+        Ok(Self { bytes })
+    }
+
+    pub(crate) fn as_bytes(&self) -> &[u8; G15_PERFCTR_SKU_STREAM_SIZE] {
+        &self.bytes
+    }
+}
+
+/// Exact three-entry RegisterArray tail emitted under the same sampler-active
+/// feature predicate as `G15PerfCounterSkuStream`.
+///
+/// E757 proves the minimal/default sampler control word is 0x40, so bit 3 is
+/// clear and the secondary 0x1a430/0x1a438 pair is intentionally absent.
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
+pub(crate) struct G15PerfCounterRegisterTail {
+    shared_value: u64,
+}
+
+#[allow(dead_code)]
+impl G15PerfCounterRegisterTail {
+    pub(crate) fn new(raw_compute_a8: u32, uuid: u32) -> Self {
+        Self {
+            shared_value: ((raw_compute_a8 as u64) << 32) | uuid as u64,
+        }
+    }
+
+    pub(crate) fn shared_value(&self) -> u64 {
+        self.shared_value
+    }
+
+    pub(crate) fn append_to(&self, regs: &mut job::raw::RegisterArray) {
+        regs.add(0x1a540, self.shared_value);
+        regs.add(0x014a9, self.shared_value);
+        regs.add(0x0a351, self.shared_value);
+    }
+}
+
 /// One selected/retired SKU slot whose address is known before bytes are
 /// serialized. E113 separates this reservation from the later command-aware
 /// serializer because the exact SKU payload embeds both command and stream
