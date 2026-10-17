@@ -1093,7 +1093,14 @@ pub(crate) mod raw {
         /// commit path clears 0x4000 bytes here and emits 0x20-byte commands.
         pub(crate) sampler_commands_0018: Array<0x200, G15PerfCtrGeneratedRdeCommand>,
         pub(crate) sampler_command_count_4018: U32,
-        pub(crate) pad_401c: Pad<0x14>,
+        /// G15 APS_USC topology header. Exact AGXPerfCtrSamplerGen11::init()
+        /// copies the CoreConfig MGPU count and per-MGPU core-mask width here,
+        /// followed by the total active-core count and eight packed 16-bit
+        /// core-mask slices (the full 128-bit Apple core_mask_list envelope).
+        pub(crate) aps_mgpu_count_401c: u8,
+        pub(crate) aps_mask_width_401d: u8,
+        pub(crate) aps_active_core_count_401e: u16,
+        pub(crate) aps_core_masks_4020: Array<8, u16>,
         pub(crate) sampler_active_4030: U32,
         pub(crate) pad_4034: Pad<0x04>,
         pub(crate) sampler_control_ptr_4038: U64,
@@ -1139,6 +1146,10 @@ pub(crate) mod raw {
     const _: [(); 0xc3d0] = [(); core::mem::size_of::<G15Q22Shared>()];
     const _: [(); 0x18] = [(); core::mem::offset_of!(G15Q22Shared, sampler_commands_0018)];
     const _: [(); 0x4018] = [(); core::mem::offset_of!(G15Q22Shared, sampler_command_count_4018)];
+    const _: [(); 0x401c] = [(); core::mem::offset_of!(G15Q22Shared, aps_mgpu_count_401c)];
+    const _: [(); 0x401d] = [(); core::mem::offset_of!(G15Q22Shared, aps_mask_width_401d)];
+    const _: [(); 0x401e] = [(); core::mem::offset_of!(G15Q22Shared, aps_active_core_count_401e)];
+    const _: [(); 0x4020] = [(); core::mem::offset_of!(G15Q22Shared, aps_core_masks_4020)];
     const _: [(); 0x4030] = [(); core::mem::offset_of!(G15Q22Shared, sampler_active_4030)];
     const _: [(); 0x4038] = [(); core::mem::offset_of!(G15Q22Shared, sampler_control_ptr_4038)];
     const _: [(); 0x4040] = [(); core::mem::offset_of!(G15Q22Shared, sampler_control_size_4040)];

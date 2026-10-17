@@ -1741,6 +1741,26 @@ impl<'a> InitDataBuilder::ver<'a> {
             )
         };
         #[ver(G == G15)]
+        let (g15_aps_mgpu_count, g15_aps_mask_width, g15_aps_active_core_count, g15_aps_core_masks) = {
+            // E781: exact 23J220 AGXPerfCtrSamplerGen11::init() publishes
+            // CoreConfig +0x30/+0x44/+0x0c and its 128-bit core_mask_list at
+            // q22 +0x401c..+0x402f. Linux derives the same topology from the
+            // live G15 ID registers/core-mask aperture. Keep the full eight
+            // u16 slots even though J615 has one 10-bit MGPU mask (0x03ff).
+            let mgpu_count = u8::try_from(self.dyncfg.id.num_clusters).map_err(|_| EINVAL)?;
+            let mask_width = u8::try_from(self.dyncfg.id.num_cores).map_err(|_| EINVAL)?;
+            let active_core_count =
+                u16::try_from(self.dyncfg.id.total_active_cores).map_err(|_| EINVAL)?;
+            let mut masks: Array<8, u16> = Default::default();
+            if self.dyncfg.id.core_masks.len() > masks.len() {
+                return Err(EINVAL);
+            }
+            for (i, mask) in self.dyncfg.id.core_masks.iter().enumerate() {
+                masks[i] = u16::try_from(*mask).map_err(|_| EINVAL)?;
+            }
+            (mgpu_count, mask_width, active_core_count, masks)
+        };
+        #[ver(G == G15)]
         let g15_q22 = self.alloc.shared.new_object(
             Default::default(),
             |_inner| raw::G15Q22Shared {
@@ -1769,6 +1789,10 @@ impl<'a> InitDataBuilder::ver<'a> {
                     cmds
                 },
                 sampler_command_count_4018: U32(4),
+                aps_mgpu_count_401c: g15_aps_mgpu_count,
+                aps_mask_width_401d: g15_aps_mask_width,
+                aps_active_core_count_401e: g15_aps_active_core_count,
+                aps_core_masks_4020: g15_aps_core_masks,
                 // The source context ID is intentionally not fabricated here.
                 // Apple allocates it dynamically from the owning AGXShared/GART
                 // selector-0 domain before committing the sampler source.
