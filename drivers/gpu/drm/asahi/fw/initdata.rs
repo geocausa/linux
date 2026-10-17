@@ -488,12 +488,18 @@ pub(crate) mod raw {
         0x0000_0000_0008_0295,
     ];
 
-    /// Exact first selected-counter qword appended after the 12 fixed RDE_0
-    /// entries for DCDM partition 4, slot 0, 64/64 geometry. E738 derives
-    /// this mechanically from the DCDM partition object and generator patcher.
-    pub(crate) const G15_PERFCTR_RDE0_DCDM_FIRST_SELECTED_ENTRY: u64 =
-        0x0000_0008_1800_352c;
-    pub(crate) const G15_PERFCTR_RDE0_DCDM_FIRST_ENTRY_COUNT: u32 = 13;
+    /// E776 exact four-input CSInvocation source-program tail. Current Apple
+    /// tooling requests these derived-counter raw inputs at the default 32-bit
+    /// width; exact 23J220 allocation therefore uses DCDM placements 0/2/4/6.
+    /// The target Gen15 commit loop appends the second register of each selected
+    /// DCDM pair, shifted by three, under the ordinary 0x818000000 control bits.
+    pub(crate) const G15_PERFCTR_RDE0_CS_INVOCATION_SELECTED_ENTRIES: [u64; 4] = [
+        0x0000_0008_1800_352c,
+        0x0000_0008_1800_3530,
+        0x0000_0008_1800_3534,
+        0x0000_0008_1800_3538,
+    ];
+    pub(crate) const G15_PERFCTR_RDE0_CS_INVOCATION_ENTRY_COUNT: u32 = 16;
 
     impl G15PerfCtrSourceRecord {
         /// Exact 23J220 source-0 descriptor in its inactive observer state.
@@ -632,7 +638,7 @@ pub(crate) mod raw {
                 // The first selected partition is DCDM/4 (>=3), so the exact
                 // Gen11 commit path sets this derived source flag to one.
                 runtime_e8: U32(1),
-                generated_entry_count_8f8: U32(G15_PERFCTR_RDE0_DCDM_FIRST_ENTRY_COUNT),
+                generated_entry_count_8f8: U32(G15_PERFCTR_RDE0_CS_INVOCATION_ENTRY_COUNT),
                 source_buffer_size_900: U64(0x8000),
                 source_buffer_addr_908: U64(source_buffer_fw_addr),
                 source_buffer_trailer_addr_910: U64(trailer_fw_addr),
@@ -647,8 +653,12 @@ pub(crate) mod raw {
                 source.generated_entries_f8[i] = U64(G15_PERFCTR_RDE0_FIXED_ENTRIES[i]);
                 i += 1;
             }
-            source.generated_entries_f8[G15_PERFCTR_RDE0_FIXED_ENTRIES.len()] =
-                U64(G15_PERFCTR_RDE0_DCDM_FIRST_SELECTED_ENTRY);
+            let mut j = 0;
+            while j < G15_PERFCTR_RDE0_CS_INVOCATION_SELECTED_ENTRIES.len() {
+                source.generated_entries_f8[G15_PERFCTR_RDE0_FIXED_ENTRIES.len() + j] =
+                    U64(G15_PERFCTR_RDE0_CS_INVOCATION_SELECTED_ENTRIES[j]);
+                j += 1;
+            }
             Some(source)
         }
 
@@ -835,8 +845,11 @@ pub(crate) mod raw {
                 source_index_04: 1,
                 pad_05: Default::default(),
                 partition_08: 4,
-                geometry1_09: 64,
-                geometry2_0a: 64,
+                // Apple's derived-counter path omits an explicit Width option;
+                // the concrete current AGX wrapper defaults that request to 32.
+                // Exact 23J220 DCDM geometry then expands geometry2 to 48.
+                geometry1_09: 32,
+                geometry2_0a: 48,
                 pad_0b: 0,
                 descriptor_flags_0c: U32(1),
                 selector_10: U64(selector),
@@ -865,19 +878,39 @@ pub(crate) mod raw {
     const _: [(); 0x10] = [(); core::mem::offset_of!(G15PerfCtrGeneratedRdeCommand, selector_10)];
 
     impl G15PerfCtrGeneratedRdeCommand {
-        pub(crate) fn rde0_dcdm_first(selector: u32) -> Option<Self> {
-            if !matches!(selector, 0x3003_07ff | 0x3004_07ff | 0x3005_07ff | 0x3006_07ff) {
-                return None;
-            }
+        /// E776 exact 23J220 command-generator outputs for Apple's four
+        /// 32-bit CSInvocation DCDM inputs. The values were produced by running
+        /// the retained target `generatePerfCtrCommandList()` machine code
+        /// against the exact DCDM descriptor table, not by extrapolation.
+        pub(crate) fn rde0_dcdm_cs_invocation(selector: u32) -> Option<Self> {
+            let words = match selector {
+                0x3003_07ff => [
+                    0x181a_9104, 0x1a96_01a9, 0x0000_000d, 0xff00_180f,
+                    0x3003_07ff, 0x0001_a900, 0x0000_0201, 0x0000_0000,
+                ],
+                0x3004_07ff => [
+                    0x281a_9104, 0x1a98_01a9, 0x0000_0031, 0xff00_1833,
+                    0x3004_07ff, 0x0001_a900, 0x0001_0201, 0x0000_0000,
+                ],
+                0x3005_07ff => [
+                    0x381a_9104, 0x1a9a_01a9, 0x0000_00c1, 0xff00_18c3,
+                    0x3005_07ff, 0x0001_a900, 0x0002_0201, 0x0000_0000,
+                ],
+                0x3006_07ff => [
+                    0x481a_9104, 0x1a9c_01a9, 0x0000_0301, 0xff00_1b03,
+                    0x3006_07ff, 0x0001_a900, 0x0003_0201, 0x0000_0000,
+                ],
+                _ => return None,
+            };
             Some(Self {
-                word_00: U32(0x181a_9104),
-                word_04: U32(0x1a96_01a9),
-                word_08: U32(0x0000_003d),
-                word_0c: U32(0xff00_183f),
-                selector_10: U32(selector),
-                word_14: U32(0x0001_a900),
-                word_18: U32(0x0000_0401),
-                word_1c: U32(0),
+                word_00: U32(words[0]),
+                word_04: U32(words[1]),
+                word_08: U32(words[2]),
+                word_0c: U32(words[3]),
+                selector_10: U32(words[4]),
+                word_14: U32(words[5]),
+                word_18: U32(words[6]),
+                word_1c: U32(words[7]),
             })
         }
     }
@@ -899,8 +932,8 @@ pub(crate) mod raw {
         pub(crate) state1: G15PerfCtrSamplerState,
         pub(crate) trailer1: G15PerfCtrSamplerTrailer,
         pub(crate) source_control: G15PerfCtrSourceConfigControl,
-        pub(crate) select_control: G15PerfCtrSelectControl,
-        pub(crate) generated_command: G15PerfCtrGeneratedRdeCommand,
+        pub(crate) select_controls: [G15PerfCtrSelectControl; 4],
+        pub(crate) generated_commands: [G15PerfCtrGeneratedRdeCommand; 4],
         pub(crate) source_backing_bytes: U32,
         pub(crate) state_backing_bytes: U32,
         pub(crate) logical_state_bytes: U32,
@@ -940,7 +973,7 @@ pub(crate) mod raw {
             // Base::fwSourceDataAlloc adds the fixed first 0x4000 region.
             let sample_cache_bytes = aps_sampler_count.checked_mul(0x20)?.checked_add(0x720)?;
             let control_backing_bytes = sample_cache_bytes.checked_add(0x4000)?;
-            let selector = 0x3003_07ff;
+            let selectors = [0x3003_07ffu32, 0x3004_07ff, 0x3005_07ff, 0x3006_07ff];
 
             Some(Self {
                 source0: G15PerfCtrSourceRecord::firmware_inactive(),
@@ -953,8 +986,18 @@ pub(crate) mod raw {
                 state1,
                 trailer1,
                 source_control: G15PerfCtrSourceConfigControl::rde0_timer_nclock(period)?,
-                select_control: G15PerfCtrSelectControl::rde0_dcdm_cs_invocation(selector as u64)?,
-                generated_command: G15PerfCtrGeneratedRdeCommand::rde0_dcdm_first(selector)?,
+                select_controls: [
+                    G15PerfCtrSelectControl::rde0_dcdm_cs_invocation(selectors[0] as u64)?,
+                    G15PerfCtrSelectControl::rde0_dcdm_cs_invocation(selectors[1] as u64)?,
+                    G15PerfCtrSelectControl::rde0_dcdm_cs_invocation(selectors[2] as u64)?,
+                    G15PerfCtrSelectControl::rde0_dcdm_cs_invocation(selectors[3] as u64)?,
+                ],
+                generated_commands: [
+                    G15PerfCtrGeneratedRdeCommand::rde0_dcdm_cs_invocation(selectors[0])?,
+                    G15PerfCtrGeneratedRdeCommand::rde0_dcdm_cs_invocation(selectors[1])?,
+                    G15PerfCtrGeneratedRdeCommand::rde0_dcdm_cs_invocation(selectors[2])?,
+                    G15PerfCtrGeneratedRdeCommand::rde0_dcdm_cs_invocation(selectors[3])?,
+                ],
                 source_backing_bytes: U32(source_backing_bytes),
                 state_backing_bytes: U32(state_backing_bytes),
                 logical_state_bytes: U32(logical_state_bytes),

@@ -1757,11 +1757,18 @@ impl<'a> InitDataBuilder::ver<'a> {
                 sampler_commands_0018: {
                     let mut cmds: Array<0x200, raw::G15PerfCtrGeneratedRdeCommand> =
                         Default::default();
-                    cmds[0] = raw::G15PerfCtrGeneratedRdeCommand::rde0_dcdm_first(0x3003_07ff)
-                        .expect("exact first DCDM selector");
+                    let selectors = [0x3003_07ffu32, 0x3004_07ff, 0x3005_07ff, 0x3006_07ff];
+                    let mut i = 0;
+                    while i < selectors.len() {
+                        cmds[i] = raw::G15PerfCtrGeneratedRdeCommand::rde0_dcdm_cs_invocation(
+                            selectors[i],
+                        )
+                        .expect("exact four-lane CSInvocation DCDM selector");
+                        i += 1;
+                    }
                     cmds
                 },
-                sampler_command_count_4018: U32(1),
+                sampler_command_count_4018: U32(4),
                 // The source context ID is intentionally not fabricated here.
                 // Apple allocates it dynamically from the owning AGXShared/GART
                 // selector-0 domain before committing the sampler source.

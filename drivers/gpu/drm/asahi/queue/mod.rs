@@ -2695,19 +2695,22 @@ impl sched::JobImpl for QueueJob::ver {
                     ._g15_rde_observer_runtime
                     .as_ref()
                     .ok_or(EIO)?
-                    .payload_stats_snapshot_synced()
+                    .cs_invocation_stats_snapshot_synced()
                 {
                     Ok(stats) => {
                         dev_info!(
                             job.dev.as_ref(),
-                            "T8122 G15 E773 payload records={}/{} nonzero={} min={:#018x} max={:#018x} first_valid={}\n",
+                            "T8122 G15 E776 CSInvocation records={}/{} nonzero={} lanes_nonzero={},{},{},{} min={} max={} first_valid={}\n",
                             stats.payload_records, stats.framed_records,
-                            stats.nonzero_records, stats.min_value, stats.max_value,
+                            stats.nonzero_records,
+                            stats.lane_nonzero[0], stats.lane_nonzero[1],
+                            stats.lane_nonzero[2], stats.lane_nonzero[3],
+                            stats.min_value, stats.max_value,
                             stats.first_values_valid,
                         );
                         dev_info!(
                             job.dev.as_ref(),
-                            "T8122 G15 E773 payload first0..7={:016x},{:016x},{:016x},{:016x},{:016x},{:016x},{:016x},{:016x}\n",
+                            "T8122 G15 E776 CSInvocation first0..7={},{},{},{},{},{},{},{}\n",
                             stats.first_values[0], stats.first_values[1],
                             stats.first_values[2], stats.first_values[3],
                             stats.first_values[4], stats.first_values[5],
@@ -2715,16 +2718,20 @@ impl sched::JobImpl for QueueJob::ver {
                         );
                         dev_info!(
                             job.dev.as_ref(),
-                            "T8122 G15 E773 payload first8..15={:016x},{:016x},{:016x},{:016x},{:016x},{:016x},{:016x},{:016x}\n",
-                            stats.first_values[8], stats.first_values[9],
-                            stats.first_values[10], stats.first_values[11],
-                            stats.first_values[12], stats.first_values[13],
-                            stats.first_values[14], stats.first_values[15],
+                            "T8122 G15 E776 first-lanes r0={:08x},{:08x},{:08x},{:08x} r1={:08x},{:08x},{:08x},{:08x} r2={:08x},{:08x},{:08x},{:08x} r3={:08x},{:08x},{:08x},{:08x}\n",
+                            stats.first_lanes[0][0], stats.first_lanes[0][1],
+                            stats.first_lanes[0][2], stats.first_lanes[0][3],
+                            stats.first_lanes[1][0], stats.first_lanes[1][1],
+                            stats.first_lanes[1][2], stats.first_lanes[1][3],
+                            stats.first_lanes[2][0], stats.first_lanes[2][1],
+                            stats.first_lanes[2][2], stats.first_lanes[2][3],
+                            stats.first_lanes[3][0], stats.first_lanes[3][1],
+                            stats.first_lanes[3][2], stats.first_lanes[3][3],
                         );
                     }
                     Err(err) => dev_err!(
                         job.dev.as_ref(),
-                        "T8122 G15 E773 synchronized payload statistic failed: {:?}\n",
+                        "T8122 G15 E776 synchronized CSInvocation statistic failed: {:?}\n",
                         err
                     ),
                 }
