@@ -501,6 +501,11 @@ pub(crate) mod raw {
     ];
     pub(crate) const G15_PERFCTR_RDE0_CS_INVOCATION_ENTRY_COUNT: u32 = 16;
 
+    /// Exact 23J220 Partition-33 APS_USC selector for a single
+    /// Compute Shader Launch witness. Partition 33 routes only to source 5.
+    pub(crate) const G15_PERFCTR_APS_COMPUTE_SHADER_LAUNCH_SELECTOR: u64 =
+        0x0000_0001_0000_0000;
+
     impl G15PerfCtrSourceRecord {
         /// Exact 23J220 source-0 descriptor in its inactive observer state.
         /// Firmware owns sampler-state index 0 for this source, but START skips
@@ -611,6 +616,20 @@ pub(crate) mod raw {
                 // Deliberately leave selection_mask_dc/runtime_active_d8 zero.
                 ..Default::default()
             })
+        }
+
+        /// E785 compile-only source-5 selector commit. Exact Gen15 APS
+        /// command generation does not emit the ordinary RDE program: its
+        /// special generator ORs selectors into one u64 and commit writes that
+        /// value directly at source +0xe4..+0xeb. Keep the proven shared ABI
+        /// layout as two u32 words because ordinary RDE uses them separately.
+        pub(crate) fn aps_usc_with_selector(mut self, selector_mask: u64) -> Option<Self> {
+            if self.source_type_00.0 != 5 || selector_mask == 0 {
+                return None;
+            }
+            self.runtime_e4 = U32(selector_mask as u32);
+            self.runtime_e8 = U32((selector_mask >> 32) as u32);
+            Some(self)
         }
 
         /// Exact ordinary RDE_0 source record after the command-3 source-buffer
