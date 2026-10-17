@@ -938,6 +938,34 @@ impl G15SkuBacking {
         })
     }
 
+    /// E759: copy the exact sampler-active 0x300-byte SKU image into a
+    /// previously reserved slot. Unlike stock-empty there is no trailing slot
+    /// slack: the exact Apple report size consumes the complete 0x300 stride.
+    pub(crate) fn write_reserved_perfctr_slot(
+        &mut self,
+        reserved: G15ReservedSkuSlot,
+        stream: &G15PerfCounterSkuStream,
+    ) -> Result<G15PreparedSkuSlot> {
+        let expected = self.reserve_retired_slot(reserved.index())?;
+        if expected.fwva() != reserved.fwva() {
+            return Err(EIO);
+        }
+        let start = reserved
+            .index()
+            .checked_mul(G15_SKU_SLOT_STRIDE)
+            .ok_or(EOVERFLOW)?;
+        let end = start.checked_add(G15_SKU_SLOT_STRIDE).ok_or(EOVERFLOW)?;
+        self.backing.dma_sync_for_cpu()?;
+        let slot = &mut self.backing.as_mut_slice()[start..end];
+        slot.copy_from_slice(stream.as_bytes());
+        self.backing.dma_sync_for_device()?;
+        Ok(G15PreparedSkuSlot {
+            index: reserved.index().try_into().map_err(|_| EOVERFLOW)?,
+            fwva: reserved.fwva(),
+            size: G15_PERFCTR_SKU_STREAM_SIZE as u32,
+        })
+    }
+
     /// Copy one E102 stock-empty stream into a slot that the caller has already
     /// proved retired/bound through the E106 guard. The entire 0x300-byte slot
     /// is cleared first, preserving Apple's 0x40 bytes of stock-empty slack.

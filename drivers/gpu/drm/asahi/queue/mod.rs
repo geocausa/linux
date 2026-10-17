@@ -306,10 +306,11 @@ impl G15UnpublishedRunComputeFieldStage {
     fn apply_stock_empty_runcompute_fields(
         &self,
         command: &mut fw::compute::raw::RunComputeG15V14_7<'_>,
+        expected_sku_size: usize,
     ) -> Result {
         if self.event_control_fwva_14 == 0
             || self.sku_fwva_760 == 0
-            || self.sku_size_768 as usize != fw::compute::G15_STOCK_EMPTY_SKU_STREAM_SIZE
+            || self.sku_size_768 as usize != expected_sku_size
             || self.page_pool_state_fwva_83e == 0
             || self.uma_prepared_846 != 1
             || self.uma_min_pool_size_847 != 0
@@ -482,6 +483,7 @@ impl G15StockEmptyComputeChannelOwners {
         prepared: G15UnpublishedStockEmptyPrepare,
         command_fwva: u64,
         command: &fw::compute::raw::RunComputeG15V14_7<'_>,
+        perfctr_observer: bool,
     ) -> Result<G15UnpublishedRunComputeFieldStage> {
         if command_fwva == 0 {
             let _ = uma_pool.complete_reference(prepared.hardware_buffer_id);
@@ -532,26 +534,54 @@ impl G15StockEmptyComputeChannelOwners {
             // bit 7); G15 and G15G preserve that bit. Stock J615 is false.
             accelerator_654_bit7: false,
         };
-        let stream = match fw::compute::G15StockEmptySkuStream::new(sku_input) {
-            Ok(stream) => stream,
-            Err(err) => {
-                let _ = uma_pool.complete_reference(prepared.hardware_buffer_id);
-                return Err(err);
+        let expected_sku_size = if perfctr_observer {
+            fw::compute::G15_PERFCTR_SKU_STREAM_SIZE
+        } else {
+            fw::compute::G15_STOCK_EMPTY_SKU_STREAM_SIZE
+        };
+        let sku = if perfctr_observer {
+            // Exact descriptor +0x3e4 source is raw Compute +0xa8, repacked
+            // into the low dword of RunCompute +0x7d8. It remains zero for
+            // the bounded stock-empty observer, but derive it from the command
+            // image so SKU and RegisterArray provenance cannot silently drift.
+            let raw_compute_a8 = command.g15_raw_compute_a8_b0_lo_7d8.0 as u32;
+            let stream = match fw::compute::G15PerfCounterSkuStream::new(
+                sku_input,
+                raw_compute_a8,
+            ) {
+                Ok(stream) => stream,
+                Err(err) => {
+                    let _ = uma_pool.complete_reference(prepared.hardware_buffer_id);
+                    return Err(err);
+                }
+            };
+            match self._sku.write_reserved_perfctr_slot(prepared.sku, &stream) {
+                Ok(sku) => sku,
+                Err(err) => {
+                    let _ = uma_pool.complete_reference(prepared.hardware_buffer_id);
+                    return Err(err);
+                }
+            }
+        } else {
+            let stream = match fw::compute::G15StockEmptySkuStream::new(sku_input) {
+                Ok(stream) => stream,
+                Err(err) => {
+                    let _ = uma_pool.complete_reference(prepared.hardware_buffer_id);
+                    return Err(err);
+                }
+            };
+            match self
+                ._sku
+                .write_reserved_stock_empty_slot(prepared.sku, &stream)
+            {
+                Ok(sku) => sku,
+                Err(err) => {
+                    let _ = uma_pool.complete_reference(prepared.hardware_buffer_id);
+                    return Err(err);
+                }
             }
         };
-        let sku = match self
-            ._sku
-            .write_reserved_stock_empty_slot(prepared.sku, &stream)
-        {
-            Ok(sku) => sku,
-            Err(err) => {
-                let _ = uma_pool.complete_reference(prepared.hardware_buffer_id);
-                return Err(err);
-            }
-        };
-        if sku.fwva() == 0
-            || sku.size() as usize != fw::compute::G15_STOCK_EMPTY_SKU_STREAM_SIZE
-        {
+        if sku.fwva() == 0 || sku.size() as usize != expected_sku_size {
             let _ = uma_pool.complete_reference(prepared.hardware_buffer_id);
             return Err(EIO);
         }
@@ -1112,10 +1142,11 @@ impl G15QueueJobStockEmptyAssets::ver {
     fn finalize_owned_command(
         &mut self,
         command: GpuObject<fw::compute::RunCompute::ver>,
+        perfctr_observer: bool,
     ) -> Result {
         #[ver(G != G15)]
         {
-            let _ = command;
+            let _ = (command, perfctr_observer);
             return Err(EINVAL);
         }
 
@@ -1138,8 +1169,21 @@ impl G15QueueJobStockEmptyAssets::ver {
             };
 
             let finalized = command.with_mut(|raw, _inner| {
-                let finalized = channel.finalize_stock_empty(prepared, command_fwva, raw)?;
-                if let Err(apply_err) = finalized.stage.apply_stock_empty_runcompute_fields(raw) {
+                let finalized = channel.finalize_stock_empty(
+                    prepared,
+                    command_fwva,
+                    raw,
+                    perfctr_observer,
+                )?;
+                let expected_sku_size = if perfctr_observer {
+                    fw::compute::G15_PERFCTR_SKU_STREAM_SIZE
+                } else {
+                    fw::compute::G15_STOCK_EMPTY_SKU_STREAM_SIZE
+                };
+                if let Err(apply_err) = finalized
+                    .stage
+                    .apply_stock_empty_runcompute_fields(raw, expected_sku_size)
+                {
                     match channel.complete_stock_empty(finalized) {
                         Ok(_) => {
                             channel.scrub_completed_stock_empty_slots();
@@ -1486,11 +1530,18 @@ impl G15StockEmptyAssetGuards::ver {
         armed: G15ArmedUnpublishedStockEmptyPrepare::ver,
         command_fwva: u64,
         command: &fw::compute::raw::RunComputeG15V14_7<'_>,
+        perfctr_observer: bool,
     ) -> Result<G15ArmedUnpublishedRunComputeFieldStage::ver> {
         let G15ArmedUnpublishedStockEmptyPrepare::ver { arm, prepared } = armed;
         let event_index = prepared.event_index;
         let sku_index = prepared.sku.index();
-        match owners.finalize_unpublished(uma_pool, prepared, command_fwva, command) {
+        match owners.finalize_unpublished(
+            uma_pool,
+            prepared,
+            command_fwva,
+            command,
+            perfctr_observer,
+        ) {
             Ok(stage) => Ok(G15ArmedUnpublishedRunComputeFieldStage::ver { arm, stage }),
             Err(err) => {
                 self.event.rollback_bound(event_index);
@@ -1773,11 +1824,19 @@ impl G15UnpublishedComputeChannel::ver {
         armed: G15ArmedUnpublishedStockEmptyPrepare::ver,
         command_fwva: u64,
         command: &fw::compute::raw::RunComputeG15V14_7<'_>,
+        perfctr_observer: bool,
     ) -> Result<G15ArmedUnpublishedRunComputeFieldStage::ver> {
         let owners = &mut self.owners;
         let guards = &mut self.guards;
         self.pool.with_pool(|uma_pool| {
-            guards.finalize_unpublished(owners, uma_pool, armed, command_fwva, command)
+            guards.finalize_unpublished(
+                owners,
+                uma_pool,
+                armed,
+                command_fwva,
+                command,
+                perfctr_observer,
+            )
         })
     }
 
@@ -2102,10 +2161,11 @@ impl QueueJob::ver {
 
         #[ver(G == G15)]
         {
+            let perfctr_observer = self._g15_rde_observer_runtime.is_some();
             self._g15_stock_empty_assets
                 .as_mut()
                 .ok_or(EINVAL)?
-                .finalize_owned_command(command)
+                .finalize_owned_command(command, perfctr_observer)
         }
     }
 

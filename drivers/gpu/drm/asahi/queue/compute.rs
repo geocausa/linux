@@ -48,7 +48,10 @@ impl super::QueueInner::ver {
         flush_stamps: bool,
         vm_bind: crate::mmu::VmBind,
         ev_comp: crate::workqueue::QueueEventInfo::ver,
+        g15_perfctr_observer: bool,
     ) -> Result<GpuObject<fw::compute::RunCompute::ver>> {
+        #[ver(G != G15)]
+        let _ = g15_perfctr_observer;
         let mut alloc = gpu.alloc();
         let kalloc = &mut *alloc;
 
@@ -415,6 +418,12 @@ impl super::QueueInner::ver {
         let uuid = 0;
         #[ver(G == G15)]
         let uuid = common::next_g15_command_uuid();
+        #[ver(G == G15)]
+        // E757 exact stock-empty raw Compute +0xa8 source. Keep one local
+        // value for both the RegisterArray feature tail and RunCompute's
+        // compact +0x7d8 repack so the later SKU finalizer reads the same
+        // provenance back from the command image.
+        let g15_raw_compute_a8: u32 = 0;
         mod_dev_dbg!(self.dev, "[Submission {}] UUID = {:#x?}\n", id, uuid);
 
         // TODO: check
@@ -667,6 +676,17 @@ impl super::QueueInner::ver {
                             r.add(0x1a440, 0x154024201);
                             r.add(0x1a458, 0x10c08860);
                             r.add(0x107a1, 0x00ff_0000);
+
+                            // E759: only the explicitly selected sampler
+                            // observer gets the exact three-register tail that
+                            // shares the E757 active-sampler feature predicate.
+                            // Stock-empty raw Compute +0xa8 is mechanically 0.
+                            if g15_perfctr_observer {
+                                fw::compute::G15PerfCounterRegisterTail::new(
+                                    g15_raw_compute_a8, uuid,
+                                )
+                                .append_to(r);
+                            }
                         },
                     ),
                     #[ver(G != G15)]
@@ -762,7 +782,7 @@ impl super::QueueInner::ver {
                     #[ver(G == G15)]
                     g15_encoder_pad_7d5: Default::default(),
                     #[ver(G == G15)]
-                    g15_raw_compute_a8_b0_lo_7d8: U64(0),
+                    g15_raw_compute_a8_b0_lo_7d8: U64(g15_raw_compute_a8 as u64),
                     #[ver(G == G15)]
                     g15_raw_compute_b0_hi_7e0: U32(0),
                     #[ver(G != G15)]
@@ -845,6 +865,18 @@ impl super::QueueInner::ver {
             },
         )?;
 
+        #[ver(G == G15)]
+        comp.with(|raw, _inner| {
+            let expected_count = if g15_perfctr_observer { 8 } else { 5 };
+            let expected_length = expected_count * core::mem::size_of::<fw::job::raw::Register>();
+            if raw.registers.count as usize != expected_count
+                || raw.registers.length as usize != expected_length
+            {
+                return Err(EIO);
+            }
+            Ok(())
+        })?;
+
         core::mem::drop(alloc);
 
         Ok(comp)
@@ -884,6 +916,7 @@ impl super::QueueInner::ver {
             flush_stamps,
             vm_bind.clone(),
             ev_comp,
+            false,
         )?;
         let comp_job = job.get_comp()?;
 
@@ -971,6 +1004,7 @@ impl super::QueueInner::ver {
                     flush_stamps,
                     vm_bind,
                     ev_comp,
+                    true,
                 )
             })
         }
