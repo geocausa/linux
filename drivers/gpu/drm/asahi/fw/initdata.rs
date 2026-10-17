@@ -3771,6 +3771,229 @@ impl G15PerfCtrRuntimeState {
         ok && src_dev && state_dev
     }
 
+    /// E789 compile-only APS_USC pre-START install. E788 proved that Apple's
+    /// Gen15 `commitSourceCounterList()` has completed before DeviceControl 4:
+    /// source 5 is fully committed, every type-5 sampler state carries the
+    /// independently allocated sampler context, and q22 publishes that same
+    /// context. The selected APS counter uses descriptor Flag=0, so the two
+    /// optional q22 remap masks committed at +0x4068/+0x4070 are both zero.
+    ///
+    /// This helper sends no DeviceControl message. It also suppresses the
+    /// retained lab RDE_0 selection while APS is installed, so a future bounded
+    /// START cannot accidentally activate both observer sources at once.
+    fn install_aps_usc_split_source(
+        &mut self,
+        source: raw::G15PerfCtrSourceRecord,
+        context_id: u32,
+    ) -> bool {
+        let context_id: u16 = match context_id.try_into() {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        let sampler_count = source.sampler_count_18.0 as usize;
+        let state_base = source.sampler_state_base_1c.0 as usize;
+        let source_base = source.source_buffer_addr_908.0;
+        let expected_data_size = match (sampler_count as u64).checked_mul(0x4000) {
+            Some(v) => v,
+            None => return false,
+        };
+        let expected_source_size = match expected_data_size.checked_add(0x4000) {
+            Some(v) => v,
+            None => return false,
+        };
+        let expected_trailer = match source_base.checked_add(expected_data_size) {
+            Some(v) => v,
+            None => return false,
+        };
+        let selector = u64::from(source.runtime_e4.0) | (u64::from(source.runtime_e8.0) << 32);
+
+        if source.source_type_00.0 != 5
+            || source.source_flags_04.0 != 0x20
+            || sampler_count == 0
+            || state_base != 3
+            || source.runtime_active_d8.0 != 0
+            || source.selection_mask_dc.0 != 0x40
+            || source.runtime_e0.0 != 0x40
+            || selector != raw::G15_PERFCTR_APS_COMPUTE_SHADER_LAUNCH_SELECTOR
+            || source.aps_control_ec != 0x03
+            || source.aps_count_period_ed != 0x05
+            || source.aps_pulse_period_ee != 0x06
+            || source.aps_system_time_period_ef != 0
+            || source.aps_min_traced_f0 != 1
+            || source.aps_target_threshold_f2 != 1
+            || source.source_buffer_size_900.0 != expected_source_size
+            || source_base == 0
+            || source_base & 0x3fff != 0
+            || source.source_buffer_trailer_addr_910.0 != expected_trailer
+            || source.source_buffer_trailer_map_918.0 == 0
+            || source.source_buffer_trailer_map_918.0 & 0x3fff != 0
+        {
+            return false;
+        }
+
+        let q22_ready = self.q22.with(|raw, _inner| {
+            raw.sampler_active_4030.0 == 0
+                // Reject an independently prepared RDE owner even while the
+                // sampler is inactive; overwriting its selector-0 context
+                // would break that owner's fail-closed teardown contract.
+                && raw.sampler_source_context_id_4064 == 0
+                && raw.sampler_source_context_zero_4066 == 0
+                && raw.sampler_source_count_4054.0 >= 6
+                && raw.sampler_state_count_4060.0 as usize >= state_base + sampler_count
+                && raw.aps_active_core_count_401e as usize == sampler_count
+                && raw.aps_usc_source_index_4098.0 == 5
+                && raw.aps_usc_coord_4094 == 0
+        });
+        if !q22_ready {
+            return false;
+        }
+
+        let legacy_rde_base = u64::from(self.backings.rde0_source_buffer.weak_pointer());
+        let Some(rde_inactive) = raw::G15PerfCtrSourceRecord::rde0_buffer_attached(legacy_rde_base)
+        else {
+            return false;
+        };
+
+        let src_cpu = self.backings.sources.dma_sync_for_cpu().is_ok();
+        let state_cpu = self.backings.states.dma_sync_for_cpu().is_ok();
+        if !(src_cpu && state_cpu) {
+            if src_cpu { let _ = self.backings.sources.dma_sync_for_device(); }
+            if state_cpu { let _ = self.backings.states.dma_sync_for_device(); }
+            return false;
+        }
+
+        let wrote = {
+            let sources = self.backings.sources.as_mut_slice();
+            let states = self.backings.states.as_mut_slice();
+            let state_end = (state_base + sampler_count)
+                .checked_mul(core::mem::size_of::<raw::G15PerfCtrSamplerState>())
+                .unwrap_or(0);
+            if sources.len() < 6 || state_end == 0 || states.len() < state_end {
+                false
+            } else {
+                // Disable the retained ordinary-RDE lab selection first, then
+                // install the one intended source-5 witness.
+                sources[1] = rde_inactive;
+                sources[5] = source;
+                let mut ok = true;
+                let mut core = 0usize;
+                while core < sampler_count {
+                    let fwva = match source_base.checked_add((core as u64) * 0x4000) {
+                        Some(v) => v,
+                        None => {
+                            ok = false;
+                            break;
+                        }
+                    };
+                    let Some(mut state) = raw::G15PerfCtrSamplerState::aps_usc_core(0x4000, fwva)
+                    else {
+                        ok = false;
+                        break;
+                    };
+                    // Exact Gen15 type-5 allocateSubBufferStateList() copies
+                    // sampler +0x4c/+0x50 here after context allocation.
+                    state.source_config_04 = context_id;
+                    state.source_config_06 = 0;
+                    let off = (state_base + core)
+                        * core::mem::size_of::<raw::G15PerfCtrSamplerState>();
+                    // SAFETY: `state_end` bounds-checks every complete repr(C)
+                    // state and unaligned writes avoid u8-slice alignment assumptions.
+                    unsafe {
+                        core::ptr::write_unaligned(
+                            states.as_mut_ptr().add(off).cast::<raw::G15PerfCtrSamplerState>(),
+                            state,
+                        );
+                    }
+                    core += 1;
+                }
+                ok
+            }
+        };
+        let src_dev = self.backings.sources.dma_sync_for_device().is_ok();
+        let state_dev = self.backings.states.dma_sync_for_device().is_ok();
+        if !(wrote && src_dev && state_dev) {
+            return false;
+        }
+
+        self.q22.with_mut(|raw, _inner| {
+            raw.sampler_source_context_id_4064 = context_id;
+            raw.sampler_source_context_zero_4066 = 0;
+            raw.sampler_mask_4068 = U64(0);
+            raw.sampler_mask_4070 = U64(0);
+        });
+        true
+    }
+
+    /// Restore the stable dormant source-5 topology after an APS owner is
+    /// dropped. Refuse to release pointers while firmware is active or while
+    /// Gen15 APS idle coordination is still pending; the owner can then fail
+    /// closed by retaining the backing/context instead of unmapping them.
+    fn restore_bootstrap_aps_usc(&mut self, expected_id: u32, sampler_count: u32) -> bool {
+        let expected: u16 = match expected_id.try_into() {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        if sampler_count == 0 {
+            return false;
+        }
+        let safe = self.q22.with(|raw, _inner| {
+            raw.sampler_active_4030.0 == 0 && raw.aps_usc_coord_4094 == 0
+        });
+        if !safe {
+            return false;
+        }
+        let Some(source5) = raw::G15PerfCtrSourceRecord::aps_usc_inactive(sampler_count) else {
+            return false;
+        };
+        let legacy_rde_base = u64::from(self.backings.rde0_source_buffer.weak_pointer());
+        let Some(source1) = raw::G15PerfCtrSourceRecord::rde0_observer(
+            legacy_rde_base,
+            raw::G15_PERFCTR_TIMER_NCLOCK_REFERENCE_PERIOD,
+        ) else {
+            return false;
+        };
+
+        let src_cpu = self.backings.sources.dma_sync_for_cpu().is_ok();
+        let state_cpu = self.backings.states.dma_sync_for_cpu().is_ok();
+        if !(src_cpu && state_cpu) {
+            if src_cpu { let _ = self.backings.sources.dma_sync_for_device(); }
+            if state_cpu { let _ = self.backings.states.dma_sync_for_device(); }
+            return false;
+        }
+        let wrote = {
+            let sources = self.backings.sources.as_mut_slice();
+            let states = self.backings.states.as_mut_slice();
+            let state_base = 3usize;
+            let count = sampler_count as usize;
+            let state_end = (state_base + count)
+                .checked_mul(core::mem::size_of::<raw::G15PerfCtrSamplerState>())
+                .unwrap_or(0);
+            if sources.len() < 6 || state_end == 0 || states.len() < state_end {
+                false
+            } else {
+                sources[1] = source1;
+                sources[5] = source5;
+                let start = state_base * core::mem::size_of::<raw::G15PerfCtrSamplerState>();
+                states[start..state_end].fill(0);
+                true
+            }
+        };
+        let src_dev = self.backings.sources.dma_sync_for_device().is_ok();
+        let state_dev = self.backings.states.dma_sync_for_device().is_ok();
+        if !(wrote && src_dev && state_dev) {
+            return false;
+        }
+        self.q22.with_mut(|raw, _inner| {
+            if raw.sampler_source_context_id_4064 == expected {
+                raw.sampler_source_context_id_4064 = 0;
+                raw.sampler_source_context_zero_4066 = 0;
+                raw.sampler_mask_4068 = U64(0);
+                raw.sampler_mask_4070 = U64(0);
+            }
+        });
+        true
+    }
+
     fn restore_bootstrap_rde0(&mut self, expected_id: u32) -> bool {
         if self.q22.with(|raw, _inner| raw.sampler_active_4030.0) != 0 {
             return false;
@@ -3896,6 +4119,22 @@ impl G15PerfCtrRuntimeHandle {
         state: raw::G15PerfCtrSamplerState,
     ) -> bool {
         self.0.lock().install_rde0_split_source(source, state)
+    }
+
+    pub(crate) fn install_aps_usc_split_source(
+        &self,
+        source: raw::G15PerfCtrSourceRecord,
+        context_id: u32,
+    ) -> bool {
+        self.0.lock().install_aps_usc_split_source(source, context_id)
+    }
+
+    pub(crate) fn restore_bootstrap_aps_usc(
+        &self,
+        expected_id: u32,
+        sampler_count: u32,
+    ) -> bool {
+        self.0.lock().restore_bootstrap_aps_usc(expected_id, sampler_count)
     }
 
     pub(crate) fn restore_bootstrap_rde0(&self, expected_id: u32) -> bool {

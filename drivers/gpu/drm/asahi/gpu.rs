@@ -225,6 +225,18 @@ pub(crate) struct G15RdeObserverRuntime {
     split_source: Option<G15RdeSplitSourceBacking>,
 }
 
+
+/// E789 compile-only owner for one fully installed APS_USC source-5 image.
+/// No normal execution path constructs this object yet. Drop restores the
+/// dormant bootstrap source/state image only at a proven inactive, non-pending
+/// APS boundary; otherwise it fails closed by retaining all GPU-visible owners.
+pub(crate) struct G15ApsObserverRuntime {
+    sampler_context: Option<mmu::G15SamplerVmBind>,
+    perfctr_runtime: fw::initdata::G15PerfCtrRuntimeHandle,
+    split_source: Option<G15ApsSplitSourceBacking>,
+    sampler_count: u32,
+}
+
 /// E767 bounded raw view of one inactive G15 ordinary-RDE ring.
 /// The exact 23J220 userspace consumer treats trailer +0x30 as an absolute
 /// producer pointer and consumes a 0x60-byte G15 raw sample header.
@@ -1041,6 +1053,18 @@ impl G15ApsSplitSourceBacking {
         )
     }
 
+
+    /// E789 exact pre-START source-5 image: E783's split buffer ownership plus
+    /// E787's one Compute Shader Launch selector and production trigger/control
+    /// tail. `runtime_active_d8` remains zero for firmware to own at START.
+    pub(crate) fn committed_source_record(
+        &self,
+    ) -> Option<fw::initdata::raw::G15PerfCtrSourceRecord> {
+        self.source_record()?.aps_usc_counter_control(
+            fw::initdata::raw::G15_PERFCTR_APS_COMPUTE_SHADER_LAUNCH_SELECTOR,
+        )
+    }
+
     pub(crate) fn state_for_core(
         &self,
         core_index: u32,
@@ -1052,6 +1076,30 @@ impl G15ApsSplitSourceBacking {
             u64::from(core_index).checked_mul(self.subbuffer_size)?,
         )?;
         fw::initdata::raw::G15PerfCtrSamplerState::aps_usc_core(self.subbuffer_size, fwva)
+    }
+}
+
+impl Drop for G15ApsObserverRuntime {
+    fn drop(&mut self) {
+        let Some(slot) = self.sampler_context.as_ref().map(|ctx| ctx.slot()) else {
+            return;
+        };
+        if self
+            .perfctr_runtime
+            .restore_bootstrap_aps_usc(slot, self.sampler_count)
+        {
+            return;
+        }
+
+        // A pending +0x4094 idle-coordination state or any ownership failure
+        // means firmware may still retain source-5 state. Preserve mappings and
+        // selector-0 context rather than releasing memory it could dereference.
+        if let Some(source) = self.split_source.take() {
+            core::mem::forget(source);
+        }
+        if let Some(context) = self.sampler_context.take() {
+            core::mem::forget(context);
+        }
     }
 }
 
@@ -4134,6 +4182,46 @@ impl GpuManager::ver {
                 sampler_context: Some(sampler_context),
                 perfctr_runtime,
                 split_source: Some(split_source),
+            })
+        }
+    }
+
+
+    /// E789 compile-only APS_USC runtime installer. This closes Apple's
+    /// pre-START ownership/publication sequence but intentionally has no caller
+    /// from Queue submission and sends no DeviceControl command.
+    #[allow(dead_code)]
+    pub(crate) fn g15_prepare_aps_observer_context(
+        &self,
+        vm: &mmu::Vm,
+        split_source: G15ApsSplitSourceBacking,
+    ) -> Result<G15ApsObserverRuntime> {
+        #[ver(G != G15)]
+        {
+            let _ = (vm, split_source);
+            return Err(EINVAL);
+        }
+
+        #[ver(G == G15)]
+        {
+            let sampler_count = split_source.sampler_count;
+            let source = split_source.committed_source_record().ok_or(EINVAL)?;
+            let sampler_context = self.uat.bind_g15_sampler_context(vm)?;
+            let context_id = sampler_context.slot();
+            let perfctr_runtime = self.initdata.g15_perfctr_runtime.clone();
+            if !perfctr_runtime.install_aps_usc_split_source(source, context_id) {
+                // Install may have reached streaming-DMA publication before an
+                // error was observed. No START is sent, but retaining both
+                // owners is safer than unmapping a possibly published pointer.
+                core::mem::forget(split_source);
+                core::mem::forget(sampler_context);
+                return Err(EIO);
+            }
+            Ok(G15ApsObserverRuntime {
+                sampler_context: Some(sampler_context),
+                perfctr_runtime,
+                split_source: Some(split_source),
+                sampler_count,
             })
         }
     }
