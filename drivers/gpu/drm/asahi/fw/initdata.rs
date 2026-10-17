@@ -443,7 +443,16 @@ pub(crate) mod raw {
         pub(crate) runtime_e0: U32,
         pub(crate) runtime_e4: U32,
         pub(crate) runtime_e8: U32,
-        pub(crate) runtime_pad_ec: Pad<0x0c>,
+        // Source-type-5 APS_USC overlays the otherwise unused tail here with
+        // exact command-5/Gen15 committed control fields. Ordinary RDE keeps
+        // these bytes zero.
+        pub(crate) aps_control_ec: u8,
+        pub(crate) aps_count_period_ed: u8,
+        pub(crate) aps_pulse_period_ee: u8,
+        pub(crate) aps_system_time_period_ef: u8,
+        pub(crate) aps_min_traced_f0: u16,
+        pub(crate) aps_target_threshold_f2: u16,
+        pub(crate) runtime_pad_f4: Pad<0x04>,
         // Exact RDE source program/register list. commitSourceCounterList()
         // clears this 0x800-byte region and materializes qword entries here.
         pub(crate) generated_entries_f8: Array<0x100, U64>,
@@ -467,6 +476,14 @@ pub(crate) mod raw {
     const _: [(); 0xe0] = [(); core::mem::offset_of!(G15PerfCtrSourceRecord, runtime_e0)];
     const _: [(); 0xe4] = [(); core::mem::offset_of!(G15PerfCtrSourceRecord, runtime_e4)];
     const _: [(); 0xe8] = [(); core::mem::offset_of!(G15PerfCtrSourceRecord, runtime_e8)];
+    const _: [(); 0xec] = [(); core::mem::offset_of!(G15PerfCtrSourceRecord, aps_control_ec)];
+    const _: [(); 0xed] = [(); core::mem::offset_of!(G15PerfCtrSourceRecord, aps_count_period_ed)];
+    const _: [(); 0xee] = [(); core::mem::offset_of!(G15PerfCtrSourceRecord, aps_pulse_period_ee)];
+    const _: [(); 0xef] =
+        [(); core::mem::offset_of!(G15PerfCtrSourceRecord, aps_system_time_period_ef)];
+    const _: [(); 0xf0] = [(); core::mem::offset_of!(G15PerfCtrSourceRecord, aps_min_traced_f0)];
+    const _: [(); 0xf2] =
+        [(); core::mem::offset_of!(G15PerfCtrSourceRecord, aps_target_threshold_f2)];
     const _: [(); 0xf8] = [(); core::mem::offset_of!(G15PerfCtrSourceRecord, generated_entries_f8)];
     const _: [(); 0x8f8] = [(); core::mem::offset_of!(G15PerfCtrSourceRecord, generated_entry_count_8f8)];
 
@@ -629,6 +646,34 @@ pub(crate) mod raw {
             }
             self.runtime_e4 = U32(selector_mask as u32);
             self.runtime_e8 = U32((selector_mask >> 32) as u32);
+            Some(self)
+        }
+
+        /// E787 compile-only source-5 image after exact 23J220 Gen15
+        /// command-5 commit, using Apple's counter-policy values corroborated
+        /// on current macOS. This does not set runtime_active_d8 and does not
+        /// make START reachable.
+        pub(crate) fn aps_usc_counter_control(mut self, selector_mask: u64) -> Option<Self> {
+            if self.source_type_00.0 != 5 || selector_mask == 0 {
+                return None;
+            }
+            // KickAndStateTracing (0x20) is packed by SourceImpl command-5
+            // into bit 6. Default SourceImpl flags also contribute bit 6.
+            self.selection_mask_dc = U32(0x40);
+            self.runtime_e0 = U32(0x40);
+            self.runtime_e4 = U32(selector_mask as u32);
+            self.runtime_e8 = U32((selector_mask >> 32) as u32);
+            // Current Apple counter preset, encoded through exact 23J220
+            // fillKernelConfigData() and Gen15 source-5 rebasing:
+            // SyncDrain=1, ESLInst=0, TileTracing=1 -> 0b011 after bit shuffle;
+            // Count 4096 -> 12-7=5; Pulse 1024 -> 10-4=6;
+            // SystemTime 64 -> 6-6=0; clique subsampling = 1/1.
+            self.aps_control_ec = 0x03;
+            self.aps_count_period_ed = 0x05;
+            self.aps_pulse_period_ee = 0x06;
+            self.aps_system_time_period_ef = 0x00;
+            self.aps_min_traced_f0 = 0x0001;
+            self.aps_target_threshold_f2 = 0x0001;
             Some(self)
         }
 
