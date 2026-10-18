@@ -3909,6 +3909,26 @@ impl GpuManager::ver {
             // timestamp -> type0c. No GPU register access occurs here.
             let log_wfi_state = |phase: &str| {
                 mem::sync();
+                // E818: observation-only APS lifecycle timeline.  Reuse the
+                // exact E667 timing points without adding sleeps or changing
+                // command/mapping state.  This identifies when source-5 drops
+                // inactive and whether +0x4094 coordination is still pending.
+                let (aps_cmd, aps_active, aps_coord, aps_ctx, aps_mask68, aps_mask70) =
+                    self.initdata.g15_perfctr_runtime.with_q22(|raw| {
+                        (
+                            raw.sampler_command_count_4018.0,
+                            raw.sampler_active_4030.0,
+                            raw.aps_usc_coord_4094,
+                            raw.sampler_source_context_id_4064,
+                            raw.sampler_mask_4068.0,
+                            raw.sampler_mask_4070.0,
+                        )
+                    });
+                dev_info!(
+                    self.dev.as_ref(),
+                    "T8122 G15 E818 APS timeline {} cmd={} active={:#x} coord={:#x} ctx={} masks={:#018x}/{:#018x}\n",
+                    phase, aps_cmd, aps_active, aps_coord, aps_ctx, aps_mask68, aps_mask70,
+                );
                 match completion.transport_state() {
                     Ok(state) => dev_info!(
                         self.dev.as_ref(),
