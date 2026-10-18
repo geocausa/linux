@@ -2875,10 +2875,11 @@ impl sched::JobImpl for QueueJob::ver {
                             let ctl = raw.control[core];
                             dev_info!(
                                 job.dev.as_ref(),
-                                "T8122 G15 E795 core={} state18={:#018x} state20={:#018x} state28={:#018x} state30={:#018x} ctl00={:#018x} ctl08raw={:#018x} consumer={} producer={} resync={:#04x}\n",
+                                "T8122 G15 E808 core={} state18={:#018x} state20={:#018x} state28={:#018x} state30={:#018x} ctl00={:#018x} ctl08raw={:#018x} consumer={} producer={} transition={:#04x} resync={:#04x}\n",
                                 core, state[0], state[1], state[2], state[3],
                                 ctl.packed_addr_size, ctl.runtime_tail_raw,
-                                ctl.consumer_page, ctl.producer_page, ctl.resync_flag,
+                                ctl.consumer_page, ctl.producer_page,
+                                ctl.transition_status, ctl.resync_flag,
                             );
                             core += 1;
                         }

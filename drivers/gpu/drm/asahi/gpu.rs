@@ -268,14 +268,16 @@ pub(crate) struct G15RdeRawRingSnapshot {
 
 /// E795 exact 16-byte final-page control descriptor for one APS core.
 /// E794 closes the runtime consumer contract: +0x08 is the consumer-page
-/// cursor, +0x0c the producer-page cursor, and +0x0f the resynchronization
-/// flag. Preserve both raw qwords so the remaining bytes are not guessed.
+/// cursor, +0x0c the producer-page cursor, +0x0e the device-side transition
+/// status byte, and +0x0f the resynchronization flag. Preserve both raw qwords
+/// so any still-unproven bits remain available without guessing.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct G15ApsControlSnapshot {
     pub(crate) packed_addr_size: u64,
     pub(crate) runtime_tail_raw: u64,
     pub(crate) consumer_page: u16,
     pub(crate) producer_page: u16,
+    pub(crate) transition_status: u8,
     pub(crate) resync_flag: u8,
 }
 
@@ -1178,6 +1180,7 @@ impl G15ApsSplitSourceBacking {
                     runtime_tail_raw: u64::from_le_bytes(tail_raw),
                     consumer_page: u16::from_le_bytes([tail_raw[0], tail_raw[1]]),
                     producer_page: u16::from_le_bytes([tail_raw[4], tail_raw[5]]),
+                    transition_status: tail_raw[6],
                     resync_flag: tail_raw[7],
                 };
                 core += 1;
