@@ -1622,11 +1622,22 @@ impl<'a> InitDataBuilder::ver<'a> {
                 .ok_or(EINVAL)?;
             let control_backing_bytes = sample_cache_bytes.checked_add(0x4000).ok_or(EINVAL)?;
 
+            // E817 one-variable discriminator: E816 faulted with an ARM64
+            // alignment abort on firmware's intentional 64-bit read of source
+            // record +0xe4 while the source array used the range-7 Device
+            // memory attribute.  Keep the exact same range-7 VA arena and all
+            // source bytes, but give only the six 0x920 source records the
+            // already-modeled normal/uncached range-7 PTE class (compact 0x00b).
+            // This is a discriminator, not yet a claim about Apple's final ABI.
+            let mut source_range7 = alloc::G15SharedBank1Allocator::new_range7_flist(
+                self.dev, bank1.clone(), mmu::UAT_PGSZ, true, notifier.clone(),
+            ).after_q22_activation();
+            let mut sources = source_range7
+                .array_empty_shared_data::<raw::G15PerfCtrSourceRecord>(6)?;
+
             let mut range7 = alloc::G15SharedBank1Allocator::new_range7_sampler(
                 self.dev, bank1.clone(), mmu::UAT_PGSZ, true, notifier.clone(),
             ).after_q22_activation();
-            let mut sources = range7
-                .array_empty_shared_data::<raw::G15PerfCtrSourceRecord>(6)?;
             let mut states = range7
                 .array_empty_shared_data::<u8>(state_backing_bytes as usize)?;
             let aps_usc = range7.array_empty_shared_data::<u8>(0x8000)?;
