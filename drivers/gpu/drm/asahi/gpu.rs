@@ -4032,17 +4032,13 @@ impl GpuManager::ver {
                     });
             };
             log_wfi_state("immediate");
-            // E667 established these CPU-side timing snapshots. E819 keeps
-            // the immediate/1 ms observations and intentionally returns at the
-            // proven-active 1 ms point so the caller can shut sampling down.
-            fsleep(Delta::from_millis(1));
-            log_wfi_state("1ms");
-            // E819: E818 proves APS is still active and coordination is clear
-            // at this checkpoint. Return now so the existing caller performs
-            // its normal sampler shutdown before the later fault window.
+            // E822 changes only the pre-STOP timing from E821: return
+            // immediately after scheduler acceptance and the existing immediate
+            // telemetry point. E821's post-STOP one-millisecond settle window
+            // remains unchanged in the Queue path.
             dev_info!(
                 self.dev.as_ref(),
-                "T8122 G15 E819 selected observer returning after 1ms\n"
+                "T8122 G15 E822 selected observer returning immediately\n"
             );
             Ok(())
         }
