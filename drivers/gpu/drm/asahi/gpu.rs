@@ -4293,7 +4293,14 @@ impl GpuManager::ver {
                 }
                 rtk.send_message(EP_DOORBELL, MSG_TX_DOORBELL | DOORBELL_DEVCTRL)?;
             }
-            txch.device_control.wait_for(token)
+            txch.device_control.wait_for(token)?;
+
+            // E826: restore E756's live-proven refresh-settle interval.
+            // Opcode 0x13 marks host configuration dirty; the firmware-side
+            // q21 host_flags copy is deferred to a later config refresh. Avoid
+            // racing APS START/STOP against that handoff.
+            fsleep(Delta::from_millis(2));
+            Ok(())
         }
     }
 

@@ -2525,7 +2525,7 @@ impl sched::JobImpl for QueueJob::ver {
             }
             dev_info!(
                 job.dev.as_ref(),
-                "T8122 G15 E756 E825 power+sampler trace window requested (mask=0x44) for QueueJob {}\n",
+                "T8122 G15 E826 power+sampler trace window settled (mask=0x44) for QueueJob {}\n",
                 job.id
             );
 
