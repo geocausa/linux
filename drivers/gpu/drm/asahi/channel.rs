@@ -623,10 +623,10 @@ impl KTraceChannel {
             // by the late trace window. The firmware trace mask itself remains
             // zero outside the bounded observer transaction.
             let id = ((msg.channel as u16) << 8) | msg.code as u16;
-            if matches!(id, 0x60c | 0x60d | 0x610 | 0x612 | 0x613 | 0x618) {
+            if matches!(id, 0x020b | 0x60c | 0x60d | 0x610 | 0x612 | 0x613 | 0x618) {
                 dev_info!(
                     self.dev.as_ref(),
-                    "T8122 G15 E756 KTrace id=0x{:04x} {:?}\n",
+                    "T8122 G15 E825 KTrace id=0x{:04x} {:?}\n",
                     id,
                     msg
                 );

@@ -2513,10 +2513,10 @@ impl sched::JobImpl for QueueJob::ver {
                 active, coord, ctx, mask68, mask70,
             );
 
-            // E756: leave firmware tracing at stock zero through boot and
-            // open only the exact sampler class-6 window immediately around
-            // the already-bounded START -> one Compute -> STOP transaction.
-            if let Err(err) = gpu.g15_set_sampler_trace_mask(1 << 6) {
+            // E825: leave firmware tracing at stock zero through boot and
+            // open only exact classes 2 (agx_power event 0x20b) and 6
+            // (sampler) around the bounded START -> Compute -> STOP transaction.
+            if let Err(err) = gpu.g15_set_sampler_trace_mask((1 << 6) | (1 << 2)) {
                 // The q21 store precedes DeviceControl. If transport failed
                 // after that store, make one bounded best-effort request to
                 // restore Apple's stock zero trace mask before returning.
@@ -2525,7 +2525,7 @@ impl sched::JobImpl for QueueJob::ver {
             }
             dev_info!(
                 job.dev.as_ref(),
-                "T8122 G15 E756 late sampler trace window requested (mask=0x40) for QueueJob {}\n",
+                "T8122 G15 E756 E825 power+sampler trace window requested (mask=0x44) for QueueJob {}\n",
                 job.id
             );
 
