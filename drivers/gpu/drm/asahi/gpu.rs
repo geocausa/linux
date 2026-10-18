@@ -4260,7 +4260,10 @@ impl GpuManager::ver {
         }
         #[ver(G == G15)]
         {
-            if mask & !(1 << 6) != 0 {
+            // E825: E824 proves the exact G15 agx_power event handler emits
+            // KTrace 0x20b under trace class bit 2. Retain E756 sampler bit 6
+            // and permit only these two bounded observational classes.
+            if mask & !((1 << 6) | (1 << 2)) != 0 {
                 return Err(EINVAL);
             }
 
