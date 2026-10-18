@@ -4032,21 +4032,18 @@ impl GpuManager::ver {
                     });
             };
             log_wfi_state("immediate");
-            // E667: observation-only timing refinement.  The total evidence
-            // window remains 5 seconds; only intermediate CPU-side snapshots
-            // are added to determine when the exact E665 replay marker flips.
+            // E667 established these CPU-side timing snapshots. E819 keeps
+            // the immediate/1 ms observations and intentionally returns at the
+            // proven-active 1 ms point so the caller can shut sampling down.
             fsleep(Delta::from_millis(1));
             log_wfi_state("1ms");
-            fsleep(Delta::from_millis(9));
-            log_wfi_state("10ms");
-            fsleep(Delta::from_millis(40));
-            log_wfi_state("50ms");
-            fsleep(Delta::from_millis(50));
-            log_wfi_state("100ms");
-            fsleep(Delta::from_millis(150));
-            log_wfi_state("250ms");
-            fsleep(Delta::from_millis(4750));
-            log_wfi_state("5s");
+            // E819: E818 proves APS is still active and coordination is clear
+            // at this checkpoint. Return now so the existing caller performs
+            // its normal sampler shutdown before the later fault window.
+            dev_info!(
+                self.dev.as_ref(),
+                "T8122 G15 E819 selected observer returning after 1ms\n"
+            );
             Ok(())
         }
     }
