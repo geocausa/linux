@@ -18,6 +18,10 @@ use kernel::{
         LockClassKey,
         Mutex, //
     },
+    time::{
+        delay::fsleep,
+        Delta, //
+    },
     uapi,
     xarray, //
 };
@@ -2597,6 +2601,20 @@ impl sched::JobImpl for QueueJob::ver {
                         "T8122 G15 E820 APS post-stop gate active={:#x} coord={:#x} ctx={} masks={:#018x}/{:#018x}\n",
                         active, coord, ctx, mask68, mask70,
                     );
+                    // E821: E791 proves +0x4094 is cleared asynchronously by
+                    // the later source-5 settle service, not by STOP completion.
+                    // Observe one bounded millisecond while retaining every
+                    // owner. A still-pending flag continues into the existing
+                    // EBUSY/reset-only path; it is never forced through.
+                    if coord != 0 {
+                        fsleep(Delta::from_millis(1));
+                        let (a1, c1, x1, m681, m701) = runtime.lifecycle_state();
+                        dev_info!(
+                            job.dev.as_ref(),
+                            "T8122 G15 E821 APS post-stop 1ms active={:#x} coord={:#x} ctx={} masks={:#018x}/{:#018x}\n",
+                            a1, c1, x1, m681, m701,
+                        );
+                    }
                 }
             }
 
