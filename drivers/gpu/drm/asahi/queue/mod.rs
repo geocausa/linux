@@ -2589,6 +2589,17 @@ impl sched::JobImpl for QueueJob::ver {
                 ),
             }
 
+            if stop_result.is_ok() {
+                if let Some(runtime) = job._g15_aps_observer_runtime.as_ref() {
+                    let (active, coord, ctx, mask68, mask70) = runtime.lifecycle_state();
+                    dev_info!(
+                        job.dev.as_ref(),
+                        "T8122 G15 E820 APS post-stop gate active={:#x} coord={:#x} ctx={} masks={:#018x}/{:#018x}\n",
+                        active, coord, ctx, mask68, mask70,
+                    );
+                }
+            }
+
             if stop_result.is_ok() && job._g15_rde_observer_runtime.is_some() {
                 match job
                     ._g15_rde_observer_runtime
@@ -2799,26 +2810,74 @@ impl sched::JobImpl for QueueJob::ver {
             // dropping the owner invokes E789's checked restore; if a race
             // makes restore unsafe, Drop fails closed and the q22 verification
             // below exposes the retained context rather than silently unmapping.
+            match &aps_snapshot_result {
+                Ok(_) => dev_info!(
+                    job.dev.as_ref(),
+                    "T8122 G15 E820 APS raw snapshot acquisition complete\n"
+                ),
+                Err(err) => dev_err!(
+                    job.dev.as_ref(),
+                    "T8122 G15 E820 APS raw snapshot acquisition failed: {:?}\n",
+                    err
+                ),
+            }
+
             let aps_rollback_result = if stop_result.is_ok() {
-                let (active, coord, _ctx, _mask68, _mask70) = job
+                let (active, coord, ctx, mask68, mask70) = job
                     ._g15_aps_observer_runtime
                     .as_ref()
                     .ok_or(EIO)?
                     .lifecycle_state();
+                dev_info!(
+                    job.dev.as_ref(),
+                    "T8122 G15 E820 APS rollback gate active={:#x} coord={:#x} ctx={} masks={:#018x}/{:#018x}\n",
+                    active, coord, ctx, mask68, mask70,
+                );
                 if active != 0 || coord != 0 {
                     Err(EIO)
                 } else {
                     let owner = job._g15_aps_observer_runtime.take().ok_or(EIO)?;
-                    owner.finish().and_then(|()| {
-                        match gpu.g15_perfctr_q22_sampler_state() {
-                            Ok((_cmd, active, ctx, mask68, mask70))
+                    let finish_result = owner.finish();
+                    match &finish_result {
+                        Ok(()) => dev_info!(
+                            job.dev.as_ref(),
+                            "T8122 G15 E820 APS owner finish complete\n"
+                        ),
+                        Err(err) => dev_err!(
+                            job.dev.as_ref(),
+                            "T8122 G15 E820 APS owner finish failed: {:?}\n",
+                            err
+                        ),
+                    }
+                    match finish_result {
+                        Err(err) => Err(err),
+                        Ok(()) => match gpu.g15_perfctr_q22_sampler_state() {
+                            Ok((cmd, active, ctx, mask68, mask70)) => {
+                                dev_info!(
+                                    job.dev.as_ref(),
+                                    "T8122 G15 E820 APS post-finish q22 cmd={} active={:#x} ctx={} masks={:#018x}/{:#018x}\n",
+                                    cmd, active, ctx, mask68, mask70,
+                                );
                                 if active == 0
                                     && ctx == 0
                                     && mask68 == 0
-                                    && mask70 == 0 => Ok(()),
-                            _ => Err(EIO),
-                        }
-                    })
+                                    && mask70 == 0
+                                {
+                                    Ok(())
+                                } else {
+                                    Err(EIO)
+                                }
+                            }
+                            Err(err) => {
+                                dev_err!(
+                                    job.dev.as_ref(),
+                                    "T8122 G15 E820 APS post-finish q22 read failed: {:?}\n",
+                                    err
+                                );
+                                Err(EIO)
+                            }
+                        },
+                    }
                 }
             } else {
                 Err(EIO)
