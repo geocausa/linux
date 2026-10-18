@@ -2603,16 +2603,48 @@ impl sched::JobImpl for QueueJob::ver {
                     );
                     // E821: E791 proves +0x4094 is cleared asynchronously by
                     // the later source-5 settle service, not by STOP completion.
-                    // Observe one bounded millisecond while retaining every
-                    // owner. A still-pending flag continues into the existing
-                    // EBUSY/reset-only path; it is never forced through.
-                    if coord != 0 {
+                    // E823 extends E821's retained-owner observation only:
+                    // sample at 1/10/50/100 ms and stop waiting as soon as
+                    // coordination clears. A still-pending flag continues into
+                    // the existing EBUSY/reset-only path; never force teardown.
+                    let mut settle_coord = coord;
+                    if settle_coord != 0 {
                         fsleep(Delta::from_millis(1));
                         let (a1, c1, x1, m681, m701) = runtime.lifecycle_state();
+                        settle_coord = c1;
                         dev_info!(
                             job.dev.as_ref(),
                             "T8122 G15 E821 APS post-stop 1ms active={:#x} coord={:#x} ctx={} masks={:#018x}/{:#018x}\n",
                             a1, c1, x1, m681, m701,
+                        );
+                    }
+                    if settle_coord != 0 {
+                        fsleep(Delta::from_millis(9));
+                        let (a10, c10, x10, m6810, m7010) = runtime.lifecycle_state();
+                        settle_coord = c10;
+                        dev_info!(
+                            job.dev.as_ref(),
+                            "T8122 G15 E823 APS post-stop 10ms active={:#x} coord={:#x} ctx={} masks={:#018x}/{:#018x}\n",
+                            a10, c10, x10, m6810, m7010,
+                        );
+                    }
+                    if settle_coord != 0 {
+                        fsleep(Delta::from_millis(40));
+                        let (a50, c50, x50, m6850, m7050) = runtime.lifecycle_state();
+                        settle_coord = c50;
+                        dev_info!(
+                            job.dev.as_ref(),
+                            "T8122 G15 E823 APS post-stop 50ms active={:#x} coord={:#x} ctx={} masks={:#018x}/{:#018x}\n",
+                            a50, c50, x50, m6850, m7050,
+                        );
+                    }
+                    if settle_coord != 0 {
+                        fsleep(Delta::from_millis(50));
+                        let (a100, c100, x100, m68100, m70100) = runtime.lifecycle_state();
+                        dev_info!(
+                            job.dev.as_ref(),
+                            "T8122 G15 E823 APS post-stop 100ms active={:#x} coord={:#x} ctx={} masks={:#018x}/{:#018x}\n",
+                            a100, c100, x100, m68100, m70100,
                         );
                     }
                 }
