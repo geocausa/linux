@@ -798,7 +798,13 @@ impl<'a> InitDataBuilder::ver<'a> {
 
                     #[ver(V >= V14_8_3)]
                     if runtime {
-                        Self::hwdata_a_runtime(raw, pwr, max_ps_scaled, clocks_per_period_coarse);
+                        Self::hwdata_a_runtime(
+                            raw,
+                            cfg.chip_id,
+                            pwr,
+                            max_ps_scaled,
+                            clocks_per_period_coarse,
+                        );
                     }
 
                     Ok(())
@@ -854,6 +860,7 @@ impl<'a> InitDataBuilder::ver<'a> {
     #[ver(V >= V14_8_3)]
     fn hwdata_a_runtime(
         raw: &mut raw::HwDataA::ver,
+        chip_id: u32,
         pwr: &hw::PwrConfig,
         max_ps_scaled: u32,
         clocks_per_period_coarse: u32,
@@ -899,11 +906,48 @@ impl<'a> InitDataBuilder::ver<'a> {
         se.unk_12c = 40;
         se.max_pstate_scaled_2 = max_ps_scaled;
 
-        // No fast-die release temperature, no +0x8b8 offset and no alternate sensor mask: the
-        // T6030 device tree has no source for them.
+        // No fast-die release temperature or +0x8b8 offset on the current G15 runtime path.
         raw.fast_die0_release_temp_cc = 0;
         raw.unk_87c = 0;
-        raw.fast_die0_sensor_mask_alt = U64(0);
+
+        if chip_id == 0x8122 {
+            // J615/T8122 exact Apple MTR producer recovered in E032. Firmware's
+            // agfMTRAlarmHandler consumes the bitmap at HwDataA +0x1a98 and the
+            // per-sensor 0x78-byte records at +0x1aa4. A zero bitmap takes the
+            // fatal "MTR Alarm ... no match" path before normal startup can
+            // complete.
+            const MTR_SENSOR_MASK: u64 = 0x4b48;
+            const MTR_POLYNOMS: [(usize, [u32; 4]); 6] = [
+                (3, [0x0000_860c, 0x0000_eed1, 0x01ff_f024, 0x01ff_fc00]),
+                (6, [0x0000_850a, 0x0000_ef64, 0x01ff_f00e, 0x01ff_fbf8]),
+                (8, [0x0000_862f, 0x0000_efe1, 0x01ff_effe, 0x01ff_fbf2]),
+                (9, [0x0000_85c2, 0x0000_f00d, 0x01ff_eff8, 0x01ff_fbf0]),
+                (11, [0x0000_8448, 0x0000_f00d, 0x01ff_eff8, 0x01ff_fbf0]),
+                (14, [0x0000_84ee, 0x0000_efbc, 0x01ff_f008, 0x01ff_fbf4]),
+            ];
+
+            raw.fast_die0_sensor_mask_alt = U64(MTR_SENSOR_MASK);
+            // Absolute +0x1aa0 is the second bitmap word on J615 and is zero.
+            raw.unk_163c = 0;
+
+            // unk_1640 begins at absolute HwDataA +0x1aa4 in V14.8.3.
+            for (sensor, coeffs) in MTR_POLYNOMS {
+                let base = sensor * 0x78;
+                for (i, byte) in 4u32.to_le_bytes().iter().enumerate() {
+                    raw.unk_1640[base + i] = *byte;
+                }
+                for (word_index, word) in coeffs.iter().enumerate() {
+                    let off = base + 4 + word_index * 4;
+                    for (i, byte) in word.to_le_bytes().iter().enumerate() {
+                        raw.unk_1640[off + i] = *byte;
+                    }
+                }
+            }
+        } else {
+            // T6030 has no recovered source for the alternate board mask.
+            raw.fast_die0_sensor_mask_alt = U64(0);
+        }
+
         raw.unk_3640 = f32!(5.0).to_bits();
         // The fused core leakage coefficient of this machine (device tree), first cluster table.
         if let Some(coef) = pwr.core_leak_coef.first() {

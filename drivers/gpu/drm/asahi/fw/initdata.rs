@@ -2569,6 +2569,8 @@ mod g15_layout {
     static_assert!(offset_of!(HwDataAG15V14_8_3, fast_die0_sensor_mask_2) == 0x1288);
     static_assert!(offset_of!(HwDataAG15V14_8_3, unk_e28) == 0x1294);
     static_assert!(offset_of!(HwDataAG15V14_8_3, fast_die0_sensor_mask_alt) == 0x1a98);
+    static_assert!(offset_of!(HwDataAG15V14_8_3, unk_163c) == 0x1aa0);
+    static_assert!(offset_of!(HwDataAG15V14_8_3, unk_1640) == 0x1aa4);
     static_assert!(offset_of!(HwDataAG15V14_8_3, unk_3640) == 0x3aa4);
     static_assert!(offset_of!(HwDataAG15V14_8_3, init_timestamp) == 0x424c);
     static_assert!(offset_of!(HwDataAG15V14_8_3, cluster_tables) == 0x42a4);
