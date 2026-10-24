@@ -29,7 +29,8 @@
 			#size-cells = <2>;
 
 			pmp_report: pmp-report@2d03c0000 {
-				compatible = "apple,t8122-pmp-v2-report";
+				compatible = "apple,t8122-pmp-v2-report",
+					     "apple,t6030-pmp-v2-report";
 				/* PTD read aperture and update page */
 				reg = <0x2 0xd03c0000 0x0 0x14000>;
 				#address-cells = <1>;
