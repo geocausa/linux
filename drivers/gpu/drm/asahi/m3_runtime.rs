@@ -567,7 +567,21 @@ impl Runtime {
             inner.config.drain(&inner.drm)?;
             if !inner.state.healthy() { return Err(EIO); }
             if inner.config.control_done(next)? { return Ok(()); }
-            if start.elapsed() >= Delta::from_secs(2) { return Err(ETIMEDOUT); }
+            if start.elapsed() >= Delta::from_secs(2) {
+                match inner.config.control_timeout_state(next) {
+                    Ok((read, retired, write, entry_opcode)) => dev_err!(
+                        inner.drm.as_ref(),
+                        "M3 DeviceControl timeout state: awaiting opcode={:#x} next={} read={} retired={} write={} submitted_opcode={:#x}\n",
+                        opcode, next, read, retired, write, entry_opcode
+                    ),
+                    Err(error) => dev_err!(
+                        inner.drm.as_ref(),
+                        "M3 DeviceControl timeout observer failed for opcode={:#x} next={} ({:?})\n",
+                        opcode, next, error
+                    ),
+                }
+                return Err(ETIMEDOUT);
+            }
             fsleep(Delta::from_millis(1));
         }
     }

@@ -294,6 +294,19 @@ impl Config {
     pub(crate) fn control_done(&mut self, next: u32) -> Result<bool> {
         Ok(self.objects[storage::DEVICE_CONTROL*2].read_u32(0)? == next && self.objects[storage::DEVICE_CONTROL*2].read_u32(0x10)? == next)
     }
+    /// Observe the existing DeviceControl ring state after a bounded timeout.
+    /// These are the same driver-owned coherent words `control()`/`control_done()` already use;
+    /// this does not acknowledge, rewrite or otherwise advance the ring.
+    pub(crate) fn control_timeout_state(&mut self, next: u32) -> Result<(u32, u32, u32, u32)> {
+        let state = storage::DEVICE_CONTROL * 2;
+        let ring = state + 1;
+        let read = self.objects[state].read_u32(0)?;
+        let retired = self.objects[state].read_u32(0x10)?;
+        let write = self.objects[state].read_u32(0x20)?;
+        let submitted = if next == 0 { 255 } else { next - 1 };
+        let opcode = self.objects[ring].read_u32(submitted as usize * 0x38)?;
+        Ok((read, retired, write, opcode))
+    }
     pub(crate) fn drain(&mut self, dev: &driver::AsahiDevice) -> Result {
         // Event, trace, stats and six independent firmware log rings.
         for (state, ring, size, count, channels) in [(storage::EVENT*2,storage::EVENT*2+1,0x38,256,1),
