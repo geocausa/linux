@@ -747,6 +747,33 @@ fn build_images(
         dev_info!(dev, "M3 G15G start: exact startup HwDataB +0x17f8 = 1\n");
     }
     write(&mut hwdata, HWDATA_A, initdata::raw_bytes(&*c.hwdata_a))?;
+
+    // T8122 / G15 14.8.3: exact 20-word HwDataA block at +0x418c.
+    // Our E056 exact-J615 reduction recovered the same byte image. A later
+    // independent J613 hardware A/B reproduces this startup boundary: zero
+    // stalls at the first DeviceControl opcode 0x13; this image permits start.
+    // Keep this deliberately local to T8122 and change no other runtime state.
+    if core::ptr::eq(soc, &crate::m3_soc::T8122) {
+        const HWDATA_418C: [u32; 20] = [
+            1, 500, 5,
+            12500, 12500, 12500, 12500, 12500,
+            3000, 3000, 3000,
+            12500, 12500, 12500, 12500, 12500, 12500, 12500, 12500,
+            1,
+        ];
+        const OFF: usize = 0x418c;
+        const SIZE: usize = HWDATA_418C.len() * core::mem::size_of::<u32>();
+        const _: () = assert!(SIZE == 0x50);
+        let mut at = HWDATA_A + OFF;
+        for word in HWDATA_418C {
+            write(&mut hwdata, at, &word.to_le_bytes())?;
+            at += core::mem::size_of::<u32>();
+        }
+        dev_info!(
+            dev,
+            "M3 G15G start: exact T8122 HwDataA +0x418c..+0x41db block restored\n"
+        );
+    }
     // The system counter value at InitData creation, the base of the firmware's first power and
     // energy interval.
     let now: u64;
