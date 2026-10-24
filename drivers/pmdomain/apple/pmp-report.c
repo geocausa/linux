@@ -212,13 +212,18 @@ static const struct {
 	{ "disp_cpu", true },
 };
 
-/* Finds the single T6030 PMGR power state with @label. */
-static struct device_node *apple_pmp_t6030_domain(const char *label)
+/* Finds the single PMGR power state for this report SoC with @label. */
+static struct device_node *apple_pmp_t6030_domain(struct apple_pmp_report *rep,
+						 const char *label)
 {
 	struct device_node *np, *found = NULL;
+	const char *compat = "apple,t6030-pmgr-pwrstate";
 	const char *name;
 
-	for_each_compatible_node(np, NULL, "apple,t6030-pmgr-pwrstate") {
+	if (of_device_is_compatible(rep->dev->of_node, "apple,t8122-pmp-v2-report"))
+		compat = "apple,t8122-pmgr-pwrstate";
+
+	for_each_compatible_node(np, NULL, compat) {
 		if (of_property_read_string(np, "label", &name) || strcmp(name, label))
 			continue;
 		if (found) {
@@ -238,7 +243,7 @@ static int apple_pmp_t6030_check_power(struct apple_pmp_report *rep)
 
 	for (i = 0; i < ARRAY_SIZE(apple_pmp_t6030_domains); i++) {
 		const char *label = apple_pmp_t6030_domains[i].label;
-		struct device_node *np = apple_pmp_t6030_domain(label);
+		struct device_node *np = apple_pmp_t6030_domain(rep, label);
 		struct regmap *regmap;
 		u32 offset, val;
 		int ret;
