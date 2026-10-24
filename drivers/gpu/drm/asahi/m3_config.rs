@@ -97,10 +97,22 @@ impl Config {
             // (`Soc::hwdata_object`); the records and the upload check use the live address.
             let object=if index==HARDWARE_DATA {contents.hwdata_object} else {None};
             if let Some(o)=object {a.address=o.address;}
-            let mut b=match object {
-                Some(o) if o.cached=>Buffer::at_prot(dev,uat.kernel_vm(),None,Some(a.address),a.size,
-                    prot::PROT_FW_PRIV_RW,prot::PROT_GPU_SHARED_RW)?,
-                _=>Buffer::at(dev,uat.kernel_vm(),None,Some(a.address),a.size,a.gpu_shared)?,
+            let mut b=if index==storage::DEVICE_CONTROL*2+1 {
+                // Same-J615 E660 allocates every cached TX ring from the firmware-private
+                // allocator while keeping its producer/consumer state in shared uncached RAM.
+                // DeviceControl uses that exact TxChannel path. Preserve the qualified fixed
+                // VA/backing here and change only its firmware PTE memory attribute.
+                dev_info!(dev.as_ref(),
+                    "M3: DeviceControl ring mapped firmware-private/cached (same-J615 E660 policy)\n");
+                Buffer::at_prot(dev,uat.kernel_vm(),None,Some(a.address),a.size,
+                    prot::PROT_FW_PRIV_RW,prot::PROT_GPU_SHARED_RW)?
+            } else {
+                match object {
+                    Some(o) if o.cached=>Buffer::at_prot(
+                        dev,uat.kernel_vm(),None,Some(a.address),a.size,
+                        prot::PROT_FW_PRIV_RW,prot::PROT_GPU_SHARED_RW)?,
+                    _=>Buffer::at(dev,uat.kernel_vm(),None,Some(a.address),a.size,a.gpu_shared)?,
+                }
             };
             b.write(0,image)?;objects.push(b,GFP_KERNEL)?;
         }
