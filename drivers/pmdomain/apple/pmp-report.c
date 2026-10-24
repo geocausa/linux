@@ -349,6 +349,8 @@ out:
  */
 static int apple_pmp_t6030_check_layout(struct apple_pmp_report *rep)
 {
+	bool ordered = !of_device_is_compatible(rep->dev->of_node,
+					       "apple,t8122-pmp-v2-report");
 	const u8 *table;
 	int len = 0;
 
@@ -358,7 +360,7 @@ static int apple_pmp_t6030_check_layout(struct apple_pmp_report *rep)
 		return -EINVAL;
 
 	table = of_get_property(rep->pmp, "apple,tunable-soc-device", &len);
-	if (!apple_pmp_devices_valid(table, len, rep->seed, rep->ack, true))
+	if (!apple_pmp_devices_valid(table, len, rep->seed, rep->ack, ordered))
 		return -EINVAL;
 	return 0;
 }
