@@ -739,6 +739,12 @@ fn build_images(
         write(&mut hwdata, offset_of!(B, unit_mask_a), &a.to_le_bytes())?;
         write(&mut hwdata, offset_of!(B, unit_mask_b), &b.to_le_bytes())?;
         dev_info!(dev, "M3 G15G start: HwDataB unit masks +0x17c0 {:#x}, +0x17c8 {:#x}\n", a, b);
+        // Exact J615/RTKit startup imports physical HwDataB +0x17f8 as 1. In the
+        // 14.8.3 layout this is the high dword of `unk_17f4`; preserve +0x17f4=0.
+        const _: [(); 0x17f4] = [(); offset_of!(B, unk_17f4)];
+        let startup_17f8: u32 = 1;
+        write(&mut hwdata, offset_of!(B, unk_17f4) + 4, &startup_17f8.to_le_bytes())?;
+        dev_info!(dev, "M3 G15G start: exact startup HwDataB +0x17f8 = 1\n");
     }
     write(&mut hwdata, HWDATA_A, initdata::raw_bytes(&*c.hwdata_a))?;
     // The system counter value at InitData creation, the base of the firmware's first power and
