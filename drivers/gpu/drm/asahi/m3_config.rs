@@ -229,6 +229,15 @@ impl Config {
         }
         Ok(true)
     }
+    /// Exact G15/14.8.3 bootstrap-ready marker. The same-J615 E660 positive path
+    /// names root q21 +0x14 as `firmware_ready` and waits for it after MSG_INIT
+    /// before any DeviceControl doorbell. Root q21 is this runtime's RUNTIME_FLAGS
+    /// (`Root::NEW_A`, root +0xa8), so keep this separate from the later composite
+    /// `ready()` predicate.
+    pub(crate) fn g15_bootstrap_ready(&mut self) -> Result<bool> {
+        Ok(self.objects[RUNTIME_FLAGS].read_u32(0x14)? == 1)
+    }
+
     pub(crate) fn ready(&mut self) -> Result<bool> {
         // NewRegionB+4 is an input initialized to 1, not an acknowledgement.
         // These are firmware-written transitions present in compute-15's

@@ -535,6 +535,29 @@ impl Runtime {
         dev_info!(pdev.as_ref(), "M3: publishing owned initdata {:#x}\n", root);
         self.inner.boot_step = BootStep::Publish;
         Pin::new(&mut self.inner.transport).send_message(0x20, 0x0081000000000000 | (root & ((1u64<<44)-1)))?;
+
+        // Same-J615 E660 is a hardware-positive G15/14.8.3 control. Its boot path
+        // sends MSG_INIT, then waits for root q21 +0x14 (`firmware_ready`) before
+        // any DeviceControl traffic. E1059/E1061 instead published opcode 0x13
+        // immediately and observed firmware read=retired=0 even though this exact
+        // q21 marker had become 1 by the timeout. Restore only that ordering here;
+        // the existing DeviceControl messages and later readiness predicate remain
+        // unchanged so this is a one-variable startup discriminator.
+        self.inner.boot_step = BootStep::AwaitReady;
+        let bootstrap_start = Instant::<Monotonic>::now();
+        while !self.inner.config.g15_bootstrap_ready()? {
+            if bootstrap_start.elapsed() >= Delta::from_secs(2) || !self.inner.state.healthy() {
+                let inner: &mut Inner = &mut *self.inner;
+                let _ = inner.config.log_ready(&inner.drm);
+                return Err(ETIMEDOUT);
+            }
+            fsleep(Delta::from_millis(1));
+        }
+        dev_info!(
+            pdev.as_ref(),
+            "M3: historical G15 q21 firmware_ready observed before DeviceControl\n"
+        );
+
         self.inner.boot_step = BootStep::DeviceControl;
         self.send_control(0x13)?;
         self.send_control(9)?;
