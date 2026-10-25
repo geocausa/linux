@@ -5,6 +5,8 @@
  * Copyright The Asahi Linux Contributors
  */
 
+#include <kunit/static_stub.h>
+
 #include <linux/bitfield.h>
 #include <linux/delay.h>
 #include <linux/device.h>
@@ -53,6 +55,17 @@ static const struct mfd_cell apple_smc_devs[] = {
 	MFD_CELL_OF("macsmc-rtc", NULL, NULL, 0, 0, "apple,smc-rtc"),
 };
 
+/* The second GPIO bank ('gp' keys) only exists on some SMCs. */
+static const struct mfd_cell apple_smc_low_gpio_dev =
+	MFD_CELL_OF("macsmc-low-gpio", NULL, NULL, 0, 0, "apple,smc-low-gpio");
+
+static void apple_smc_read_sram(struct apple_smc *smc, void *buf, size_t size)
+{
+	if (IS_ENABLED(CONFIG_MFD_MACSMC_KUNIT_TEST))
+		KUNIT_STATIC_STUB_REDIRECT(apple_smc_read_sram, smc, buf, size);
+	memcpy_fromio(buf, smc->shmem.iomem, size);
+}
+
 static int apple_smc_cmd_locked(struct apple_smc *smc, u64 cmd, u64 arg,
 				  u64 size, u64 wsize, u32 *ret_data)
 {
@@ -61,6 +74,9 @@ static int apple_smc_cmd_locked(struct apple_smc *smc, u64 cmd, u64 arg,
 	u64 msg;
 
 	lockdep_assert_held(&smc->mutex);
+	if (IS_ENABLED(CONFIG_MFD_MACSMC_KUNIT_TEST))
+		KUNIT_STATIC_STUB_REDIRECT(apple_smc_cmd_locked, smc, cmd, arg, size, wsize,
+					   ret_data);
 
 	if (smc->boot_stage != APPLE_SMC_INITIALIZED)
 		return -EIO;
@@ -153,6 +169,9 @@ static int apple_smc_rw_locked(struct apple_smc *smc, smc_key key,
 	if (ret < 0)
 		return ret;
 
+	if (rsize && ret > rsize)
+		return -EIO;
+
 	if (rsize) {
 		/*
 		 * Small data <= 4 bytes is returned as part of the reply
@@ -161,9 +180,9 @@ static int apple_smc_rw_locked(struct apple_smc *smc, smc_key key,
 		 * Device memory.
 		 */
 		if (rsize <= 4)
-			memcpy(rbuf, &rdata, rsize);
+			memcpy(rbuf, &rdata, ret);
 		else
-			memcpy_fromio(rbuf, smc->shmem.iomem, rsize);
+			apple_smc_read_sram(smc, rbuf, ret);
 	}
 
 	return ret;
@@ -171,6 +190,9 @@ static int apple_smc_rw_locked(struct apple_smc *smc, smc_key key,
 
 int apple_smc_read(struct apple_smc *smc, smc_key key, void *buf, size_t size)
 {
+	if (IS_ENABLED(CONFIG_MFD_MACSMC_KUNIT_TEST))
+		KUNIT_STATIC_STUB_REDIRECT(apple_smc_read, smc, key, buf, size);
+
 	guard(mutex)(&smc->mutex);
 
 	return apple_smc_rw_locked(smc, key, NULL, 0, buf, size);
@@ -179,6 +201,9 @@ EXPORT_SYMBOL(apple_smc_read);
 
 int apple_smc_write(struct apple_smc *smc, smc_key key, const void *buf, size_t size)
 {
+	if (IS_ENABLED(CONFIG_MFD_MACSMC_KUNIT_TEST))
+		KUNIT_STATIC_STUB_REDIRECT(apple_smc_write, smc, key, buf, size);
+
 	guard(mutex)(&smc->mutex);
 
 	return apple_smc_rw_locked(smc, key, buf, size, NULL, 0);
@@ -196,11 +221,17 @@ EXPORT_SYMBOL(apple_smc_rw);
 
 int apple_smc_get_key_by_index(struct apple_smc *smc, int index, smc_key *key)
 {
+	u32 data;
 	int ret;
 
-	ret = apple_smc_cmd(smc, SMC_MSG_GET_KEY_BY_INDEX, index, 0, 0, key);
+	if (index < 0 || index >= smc->key_count)
+		return -EINVAL;
 
-	*key = swab32(*key);
+	ret = apple_smc_cmd(smc, SMC_MSG_GET_KEY_BY_INDEX, index, 0, 0, &data);
+	if (ret < 0)
+		return ret;
+
+	*key = swab32(data);
 	return ret;
 }
 EXPORT_SYMBOL(apple_smc_get_key_by_index);
@@ -210,9 +241,11 @@ int apple_smc_get_key_info(struct apple_smc *smc, smc_key key, struct apple_smc_
 	u8 key_info[6];
 	int ret;
 
-	ret = apple_smc_cmd(smc, SMC_MSG_GET_KEY_INFO, key, 0, 0, NULL);
+	guard(mutex)(&smc->mutex);
+
+	ret = apple_smc_cmd_locked(smc, SMC_MSG_GET_KEY_INFO, key, 0, 0, NULL);
 	if (ret >= 0 && info) {
-		memcpy_fromio(key_info, smc->shmem.iomem, sizeof(key_info));
+		apple_smc_read_sram(smc, key_info, sizeof(key_info));
 		info->size = key_info[0];
 		info->type_code = get_unaligned_be32(&key_info[1]);
 		info->flags = key_info[5];
@@ -409,8 +442,9 @@ static void apple_smc_disable_notifications(void *data)
 static int apple_smc_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
+	struct device_node *np;
 	struct apple_smc *smc;
-	__be32 count;
+	__be32 count = 0;
 	int ret;
 
 	smc = devm_kzalloc(dev, sizeof(*smc), GFP_KERNEL);
@@ -462,8 +496,10 @@ static int apple_smc_probe(struct platform_device *pdev)
 	BLOCKING_INIT_NOTIFIER_HEAD(&smc->event_handlers);
 
 	ret = apple_smc_read(smc, SMC_KEY(#KEY), &count, sizeof(count));
-	if (ret >= 0 && ret != sizeof(count))
-		ret = -EINVAL;
+	if (ret >= 0 && ret != sizeof(count)) {
+		count = 0;
+		ret = -EIO;
+	}
 	if (ret < 0)
 		return dev_err_probe(smc->dev, ret, "Failed to get key count");
 	smc->key_count = be32_to_cpu(count);
@@ -480,6 +516,20 @@ static int apple_smc_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(smc->dev, ret, "Failed to register sub-devices");
 
+	/*
+	 * Register the second GPIO bank only where the device tree describes
+	 * it: the MFD core would otherwise create an unbound device and warn
+	 * that it found no node on every SMC without one.
+	 */
+	np = of_get_compatible_child(dev->of_node, "apple,smc-low-gpio");
+	if (np) {
+		of_node_put(np);
+		ret = devm_mfd_add_devices(smc->dev, PLATFORM_DEVID_NONE,
+					   &apple_smc_low_gpio_dev, 1, NULL, 0, NULL);
+		if (ret)
+			return dev_err_probe(smc->dev, ret,
+					     "Failed to register the second GPIO bank");
+	}
 
 	return 0;
 }
@@ -504,3 +554,7 @@ MODULE_AUTHOR("Hector Martin <marcan@marcan.st>");
 MODULE_AUTHOR("Sven Peter <sven@kernel.org>");
 MODULE_LICENSE("Dual MIT/GPL");
 MODULE_DESCRIPTION("Apple SMC driver");
+
+#if IS_ENABLED(CONFIG_MFD_MACSMC_KUNIT_TEST)
+#include "macsmc-test.c"
+#endif

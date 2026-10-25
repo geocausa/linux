@@ -6,6 +6,7 @@
  * Author: Mika Westerberg <mika.westerberg@linux.intel.com>
  */
 
+#include <linux/delay.h>
 #include <kunit/test.h>
 #include <linux/idr.h>
 
@@ -1407,7 +1408,7 @@ static void tb_test_tunnel_pcie(struct kunit *test)
 	tb_tunnel_put(tunnel1);
 }
 
-static void tb_test_dp_tunnel_active(struct tb_tunnel *tunnel, void *data)
+static void tb_test_dp_tunnel_active(struct tb_tunnel *tunnel)
 {
 }
 
@@ -1432,7 +1433,7 @@ static void tb_test_tunnel_dp(struct kunit *test)
 	out = &dev->ports[13];
 
 	tunnel = tb_tunnel_alloc_dp(NULL, in, out, 1, 0, 0,
-				    tb_test_dp_tunnel_active, NULL);
+				    tb_test_dp_tunnel_active);
 	KUNIT_ASSERT_NOT_NULL(test, tunnel);
 	KUNIT_EXPECT_EQ(test, tunnel->type, TB_TUNNEL_DP);
 	KUNIT_EXPECT_PTR_EQ(test, tunnel->src_port, in);
@@ -1479,7 +1480,7 @@ static void tb_test_tunnel_dp_chain(struct kunit *test)
 	out = &dev4->ports[14];
 
 	tunnel = tb_tunnel_alloc_dp(NULL, in, out, 1, 0, 0,
-				    tb_test_dp_tunnel_active, NULL);
+				    tb_test_dp_tunnel_active);
 	KUNIT_ASSERT_NOT_NULL(test, tunnel);
 	KUNIT_EXPECT_EQ(test, tunnel->type, TB_TUNNEL_DP);
 	KUNIT_EXPECT_PTR_EQ(test, tunnel->src_port, in);
@@ -1530,7 +1531,7 @@ static void tb_test_tunnel_dp_tree(struct kunit *test)
 	out = &dev5->ports[13];
 
 	tunnel = tb_tunnel_alloc_dp(NULL, in, out, 1, 0, 0,
-				    tb_test_dp_tunnel_active, NULL);
+				    tb_test_dp_tunnel_active);
 	KUNIT_ASSERT_NOT_NULL(test, tunnel);
 	KUNIT_EXPECT_EQ(test, tunnel->type, TB_TUNNEL_DP);
 	KUNIT_EXPECT_PTR_EQ(test, tunnel->src_port, in);
@@ -1596,7 +1597,7 @@ static void tb_test_tunnel_dp_max_length(struct kunit *test)
 	out = &dev12->ports[13];
 
 	tunnel = tb_tunnel_alloc_dp(NULL, in, out, 1, 0, 0,
-				    tb_test_dp_tunnel_active, NULL);
+				    tb_test_dp_tunnel_active);
 	KUNIT_ASSERT_NOT_NULL(test, tunnel);
 	KUNIT_EXPECT_EQ(test, tunnel->type, TB_TUNNEL_DP);
 	KUNIT_EXPECT_PTR_EQ(test, tunnel->src_port, in);
@@ -1667,7 +1668,7 @@ static void tb_test_tunnel_3dp(struct kunit *test)
 	out3 = &dev4->ports[14];
 
 	tunnel1 = tb_tunnel_alloc_dp(NULL, in1, out1, 1, 0, 0,
-				     tb_test_dp_tunnel_active, NULL);
+				     tb_test_dp_tunnel_active);
 	KUNIT_ASSERT_TRUE(test, tunnel1 != NULL);
 	KUNIT_EXPECT_EQ(test, tunnel1->type, TB_TUNNEL_DP);
 	KUNIT_EXPECT_PTR_EQ(test, tunnel1->src_port, in1);
@@ -1676,7 +1677,7 @@ static void tb_test_tunnel_3dp(struct kunit *test)
 	KUNIT_ASSERT_EQ(test, tunnel1->paths[0]->path_length, 3);
 
 	tunnel2 = tb_tunnel_alloc_dp(NULL, in2, out2, 1, 0, 0,
-				     tb_test_dp_tunnel_active, NULL);
+				     tb_test_dp_tunnel_active);
 	KUNIT_ASSERT_TRUE(test, tunnel2 != NULL);
 	KUNIT_EXPECT_EQ(test, tunnel2->type, TB_TUNNEL_DP);
 	KUNIT_EXPECT_PTR_EQ(test, tunnel2->src_port, in2);
@@ -1685,7 +1686,7 @@ static void tb_test_tunnel_3dp(struct kunit *test)
 	KUNIT_ASSERT_EQ(test, tunnel2->paths[0]->path_length, 4);
 
 	tunnel3 = tb_tunnel_alloc_dp(NULL, in3, out3, 1, 0, 0,
-				     tb_test_dp_tunnel_active, NULL);
+				     tb_test_dp_tunnel_active);
 	KUNIT_ASSERT_TRUE(test, tunnel3 != NULL);
 	KUNIT_EXPECT_EQ(test, tunnel3->type, TB_TUNNEL_DP);
 	KUNIT_EXPECT_PTR_EQ(test, tunnel3->src_port, in3);
@@ -1784,7 +1785,7 @@ static void tb_test_tunnel_port_on_path(struct kunit *test)
 	out = &dev5->ports[13];
 
 	dp_tunnel = tb_tunnel_alloc_dp(NULL, in, out, 1, 0, 0,
-				       tb_test_dp_tunnel_active, NULL);
+				       tb_test_dp_tunnel_active);
 	KUNIT_ASSERT_NOT_NULL(test, dp_tunnel);
 
 	KUNIT_EXPECT_TRUE(test, tb_tunnel_port_on_path(dp_tunnel, in));
@@ -2217,7 +2218,7 @@ static void tb_test_credit_alloc_dp(struct kunit *test)
 	out = &dev->ports[14];
 
 	tunnel = tb_tunnel_alloc_dp(NULL, in, out, 1, 0, 0,
-				    tb_test_dp_tunnel_active, NULL);
+				    tb_test_dp_tunnel_active);
 	KUNIT_ASSERT_NOT_NULL(test, tunnel);
 	KUNIT_ASSERT_EQ(test, tunnel->npaths, (size_t)3);
 
@@ -2454,7 +2455,7 @@ static struct tb_tunnel *TB_TEST_DP_TUNNEL1(struct kunit *test,
 	in = &host->ports[5];
 	out = &dev->ports[13];
 	dp_tunnel1 = tb_tunnel_alloc_dp(NULL, in, out, 1, 0, 0,
-					tb_test_dp_tunnel_active, NULL);
+					tb_test_dp_tunnel_active);
 	KUNIT_ASSERT_NOT_NULL(test, dp_tunnel1);
 	KUNIT_ASSERT_EQ(test, dp_tunnel1->npaths, (size_t)3);
 
@@ -2492,7 +2493,7 @@ static struct tb_tunnel *TB_TEST_DP_TUNNEL2(struct kunit *test,
 	in = &host->ports[6];
 	out = &dev->ports[14];
 	dp_tunnel2 = tb_tunnel_alloc_dp(NULL, in, out, 1, 0, 0,
-					tb_test_dp_tunnel_active, NULL);
+					tb_test_dp_tunnel_active);
 	KUNIT_ASSERT_NOT_NULL(test, dp_tunnel2);
 	KUNIT_ASSERT_EQ(test, dp_tunnel2->npaths, (size_t)3);
 
@@ -3131,10 +3132,492 @@ static void tb_test_property_merge(struct kunit *test)
 	tb_property_free_dir(dir1);
 }
 
+struct tb_test_pci_host {
+	struct tb_nhi nhi;
+	unsigned int prepares;
+	unsigned int connects;
+	unsigned int disconnects;
+	int result;
+};
+
+static int tb_test_pci_host_prepare(struct tb_nhi *nhi)
+{
+	struct tb_test_pci_host *host = container_of(nhi, struct tb_test_pci_host, nhi);
+
+	host->prepares++;
+	return host->result;
+}
+
+static int tb_test_pci_host_connect(struct tb_nhi *nhi)
+{
+	struct tb_test_pci_host *host = container_of(nhi, struct tb_test_pci_host, nhi);
+
+	host->connects++;
+	return host->result;
+}
+
+static int tb_test_pci_host_disconnect(struct tb_nhi *nhi)
+{
+	struct tb_test_pci_host *host = container_of(nhi, struct tb_test_pci_host, nhi);
+
+	host->disconnects++;
+	return host->result;
+}
+
+static void tb_test_pci_host_teardown(struct kunit *test)
+{
+	static const struct tb_nhi_ops ops = {
+		.pci_tunnel_deactivate = tb_test_pci_host_disconnect,
+	};
+	struct tb_test_pci_host *host;
+	struct tb_tunnel *tunnel;
+	struct tb *tb;
+
+	host = kunit_kzalloc(test, sizeof(*host), GFP_KERNEL);
+	tunnel = kunit_kzalloc(test, sizeof(*tunnel), GFP_KERNEL);
+	tb = kunit_kzalloc(test, sizeof(*tb), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, host);
+	KUNIT_ASSERT_NOT_NULL(test, tunnel);
+	KUNIT_ASSERT_NOT_NULL(test, tb);
+	host->nhi.ops = &ops;
+	tb->nhi = &host->nhi;
+	tunnel->tb = tb;
+
+	/* A discovered firmware tunnel does not own Linux's PCIe hierarchy. */
+	KUNIT_EXPECT_EQ(test, tb_pci_tunnel_deactivate_host(tunnel), 0);
+	KUNIT_EXPECT_EQ(test, host->disconnects, 0U);
+
+	/* An activated tunnel must release the hierarchy exactly once. */
+	tunnel->host_pci_activated = true;
+	KUNIT_EXPECT_EQ(test, tb_pci_tunnel_deactivate_host(tunnel), 0);
+	KUNIT_EXPECT_EQ(test, host->disconnects, 1U);
+	KUNIT_EXPECT_FALSE(test, tunnel->host_pci_activated);
+	KUNIT_EXPECT_EQ(test, tb_pci_tunnel_deactivate_host(tunnel), 0);
+	KUNIT_EXPECT_EQ(test, host->disconnects, 1U);
+
+	/* Failed teardown keeps ownership so a later attempt can retry. */
+	tunnel->host_pci_activated = true;
+	host->result = -EIO;
+	KUNIT_EXPECT_EQ(test, tb_pci_tunnel_deactivate_host(tunnel), -EIO);
+	KUNIT_EXPECT_TRUE(test, tunnel->host_pci_activated);
+	KUNIT_EXPECT_EQ(test, host->disconnects, 2U);
+	host->result = 0;
+	KUNIT_EXPECT_EQ(test, tb_pci_tunnel_deactivate_host(tunnel), 0);
+	KUNIT_EXPECT_FALSE(test, tunnel->host_pci_activated);
+	KUNIT_EXPECT_EQ(test, host->disconnects, 3U);
+}
+
+static void tb_test_pci_host_daisy_chain(struct kunit *test)
+{
+	static const struct tb_nhi_ops ops = {
+		.pci_tunnel_pre_activate = tb_test_pci_host_prepare,
+		.pci_tunnel_post_activate = tb_test_pci_host_connect,
+		.pci_tunnel_deactivate = tb_test_pci_host_disconnect,
+	};
+	struct tb_tunnel *root_tunnel, *downstream_tunnel;
+	struct tb_switch *root, *dev1, *dev2;
+	struct tb_test_pci_host *host;
+	struct tb *tb;
+
+	host = kunit_kzalloc(test, sizeof(*host), GFP_KERNEL);
+	tb = kunit_kzalloc(test, sizeof(*tb), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, host);
+	KUNIT_ASSERT_NOT_NULL(test, tb);
+	host->nhi.ops = &ops;
+	tb->nhi = &host->nhi;
+	root = alloc_host(test);
+	KUNIT_ASSERT_NOT_NULL(test, root);
+	dev1 = alloc_dev_default(test, root, 0x1, true);
+	KUNIT_ASSERT_NOT_NULL(test, dev1);
+	dev2 = alloc_dev_default(test, dev1, 0x501, true);
+	KUNIT_ASSERT_NOT_NULL(test, dev2);
+	root_tunnel = tb_tunnel_alloc_pci(tb, &dev1->ports[9], &root->ports[8]);
+	KUNIT_ASSERT_NOT_NULL(test, root_tunnel);
+	downstream_tunnel = tb_tunnel_alloc_pci(tb, &dev2->ports[9], &dev1->ports[10]);
+	KUNIT_ASSERT_NOT_NULL(test, downstream_tunnel);
+
+	KUNIT_EXPECT_EQ(test, root_tunnel->pre_activate(root_tunnel), 0);
+	KUNIT_EXPECT_EQ(test, tb_pci_tunnel_activate_host(root_tunnel), 0);
+	KUNIT_EXPECT_TRUE(test, root_tunnel->host_pci_activated);
+	KUNIT_EXPECT_EQ(test, host->prepares, 1U);
+	KUNIT_EXPECT_EQ(test, host->connects, 1U);
+
+	/* A second dock must not acquire or tear down the host's PCIe port. */
+	KUNIT_EXPECT_EQ(test, downstream_tunnel->pre_activate(downstream_tunnel), 0);
+	KUNIT_EXPECT_EQ(test, tb_pci_tunnel_activate_host(downstream_tunnel), 0);
+	KUNIT_EXPECT_FALSE(test, downstream_tunnel->host_pci_activated);
+	KUNIT_EXPECT_EQ(test, host->prepares, 1U);
+	KUNIT_EXPECT_EQ(test, host->connects, 1U);
+	KUNIT_EXPECT_EQ(test, tb_pci_tunnel_deactivate_host(downstream_tunnel), 0);
+	KUNIT_EXPECT_EQ(test, host->disconnects, 0U);
+	KUNIT_EXPECT_TRUE(test, root_tunnel->host_pci_activated);
+	KUNIT_EXPECT_EQ(test, tb_pci_tunnel_deactivate_host(root_tunnel), 0);
+	KUNIT_EXPECT_EQ(test, host->disconnects, 1U);
+
+	/* A failed host activation may still need to unwind partial setup. */
+	host->result = -EIO;
+	KUNIT_EXPECT_EQ(test, tb_pci_tunnel_activate_host(root_tunnel), -EIO);
+	KUNIT_EXPECT_TRUE(test, root_tunnel->host_pci_activated);
+	host->result = 0;
+	KUNIT_EXPECT_EQ(test, tb_pci_tunnel_deactivate_host(root_tunnel), 0);
+	KUNIT_EXPECT_EQ(test, host->disconnects, 2U);
+
+	tb_tunnel_put(downstream_tunnel);
+	tb_tunnel_put(root_tunnel);
+}
+
+struct tb_test_dp_host {
+	struct tb_nhi nhi;
+	unsigned int disconnects;
+};
+
+static void tb_test_dp_host_disconnect(struct tb_nhi *nhi, struct tb_port *in,
+				       struct tb_port *out, u64 generation)
+{
+	struct tb_test_dp_host *host = container_of(nhi, struct tb_test_dp_host, nhi);
+
+	host->disconnects++;
+}
+
+static void tb_test_dp_host_teardown_once(struct kunit *test)
+{
+	static const struct tb_nhi_ops ops = {
+		.dp_tunnel_deactivate = tb_test_dp_host_disconnect,
+	};
+	struct tb_test_dp_host *host;
+	struct tb_tunnel *tunnel;
+	struct tb *tb;
+
+	host = kunit_kzalloc(test, sizeof(*host), GFP_KERNEL);
+	tunnel = kunit_kzalloc(test, sizeof(*tunnel), GFP_KERNEL);
+	tb = kunit_kzalloc(test, sizeof(*tb), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, host);
+	KUNIT_ASSERT_NOT_NULL(test, tunnel);
+	KUNIT_ASSERT_NOT_NULL(test, tb);
+	host->nhi.ops = &ops;
+	tb->nhi = &host->nhi;
+	tunnel->tb = tb;
+	tunnel->host_dp_activated = true;
+
+	/* Domain removal must release the display even without adapter I/O. */
+	tb_dp_tunnel_deactivate_host(tunnel);
+	KUNIT_EXPECT_EQ(test, host->disconnects, 1U);
+	KUNIT_EXPECT_FALSE(test, tunnel->host_dp_activated);
+
+	/* A late tunnel cleanup must not access the already removed domain. */
+	tunnel->tb = NULL;
+	tb_dp_tunnel_deactivate_host(tunnel);
+	KUNIT_EXPECT_EQ(test, host->disconnects, 1U);
+}
+
+static void tb_test_dp_host_teardown_unannounced(struct kunit *test)
+{
+	struct tb_tunnel *tunnel;
+
+	tunnel = kunit_kzalloc(test, sizeof(*tunnel), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, tunnel);
+	/* A failed allocation or a domain-less test has no host state to undo. */
+	tb_dp_tunnel_deactivate_host(tunnel);
+	KUNIT_EXPECT_FALSE(test, tunnel->host_dp_activated);
+}
+
+static void tb_test_tunnel_dp_host_credits(struct kunit *test)
+{
+	struct tb_switch *host, *dev;
+	struct tb_tunnel *tunnel;
+	struct tb_nhi *nhi;
+	struct tb *tb;
+
+	host = alloc_host(test);
+	KUNIT_ASSERT_NOT_NULL(test, host);
+	dev = alloc_dev_with_dpin(test, host, 0x3, true);
+	KUNIT_ASSERT_NOT_NULL(test, dev);
+	tb = kunit_kzalloc(test, sizeof(*tb), GFP_KERNEL);
+	nhi = kunit_kzalloc(test, sizeof(*nhi), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, tb);
+	KUNIT_ASSERT_NOT_NULL(test, nhi);
+	tb->nhi = nhi;
+	host->tb = tb;
+	dev->tb = tb;
+
+	KUNIT_EXPECT_FALSE(test, tb_port_needs_host_dp_credits(&host->ports[5]));
+	/* j416s has no dp_tunnel_changed hook; the quirk must be sufficient. */
+	nhi->quirks = QUIRK_HOST_DP_NFC_CREDITS;
+	KUNIT_EXPECT_TRUE(test, tb_port_needs_host_dp_credits(&host->ports[5]));
+	KUNIT_EXPECT_FALSE(test, tb_port_needs_host_dp_credits(&host->ports[1]));
+	KUNIT_EXPECT_FALSE(test, tb_port_needs_host_dp_credits(&dev->ports[13]));
+
+	dev->ports[14].config.type = TB_TYPE_DP_HDMI_OUT;
+	tunnel = tb_tunnel_alloc_dp(NULL, &host->ports[5], &dev->ports[14],
+				    1, 0, 0, tb_test_dp_tunnel_active);
+	KUNIT_ASSERT_NOT_NULL(test, tunnel);
+	KUNIT_EXPECT_EQ(test, tunnel->paths[0]->hops[0].nfc_credits, 5U);
+	tb_tunnel_put(tunnel);
+
+	host->tb = NULL;
+	KUNIT_EXPECT_FALSE(test, tb_port_needs_host_dp_credits(&host->ports[5]));
+}
+
+/* 7.2 owns the domain reference in DPRX, not in the callback. */
+struct tb_test_dprx {
+	struct tb tb;
+	struct tb_nhi nhi;
+	struct kunit *test;
+	struct completion worker_passed;
+	unsigned int completions;
+};
+
+static void tb_test_dprx_release(struct device *dev)
+{
+	/* The context is owned by KUnit and survives the final device put. */
+}
+
+static void tb_test_dprx_complete(struct tb_tunnel *tunnel)
+{
+	struct tb_test_dprx *ctx = container_of(tunnel->tb, struct tb_test_dprx, tb);
+
+	KUNIT_EXPECT_TRUE(ctx->test, tunnel->dprx_canceled);
+	ctx->completions++;
+}
+
+static void tb_test_dp_dprx_cancel_common(struct kunit *test, bool running)
+{
+	struct tb_test_dprx *ctx;
+	struct tb_switch *host, *dev;
+	struct tb_tunnel *tunnel;
+	struct tb *tb;
+	ktime_t deadline;
+
+	ctx = kunit_kzalloc(test, sizeof(*ctx), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, ctx);
+	ctx->test = test;
+	tb = &ctx->tb;
+	tb->nhi = &ctx->nhi;
+	host = alloc_host(test);
+	KUNIT_ASSERT_NOT_NULL(test, host);
+	dev = alloc_dev_default(test, host, 0x1, true);
+	KUNIT_ASSERT_NOT_NULL(test, dev);
+	tunnel = tb_tunnel_alloc_dp(tb, &host->ports[5], &dev->ports[13],
+				    1, 0, 0, tb_test_dprx_complete);
+	KUNIT_ASSERT_NOT_NULL(test, tunnel);
+	tb->wq = alloc_ordered_workqueue("tb-dprx-test", 0);
+	if (!tb->wq) {
+		tb_tunnel_put(tunnel);
+		KUNIT_FAIL(test, "failed to allocate DPRX workqueue");
+		return;
+	}
+	device_initialize(&tb->dev);
+	tb->dev.release = tb_test_dprx_release;
+	mutex_init(&tb->lock);
+	mutex_lock(&tb->lock);
+	kref_get(&tunnel->kref);
+	tb_domain_get(tb);
+	tunnel->dprx_started = true;
+	queue_delayed_work(tb->wq, &tunnel->dprx_work, running ? 0 : 60 * HZ);
+	if (running) {
+		deadline = ktime_add_ms(ktime_get(), 5000);
+		while (!(work_busy(&tunnel->dprx_work.work) & WORK_BUSY_RUNNING) &&
+		       ktime_before(ktime_get(), deadline))
+			usleep_range(100, 200);
+		KUNIT_EXPECT_TRUE(test,
+			work_busy(&tunnel->dprx_work.work) & WORK_BUSY_RUNNING);
+	}
+	tb_dp_tunnel_cancel_dprx(tunnel);
+	KUNIT_EXPECT_FALSE(test, tunnel->dprx_started);
+	KUNIT_EXPECT_TRUE(test, tunnel->dprx_canceled);
+	/* 7.2 cancellation must not wait for a worker blocked on this lock. */
+	mutex_unlock(&tb->lock);
+	flush_workqueue(tb->wq);
+	KUNIT_EXPECT_EQ(test, ctx->completions, running ? 1U : 0U);
+	KUNIT_EXPECT_EQ(test, kref_read(&tunnel->kref), 1U);
+	KUNIT_EXPECT_EQ(test, kref_read(&tb->dev.kobj.kref), 1U);
+	mutex_lock(&tb->lock);
+	tb_dp_tunnel_cancel_dprx(tunnel);
+	mutex_unlock(&tb->lock);
+	KUNIT_EXPECT_EQ(test, kref_read(&tunnel->kref), 1U);
+	destroy_workqueue(tb->wq);
+	tb_tunnel_put(tunnel);
+	put_device(&tb->dev);
+	mutex_destroy(&tb->lock);
+}
+
+static void tb_test_dp_dprx_cancel(struct kunit *test)
+{
+	tb_test_dp_dprx_cancel_common(test, false);
+}
+
+static void tb_test_dp_dprx_cancel_running(struct kunit *test)
+{
+	tb_test_dp_dprx_cancel_common(test, true);
+}
+
+struct tb_test_dprx_gate {
+	struct tb_nhi nhi;
+	bool deferred;
+	struct completion *worker_passed;
+	unsigned int samples;
+};
+
+static bool tb_test_dprx_awaits_display(struct tb_nhi *nhi, struct tb_port *in)
+{
+	struct tb_test_dprx_gate *gate = container_of(nhi, struct tb_test_dprx_gate, nhi);
+
+	if (gate->deferred && !gate->samples++)
+		complete(gate->worker_passed);
+	return gate->deferred;
+}
+
+static void tb_test_dprx_finished(struct tb_tunnel *tunnel)
+{
+	struct tb_test_dprx *ctx = container_of(tunnel->tb, struct tb_test_dprx, tb);
+
+	ctx->completions++;
+	complete(&ctx->worker_passed);
+}
+
+static void tb_test_dp_dprx_deferred_first(struct kunit *test)
+{
+	static const struct tb_nhi_ops ops = {
+		.dp_tunnel_awaits_display = tb_test_dprx_awaits_display,
+	};
+	struct tb_test_dprx_gate gate = { .nhi.ops = &ops, .deferred = true };
+	struct tb_test_dprx *ctx;
+	struct tb_switch *host, *dev;
+	struct tb_tunnel *tunnel;
+	struct tb *tb;
+
+	ctx = kunit_kzalloc(test, sizeof(*ctx), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, ctx);
+	ctx->test = test;
+	tb = &ctx->tb;
+	tb->nhi = &gate.nhi;
+	host = alloc_host(test);
+	KUNIT_ASSERT_NOT_NULL(test, host);
+	dev = alloc_dev_default(test, host, 0x1, true);
+	KUNIT_ASSERT_NOT_NULL(test, dev);
+	tunnel = tb_tunnel_alloc_dp(tb, &host->ports[5], &dev->ports[13],
+				    1, 0, 0, tb_test_dprx_finished);
+	KUNIT_ASSERT_NOT_NULL(test, tunnel);
+	tb->wq = alloc_ordered_workqueue("tb-dprx-gate-test", 0);
+	if (!tb->wq) {
+		tb_tunnel_put(tunnel);
+		KUNIT_FAIL(test, "failed to allocate DPRX workqueue");
+		return;
+	}
+	device_initialize(&tb->dev);
+	tb->dev.release = tb_test_dprx_release;
+	mutex_init(&tb->lock);
+	init_completion(&ctx->worker_passed);
+	gate.worker_passed = &ctx->worker_passed;
+	mutex_lock(&tb->lock);
+	kref_get(&tunnel->kref);
+	tb_domain_get(tb);
+	tunnel->dprx_started = true;
+	tunnel->dprx_timeout = ktime_sub_ms(ktime_get(), 30000);
+	queue_delayed_work(tb->wq, &tunnel->dprx_work, 0);
+	mutex_unlock(&tb->lock);
+	if (!wait_for_completion_timeout(&ctx->worker_passed, 5 * HZ)) {
+		KUNIT_FAIL(test, "DPRX worker did not reach deferred gate");
+		goto out;
+	}
+	mutex_lock(&tb->lock);
+	KUNIT_EXPECT_EQ(test, ctx->completions, 0U);
+	KUNIT_EXPECT_TRUE(test, tunnel->dprx_started);
+	KUNIT_EXPECT_TRUE(test, ktime_after(tunnel->dprx_timeout, ktime_get()));
+	KUNIT_EXPECT_EQ(test, kref_read(&tunnel->kref), 2U);
+	gate.deferred = false;
+	host->generation = 3;
+	reinit_completion(&ctx->worker_passed);
+	mod_delayed_work(tb->wq, &tunnel->dprx_work, 0);
+	mutex_unlock(&tb->lock);
+	if (!wait_for_completion_timeout(&ctx->worker_passed, 5 * HZ)) {
+		KUNIT_FAIL(test, "released DPRX worker did not finish");
+		goto out;
+	}
+	/* Completion precedes 7.2's final tunnel/domain puts. Drain before inspection. */
+	flush_workqueue(tb->wq);
+	mutex_lock(&tb->lock);
+	KUNIT_EXPECT_EQ(test, ctx->completions, 1U);
+	KUNIT_EXPECT_EQ(test, kref_read(&tunnel->kref), 1U);
+	KUNIT_EXPECT_EQ(test, kref_read(&tb->dev.kobj.kref), 1U);
+	mutex_unlock(&tb->lock);
+out:
+	mutex_lock(&tb->lock);
+	tb_dp_tunnel_cancel_dprx(tunnel);
+	mutex_unlock(&tb->lock);
+	flush_workqueue(tb->wq);
+	destroy_workqueue(tb->wq);
+	tb_tunnel_put(tunnel);
+	put_device(&tb->dev);
+	mutex_destroy(&tb->lock);
+}
+
+static void tb_test_dp_generation(struct kunit *test)
+{
+	atomic64_t counter = ATOMIC64_INIT(0);
+
+	KUNIT_EXPECT_EQ(test, tb_dp_generation_alloc(&counter), 1ULL);
+	KUNIT_EXPECT_EQ(test, tb_dp_generation_alloc(&counter), 2ULL);
+	/* Unsigned cookies continue across the signed atomic64 boundary. */
+	atomic64_set(&counter, S64_MAX);
+	KUNIT_EXPECT_EQ(test, tb_dp_generation_alloc(&counter), (u64)S64_MAX + 1);
+	atomic64_set(&counter, (s64)(U64_MAX - 1));
+	KUNIT_EXPECT_EQ(test, tb_dp_generation_alloc(&counter), U64_MAX);
+	/* Overflow refuses new handoffs permanently; never reuse zero or one. */
+	KUNIT_EXPECT_EQ(test, tb_dp_generation_alloc(&counter), 0ULL);
+	KUNIT_EXPECT_EQ(test, tb_dp_generation_alloc(&counter), 0ULL);
+	KUNIT_EXPECT_EQ(test, (u64)atomic64_read(&counter), U64_MAX);
+}
+
+static void tb_test_apple_right_dpin_wiring(struct kunit *test)
+{
+	const struct {
+		const char *name;
+		bool wired;
+		unsigned long policy;
+		bool expected;
+	} cases[] = {
+		{ "701f00000.nhi", true, TB_HOST_DP_INITIAL_BW_GRANT, false },
+		{ "b01f00000.nhi", true, TB_HOST_DP_INITIAL_BW_GRANT, false },
+		{ "f01f00000.nhi", true, TB_HOST_DP_INITIAL_BW_GRANT, true },
+		{ "f01f00000.nhi", false, TB_HOST_DP_INITIAL_BW_GRANT, false },
+		{ "f01f00000.nhi", true, TB_HOST_DP_NOTIFY, false },
+		{ "f01f00000.nhi", true, 0, false },
+		{ "pci-nhi", true, TB_HOST_DP_INITIAL_BW_GRANT, false },
+	};
+	struct tb_nhi missing = {
+		.host_dp_policy = TB_HOST_DP_INITIAL_BW_GRANT,
+		.host_dp_dual_stream = true,
+	};
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(cases); i++) {
+		struct device dev = { .init_name = cases[i].name };
+		struct tb_nhi nhi = {
+			.dev = &dev, .host_dp_policy = cases[i].policy,
+			.host_dp_dual_stream = cases[i].wired,
+		};
+
+		KUNIT_EXPECT_EQ(test, tb_apple_nhi_needs_bw_grant(&nhi), cases[i].expected);
+	}
+	KUNIT_EXPECT_FALSE(test, tb_apple_nhi_needs_bw_grant(NULL));
+	KUNIT_EXPECT_FALSE(test, tb_apple_nhi_needs_bw_grant(&missing));
+}
+
 static struct kunit_case tb_test_cases[] = {
+	KUNIT_CASE(tb_test_apple_right_dpin_wiring),
+	KUNIT_CASE(tb_test_dp_generation),
+	KUNIT_CASE(tb_test_dp_dprx_deferred_first),
+	KUNIT_CASE(tb_test_dp_dprx_cancel),
+	KUNIT_CASE(tb_test_dp_dprx_cancel_running),
 	KUNIT_CASE(tb_test_property_parse_u32_wrap),
 	KUNIT_CASE(tb_test_property_parse_recursion),
 	KUNIT_CASE(tb_test_property_parse_dir_len_underflow),
+	KUNIT_CASE(tb_test_pci_host_teardown),
+	KUNIT_CASE(tb_test_pci_host_daisy_chain),
+	KUNIT_CASE(tb_test_tunnel_dp_host_credits),
+	KUNIT_CASE(tb_test_dp_host_teardown_once),
+	KUNIT_CASE(tb_test_dp_host_teardown_unannounced),
 	KUNIT_CASE(tb_test_path_basic),
 	KUNIT_CASE(tb_test_path_not_connected_walk),
 	KUNIT_CASE(tb_test_path_single_hop_walk),

@@ -17,14 +17,20 @@ use kernel::{
     },
     bindings,
     drm,
-    drm::gem::IntoGEMObject,
+    drm::gem::{
+        BaseObject,
+        IntoGEMObject, //
+    },
     error::to_result,
     prelude::*,
     sync::aref::{
         ARef,
         AlwaysRefCounted, //
     },
-    types::Opaque, //
+    types::{
+        NotThreadSafe,
+        Opaque, //
+    }, //
 };
 
 use core::{
@@ -53,6 +59,14 @@ pub use self::vm_bo::*;
 
 mod va;
 pub use self::va::*;
+
+pub(super) unsafe extern "C" fn exec_lock_gem_object(
+    vm_exec: *mut bindings::drm_gpuvm_exec,
+) -> core::ffi::c_int {
+    // SAFETY: The gpuvm_exec object is valid and priv_ is a GEM object pointer
+    // when this callback is used
+    unsafe { bindings::drm_exec_lock_obj(&mut (*vm_exec).exec, (*vm_exec).extra.priv_ as *mut _) }
+}
 
 /// A DRM GPU VA manager.
 ///
@@ -113,6 +127,7 @@ impl<T: DriverGpuVm> GpuVm<T> {
             sm_step_map: Some(Self::sm_step_map),
             sm_step_unmap: Some(Self::sm_step_unmap),
             sm_step_remap: Some(Self::sm_step_remap),
+            sm_can_merge_flags: None,
         }
     }
 
@@ -232,6 +247,58 @@ impl<T: DriverGpuVm> GpuVm<T> {
         unsafe { bindings::drm_gpuvm_is_extobj(self.as_raw(), obj.as_raw()) }
     }
 
+    /// HACK: added for the asahi downstream driver. Validate a range against the immutable
+    /// address-space bounds and the kernel cutout.
+    pub fn range_valid(&self, addr: u64, range: u64) -> bool {
+        // SAFETY: The borrowed VM retains its immutable geometry.
+        unsafe { bindings::drm_gpuvm_range_valid(self.as_raw(), addr, range) }
+    }
+
+    /// HACK: added for compatibility with asahi downstream driver. Only safe to use
+    /// when the gpuvm user forgot the UniqueRefGpuVm it got from `GpuVm::new()`.
+    pub unsafe fn exec_lock<'a>(
+        &'a self,
+        obj: Option<&T::Object>,
+        interruptible: bool,
+    ) -> Result<GpuVmExec<T>> {
+        // Do not try to lock the object if it is internal (since it is already locked).
+        let is_ext = obj.map(|a| self.is_extobj(a)).unwrap_or(false);
+
+        // vm_exec needs to be pinned, so stick it in a Box.
+        let mut vm_exec = KBox::init(
+            init!(bindings::drm_gpuvm_exec {
+                vm: self.as_raw(),
+                flags: if interruptible {
+                    bindings::DRM_EXEC_INTERRUPTIBLE_WAIT
+                } else {
+                    0
+                },
+                exec: Default::default(),
+                extra: match (is_ext, obj) {
+                    (true, Some(obj)) => bindings::drm_gpuvm_exec__bindgen_ty_1 {
+                        fn_: Some(exec_lock_gem_object),
+                        priv_: obj.as_raw() as *mut _,
+                    },
+                    _ => Default::default(),
+                },
+                num_fences: 0,
+            }),
+            GFP_KERNEL,
+        )?;
+
+        // SAFETY: The object is valid and was initialized above. On failure,
+        // `drm_gpuvm_exec_lock()` has already finalized the exec context, so the box only needs to
+        // be freed, which dropping it does.
+        to_result(unsafe { bindings::drm_gpuvm_exec_lock(&mut *vm_exec) })?;
+
+        // Build the guard, and take its VM reference, only once the locks are held: its `Drop`
+        // unlocks them.
+        Ok(GpuVmExec {
+            vm_exec,
+            unique_gpuvm: UniqueRefGpuVm(self.into()),
+        })
+    }
+
     /// Free this GPUVM.
     ///
     /// # Safety
@@ -248,6 +315,453 @@ impl<T: DriverGpuVm> GpuVm<T> {
     fn raw_resv(&self) -> *mut bindings::dma_resv {
         // SAFETY: `r_obj` is immutable and valid for duration of GPUVM.
         unsafe { (*(*self.as_raw()).r_obj).resv }
+    }
+}
+
+impl<T: DriverGpuVm> GpuVm<T> {
+    /// HACK: added for the asahi downstream driver. Lock only the VM's shared reservation.
+    ///
+    /// This takes the same shared reservation as [`GpuVm::exec_lock`], but does not lock
+    /// external BO reservations or allocate an exec context. The returned guard exposes only the
+    /// driver data, not GPUVA operations requiring those other reservations. Callers must not
+    /// already hold a reservation lock.
+    pub fn lock_inner(&self) -> GpuVmInnerGuard<'_, T> {
+        // SAFETY: The borrowed GPUVM retains `r_obj` and its reservation for the guard's lifetime.
+        // A non-interruptible single-reservation lock without a ww context cannot fail.
+        unsafe { bindings::dma_resv_lock(self.raw_resv(), ptr::null_mut()) };
+        GpuVmInnerGuard {
+            gpuvm: self,
+            _not_send: NotThreadSafe,
+        }
+    }
+}
+
+impl<T: DriverGpuVm> GpuVm<T> {
+    /// Set or clear `INVALIDATED` on the exact linked GPUVA `addr..addr + range`.
+    ///
+    /// # Safety
+    ///
+    /// The caller owns the VM reservation and keeps the exact logical VA linked.
+    unsafe fn set_invalidated_locked(&self, addr: u64, range: u64, invalidated: bool) -> Result {
+        if range == 0 || addr.checked_add(range).is_none() {
+            return Err(EINVAL);
+        }
+        // SAFETY: The caller owns the VM reservation and keeps the VA linked.
+        let raw = unsafe { bindings::drm_gpuva_find(self.as_raw(), addr, range) };
+        if raw.is_null() {
+            return Err(EINVAL);
+        }
+        let flag = u32::from(GpuVaFlags::from(GpuVaFlag::INVALIDATED));
+        // SAFETY: Reservation ownership excludes all concurrent VA mutation.
+        unsafe {
+            if (*raw).va.addr != addr || (*raw).va.range != range {
+                return Err(EINVAL);
+            }
+            if invalidated {
+                (*raw).flags |= flag;
+            } else {
+                (*raw).flags &= !flag;
+            }
+        }
+        Ok(())
+    }
+
+    /// HACK: added for the asahi downstream driver. Try to lock only the VM reservation, without
+    /// allocation or waiting.
+    ///
+    /// The guard protects VM metadata and private BOs, not external backing. Callers must not
+    /// already hold a reservation lock.
+    pub fn try_lock_private(&self) -> Option<PrivateGpuVmGuard<'_, T>> {
+        let resv = self.raw_resv();
+        // SAFETY: The reservation outlives the returned borrow and guard.
+        if !unsafe { bindings::dma_resv_trylock(resv) } {
+            return None;
+        }
+        Some(PrivateGpuVmGuard {
+            gpuvm: self,
+            resv,
+            _not_send: NotThreadSafe,
+        })
+    }
+}
+
+impl<T: DriverGpuVm> GpuVmExec<T> {
+    /// HACK: added for the asahi downstream driver. Mark the exact retained logical mapping after
+    /// page-table restoration.
+    pub fn set_invalidated(&mut self, addr: u64, range: u64, invalidated: bool) -> Result {
+        // SAFETY: The exec guard owns the VM reservation.
+        unsafe {
+            self.unique_gpuvm
+                .set_invalidated_locked(addr, range, invalidated)
+        }
+    }
+}
+
+/// HACK: added for the asahi downstream driver. Logical binding retained independently of
+/// hardware page-table residency.
+///
+/// Owns a GEM reference and copied metadata, never a [`GpuVmBo`] reference. Driver metadata
+/// cloning must not introduce a reservation-taking destructor.
+pub struct MappingSnapshot<T: DriverGpuVm>
+where
+    T::Object: AlwaysRefCounted,
+{
+    /// The mapped object.
+    pub object: ARef<T::Object>,
+    /// Start of the mapping in the GPU address space.
+    pub addr: u64,
+    /// Length of the mapping.
+    pub range: u64,
+    /// Offset of the mapping in the object.
+    pub offset: u64,
+    /// Flags of the GPUVA.
+    pub flags: GpuVaFlags,
+    /// Driver metadata of the GPUVA.
+    pub inner: T::VaData,
+}
+
+/// HACK: added for the asahi downstream driver. Nonblocking reservation ownership for pressure
+/// scans of private objects.
+pub struct PrivateGpuVmGuard<'a, T: DriverGpuVm> {
+    gpuvm: &'a GpuVm<T>,
+    resv: *mut bindings::dma_resv,
+    // DMA reservation ownership must remain on the acquiring task.
+    _not_send: NotThreadSafe,
+}
+
+impl<T: DriverGpuVm> PrivateGpuVmGuard<'_, T> {
+    /// Visit each private BO with linked logical mappings once, without allocating or retaining
+    /// references. Returning false stops the walk. Contended GEM lists are skipped.
+    ///
+    /// # Safety
+    ///
+    /// The callback must not insert or remove logical mappings or modify either GPUVA list. This
+    /// reservation keeps their linked BO/GEM references alive for the complete callback. The
+    /// callback must not retain a borrowed BO or acquire its GEM GPUVA mutex recursively.
+    pub unsafe fn for_each_private_bo(
+        &mut self,
+        mut visit: impl FnMut(&mut Self, &GpuVmBo<T>) -> Result<bool>,
+    ) -> Result {
+        let vm = self.gpuvm.as_raw();
+        // SAFETY: The VM is live while this guard borrows it.
+        if unsafe { (*vm).flags } & bindings::drm_gpuvm_flags_DRM_GPUVM_IMMEDIATE_MODE == 0 {
+            return Err(EINVAL);
+        }
+        // SAFETY: The VM reservation protects this ordered mapping list. The callback does not
+        // mutate its links, and no borrowed or owned reference outlives the guard.
+        let head = unsafe { &raw const (*vm).rb.list };
+        // SAFETY: As above.
+        let mut node = unsafe { (*head).next };
+        while node != head.cast_mut() {
+            // SAFETY: `node` is a live list entry embedded in a `drm_gpuva`.
+            let (next, raw) = unsafe {
+                (
+                    (*node).next,
+                    kernel::container_of!(node, bindings::drm_gpuva, rb.entry),
+                )
+            };
+            // SAFETY: The linked GPUVA is live under the reservation.
+            let va = unsafe { &*raw };
+            if !va.gem.obj.is_null() && !va.vm_bo.is_null() {
+                // SAFETY: The linked VA retains this driver's object.
+                let object = unsafe { <T::Object as IntoGEMObject>::from_raw(va.gem.obj) };
+                if !self.gpuvm.is_extobj(object) {
+                    // SAFETY: The GEM object is live; its GPUVA list mutex is initialized.
+                    let lock = unsafe { &raw mut (*va.gem.obj).gpuva.lock };
+                    // Never block direct reclaim on a GEM-list owner. The canonical alias is
+                    // the list's first-linked node, not its lowest address or current residency.
+                    // SAFETY: `lock` is a valid mutex.
+                    if unsafe { bindings::mutex_trylock(lock) } != 0 {
+                        // SAFETY: The list mutex protects these link reads.
+                        let canonical = unsafe {
+                            (*va.vm_bo).list.gpuva.next == (&raw const va.gem.entry).cast_mut()
+                        };
+                        // SAFETY: Locked just above.
+                        unsafe { bindings::mutex_unlock(lock) };
+                        if canonical {
+                            // SAFETY: The VA's `vm_bo` is a live `GpuVmBo<T>` of this VM.
+                            let bo = unsafe { GpuVmBo::<T>::from_raw(va.vm_bo) };
+                            if !visit(self, bo)? {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            node = next;
+        }
+        Ok(())
+    }
+
+    /// Mark and visit every logical alias of this private BO without a snapshot allocation.
+    ///
+    /// GEM-list locking is nonblocking and held only while reading a cursor, never during the
+    /// callback. Failure (including contention) can leave a prefix marked `INVALIDATED`; callers
+    /// must retain backing unless this method succeeds for the entire association.
+    ///
+    /// # Safety
+    ///
+    /// The callback must not insert or remove logical mappings, alter list links, or release the
+    /// BO's SG/backing lease. The BO must remain linked throughout the walk. Exclude new jobs and
+    /// binding edits for the whole invalidation and backing-release transaction.
+    pub unsafe fn invalidate_private_bo_mappings(
+        &mut self,
+        bo: &GpuVmBo<T>,
+        mut visit: impl FnMut(&mut Self, u64, u64) -> Result,
+    ) -> Result {
+        let vm = self.gpuvm.as_raw();
+        let raw_bo = bo.as_raw();
+        // SAFETY: `bo` and the VM are live while borrowed.
+        if unsafe { (*raw_bo).vm } != vm
+            || self.gpuvm.is_extobj(bo.obj())
+            || unsafe { (*vm).flags } & bindings::drm_gpuvm_flags_DRM_GPUVM_IMMEDIATE_MODE == 0
+        {
+            return Err(EINVAL);
+        }
+        let flag = u32::from(GpuVaFlags::from(GpuVaFlag::INVALIDATED));
+        // SAFETY: `bo` is live while borrowed.
+        let head = unsafe { &raw const (*raw_bo).list.gpuva };
+        // SAFETY: The GEM object of a live BO is live; its GPUVA list mutex is initialized.
+        let lock = unsafe { &raw mut (*(*raw_bo).obj).gpuva.lock };
+        // SAFETY: `lock` is a valid mutex.
+        if unsafe { bindings::mutex_trylock(lock) } == 0 {
+            return Err(EAGAIN);
+        }
+        // SAFETY: The list mutex protects the link read.
+        let mut node = unsafe { (*head).next };
+        // SAFETY: Locked just above.
+        unsafe { bindings::mutex_unlock(lock) };
+        while node != head.cast_mut() {
+            // SAFETY: `lock` is a valid mutex.
+            if unsafe { bindings::mutex_trylock(lock) } == 0 {
+                return Err(EAGAIN);
+            }
+            // SAFETY: The list mutex protects link reads; this reservation and the caller's
+            // no-unlink contract keep current/next and their association alive after unlocking.
+            let (next, raw) = unsafe {
+                (
+                    (*node).next,
+                    kernel::container_of!(node, bindings::drm_gpuva, gem.entry),
+                )
+            };
+            // SAFETY: Locked just above.
+            unsafe { bindings::mutex_unlock(lock) };
+            // SAFETY: As above.
+            let va = unsafe { &mut *raw };
+            if va.vm != vm
+                || va.vm_bo != raw_bo
+                || va.va.range == 0
+                || va.va.addr.checked_add(va.va.range).is_none()
+            {
+                return Err(EINVAL);
+            }
+            // Flags are serialized by the VM reservation, independently of GEM's list mutex.
+            va.flags |= flag;
+            visit(self, va.va.addr, va.va.range)?;
+            node = next;
+        }
+        Ok(())
+    }
+
+    /// Retain the next private mapping containing all `required_flags`.
+    ///
+    /// `cursor` is an exclusive end address and advances past skipped mappings as well. No
+    /// collection is allocated; only the returned object is retained. Callers must drop this
+    /// reservation guard before releasing that reference or acquiring backing. To cover a stable
+    /// set across calls, separately exclude logical binding edits (including retirement) for the
+    /// whole walk.
+    pub fn next_private_mapping(
+        &self,
+        cursor: &mut u64,
+        required_flags: GpuVaFlags,
+    ) -> Result<Option<MappingSnapshot<T>>>
+    where
+        T::VaData: Clone,
+        T::Object: AlwaysRefCounted,
+    {
+        while *cursor != u64::MAX {
+            // SAFETY: The VM reservation serializes mutation of its VA tree.
+            let raw = unsafe {
+                bindings::drm_gpuva_find_first(self.gpuvm.as_raw(), *cursor, u64::MAX - *cursor)
+            };
+            if raw.is_null() {
+                return Ok(None);
+            }
+            // SAFETY: `raw` stays linked and alive while this guard is held.
+            let va = unsafe { &*raw };
+            let end = va.va.addr.checked_add(va.va.range).ok_or(EINVAL)?;
+            if end <= *cursor {
+                return Err(EINVAL);
+            }
+            *cursor = end;
+            let required = u32::from(required_flags);
+            if va.flags & required != required
+                || va.gem.obj.is_null()
+                || va.vm_bo.is_null()
+            {
+                continue;
+            }
+            // SAFETY: The linked VA retains this driver's object.
+            let obj = unsafe { <T::Object as IntoGEMObject>::from_raw(va.gem.obj) };
+            if self.gpuvm.is_extobj(obj) {
+                continue;
+            }
+            // SAFETY: Driver-owned mappings are `GpuVa<T>`. The kernel cutout has no GEM object
+            // and was skipped above.
+            let typed = unsafe { GpuVa::<T>::from_raw(raw) };
+            return Ok(Some(MappingSnapshot {
+                object: obj.into(),
+                addr: va.va.addr,
+                range: va.va.range,
+                offset: va.gem.offset,
+                flags: GpuVaFlags::from(va.flags),
+                inner: typed.data().clone(),
+            }));
+        }
+        Ok(None)
+    }
+}
+
+impl<T: DriverGpuVm> Deref for PrivateGpuVmGuard<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        // SAFETY: The reservation serializes all access to the VM's driver data.
+        unsafe { &*self.gpuvm.data.get() }
+    }
+}
+
+impl<T: DriverGpuVm> DerefMut for PrivateGpuVmGuard<'_, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        // SAFETY: This guard has exclusive reservation ownership.
+        unsafe { &mut *self.gpuvm.data.get() }
+    }
+}
+
+impl<T: DriverGpuVm> Drop for PrivateGpuVmGuard<'_, T> {
+    fn drop(&mut self) {
+        // SAFETY: `try_lock_private()` acquired exactly this reservation.
+        unsafe { bindings::dma_resv_unlock(self.resv) };
+    }
+}
+
+/// HACK: added for the asahi downstream driver. Access to the VM driver data under its shared
+/// reservation, without external BO locks.
+pub struct GpuVmInnerGuard<'a, T: DriverGpuVm> {
+    gpuvm: &'a GpuVm<T>,
+    // Reservation locks must be released by the task that acquired them.
+    _not_send: NotThreadSafe,
+}
+
+impl<T: DriverGpuVm> GpuVmInnerGuard<'_, T> {
+    /// Run immediate-mode unmap steps without allocating an exec context.
+    ///
+    /// # Safety
+    ///
+    /// The driver's unmap and remap callbacks must touch only VM metadata and translations
+    /// protected by this reservation. They must not access external BO backing that requires its
+    /// own reservation. Any split-node storage must already be owned by `context`.
+    pub unsafe fn sm_unmap_inner(
+        &mut self,
+        addr: u64,
+        length: u64,
+        context: &mut T::SmContext<'_>,
+    ) -> Result {
+        // SAFETY: This guard retains the VM and its shared reservation.
+        if unsafe { (*self.gpuvm.as_raw()).flags }
+            & bindings::drm_gpuvm_flags_DRM_GPUVM_IMMEDIATE_MODE
+            == 0
+        {
+            return Err(EINVAL);
+        }
+        // INVARIANT: The shared reservation held by this guard excludes every other
+        // `UniqueRefGpuVm`, as for `GpuVm::exec_lock()`.
+        let mut unique = UniqueRefGpuVm(self.gpuvm.into());
+        unique.sm_unmap(addr, length, context)
+    }
+
+    /// Remove every driver GPUVA of this immediate-mode VM, preserving its kernel cutout.
+    ///
+    /// `unmap` must remove the GPU translation of each complete GPUVA before returning success.
+    /// Only the VM's shared reservation is held: no external BO reservation is taken and no split
+    /// node or operation list is allocated. Call [`GpuVm::deferred_cleanup`] after releasing this
+    /// guard, including when a callback failed after earlier mappings were removed.
+    pub fn unmap_all(&mut self, unmap: impl FnMut(&mut T, &GpuVa<T>) -> Result) -> Result {
+        self.unmap_matching(None, unmap)
+    }
+
+    /// Allocation-free whole-node removal for one GEM object in an immediate-mode VM.
+    ///
+    /// Uses the same translation-removal and deferred-put contract as [`Self::unmap_all`]. This
+    /// scans the VM list and is intended as a low-memory cleanup fallback.
+    pub fn unmap_object(
+        &mut self,
+        object: &T::Object,
+        unmap: impl FnMut(&mut T, &GpuVa<T>) -> Result,
+    ) -> Result {
+        self.unmap_matching(Some(object), unmap)
+    }
+
+    fn unmap_matching(
+        &mut self,
+        object: Option<&T::Object>,
+        mut unmap: impl FnMut(&mut T, &GpuVa<T>) -> Result,
+    ) -> Result {
+        let vm = self.gpuvm.as_raw();
+        // SAFETY: The guard owns this live VM's shared reservation, and the VM is in immediate
+        // mode, so unlinking takes the GEM GPUVA mutex independently of its reservation. Every
+        // listed GPUVA other than the kernel cutout is a `GpuVa<T>` owned by this VM.
+        unsafe {
+            if (*vm).flags & bindings::drm_gpuvm_flags_DRM_GPUVM_IMMEDIATE_MODE == 0 {
+                return Err(EINVAL);
+            }
+            let head = &raw mut (*vm).rb.list;
+            let mut entry = (*head).next;
+            while entry != head {
+                let va = kernel::container_of!(entry, bindings::drm_gpuva, rb.entry);
+                // Save the successor before removing and freeing this GPUVA.
+                entry = (*entry).next;
+                // This node is embedded in the C GPUVM, not a driver `GpuVa<T>`.
+                if ptr::eq(va, &raw const (*vm).kernel_alloc_node) {
+                    continue;
+                }
+                if object.is_some_and(|object| (*va).gem.obj != object.as_raw()) {
+                    continue;
+                }
+                unmap(&mut *self.gpuvm.data.get(), GpuVa::<T>::from_raw(va))?;
+                // Remove it as `OpUnmap::remove()` does.
+                let op = bindings::drm_gpuva_op_unmap { va, keep: false };
+                bindings::drm_gpuva_unmap(&op);
+                bindings::drm_gpuva_unlink_defer(va);
+                drop(GpuVaRemoved::<T>::from_raw(va));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<T: DriverGpuVm> Deref for GpuVmInnerGuard<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        // SAFETY: The shared reservation excludes every other access to the driver data,
+        // including `GpuVm::exec_lock()` and its callbacks.
+        unsafe { &*self.gpuvm.data.get() }
+    }
+}
+
+impl<T: DriverGpuVm> DerefMut for GpuVmInnerGuard<'_, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        // SAFETY: As above, with exclusive access to this guard.
+        unsafe { &mut *self.gpuvm.data.get() }
+    }
+}
+
+impl<T: DriverGpuVm> Drop for GpuVmInnerGuard<'_, T> {
+    fn drop(&mut self) {
+        // SAFETY: This non-Send guard owns the reservation on this task, and its GPUVM borrow
+        // keeps `r_obj` alive until after the unlock.
+        unsafe { bindings::dma_resv_unlock(self.gpuvm.raw_resv()) };
     }
 }
 
@@ -296,6 +810,22 @@ pub trait DriverGpuVm: Sized + Send + Sync {
     ) -> Result<OpRemapped<'op, Self>, Error>;
 }
 
+/// HACK: added for compatibility with asahi downstream driver.
+pub struct GpuVmExec<T: DriverGpuVm> {
+    vm_exec: KBox<bindings::drm_gpuvm_exec>,
+    /// alternative way to get UniqueRefGpuVm when using `GpuVm::exec_lock()`.
+    pub unique_gpuvm: UniqueRefGpuVm<T>,
+}
+
+impl<T: DriverGpuVm> Drop for GpuVmExec<T> {
+    fn drop(&mut self) {
+        // SAFETY: We hold the lock, so it's safe to unlock
+        unsafe {
+            bindings::drm_gpuvm_exec_unlock(&mut *self.vm_exec);
+        }
+    }
+}
+
 /// The core of the DRM GPU VA manager.
 ///
 /// This object is a unique reference to the VM that can access the interval tree and the Rust
@@ -321,6 +851,26 @@ impl<T: DriverGpuVm> UniqueRefGpuVm<T> {
     pub fn data(&mut self) -> &mut T {
         // SAFETY: By the type invariants we may access `data`.
         unsafe { &mut *self.0.data.get() }
+    }
+
+    /// Get the [`GpuVmBo`] for this gem object if it exists.
+    pub fn find_bo(&mut self, obj: &T::Object) -> Option<ARef<GpuVmBo<T>>> {
+        obj.lock_gpuva();
+        // SAFETY: drm_gem_object.gpuva.lock was just locked.
+        let ptr = unsafe {
+            bindings::drm_gpuvm_bo_find(self.as_raw() as *mut _, obj.as_raw() as *const _ as *mut _)
+        };
+        obj.unlock_gpuva();
+        if ptr.is_null() {
+            None
+        } else {
+            // SAFETY: we just checked that ptr is non-null
+            let nonnull = unsafe { NonNull::new_unchecked(ptr.cast()) };
+
+            // INVARIANTS: `drm_gpuvm_bo_obtain_prealloc` ensures that the bo is in the GEM list.
+            // SAFETY: We received one refcount from `drm_gpuvm_bo_obtain_prealloc`.
+            Some(unsafe { ARef::<GpuVmBo<T>>::from_raw(nonnull) })
+        }
     }
 }
 

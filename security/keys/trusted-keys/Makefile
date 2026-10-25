@@ -18,3 +18,5 @@ trusted-$(CONFIG_TRUSTED_KEYS_CAAM) += trusted_caam.o
 trusted-$(CONFIG_TRUSTED_KEYS_DCP) += trusted_dcp.o
 
 trusted-$(CONFIG_TRUSTED_KEYS_PKWM) += trusted_pkwm.o
+
+obj-$(CONFIG_TRUSTED_SOURCE_KUNIT_TEST) += tests/trusted_source_kunit.o

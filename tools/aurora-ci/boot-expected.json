@@ -1,0 +1,38 @@
+{
+  "comment": "Known results of boot-test.py in a QEMU virt guest with no Apple hardware. Every entry needs a reason; remove an entry when the module loads cleanly (the test lists those).",
+  "skip": {
+    "kernel/kernel/rcu/rcutorture.ko": "starts an RCU torture run that keeps going until the module is unloaded",
+    "kernel/sound/drivers/snd-mtpav.ko": "claims a fixed legacy MIDI port and interrupt; request_threaded_irq() warns on arm64 machines that have no such interrupt"
+  },
+  "insmod_errors": {
+    "kernel/drivers/usb/atm/xusbatm.ko": {
+      "error": "Invalid argument",
+      "reason": "refuses to load without its vendor and product module parameters"
+    },
+    "kernel/drivers/ptp/ptp_kvm.ko": {
+      "error": "Operation not supported",
+      "reason": "needs the KVM PTP clock service, which the test guest does not offer"
+    },
+    "kernel/net/6lowpan/nhc_ghc_ext_dest.ko": {
+      "error": "Device or resource busy",
+      "reason": "RFC 7400 compression registers the same next-header ID as the RFC 6282 module loaded before it"
+    },
+    "kernel/net/6lowpan/nhc_ghc_ext_frag.ko": {
+      "error": "Device or resource busy",
+      "reason": "RFC 7400 compression registers the same next-header ID as the RFC 6282 module loaded before it"
+    },
+    "kernel/net/6lowpan/nhc_ghc_ext_hop.ko": {
+      "error": "Device or resource busy",
+      "reason": "RFC 7400 compression registers the same next-header ID as the RFC 6282 module loaded before it"
+    },
+    "kernel/net/6lowpan/nhc_ghc_ext_route.ko": {
+      "error": "Device or resource busy",
+      "reason": "RFC 7400 compression registers the same next-header ID as the RFC 6282 module loaded before it"
+    },
+    "kernel/net/6lowpan/nhc_ghc_udp.ko": {
+      "error": "Device or resource busy",
+      "reason": "RFC 7400 compression registers the same next-header ID as the RFC 6282 module loaded before it"
+    }
+  },
+  "dmesg_allow": []
+}

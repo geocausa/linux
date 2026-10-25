@@ -175,7 +175,7 @@ C. Boot options
 8. fbcon=logo-count:<n>
 
 	The value 'n' overrides the number of bootup logos. 0 disables the
-	logo, and -1 gives the default which is the number of online CPUs.
+	logo, and -1 shows one logo per online CPU. The default is 1.
 
 D. Attaching, Detaching and Unloading
 =====================================

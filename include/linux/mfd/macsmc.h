@@ -229,7 +229,13 @@ static inline bool apple_smc_key_exists(struct apple_smc *smc, smc_key key)
 	static inline int apple_smc_read_##type(struct apple_smc *smc, smc_key key, type *p) \
 	{ \
 		int ret = apple_smc_read(smc, key, p, sizeof(*p)); \
-		return (ret < 0) ? ret : ((ret != sizeof(*p)) ? -EINVAL : 0); \
+		if (ret < 0) \
+			return ret; \
+		if (ret != sizeof(*p)) { \
+			*p = 0; \
+			return -EIO; \
+		} \
+		return 0; \
 	} \
 	static inline int apple_smc_write_##type(struct apple_smc *smc, smc_key key, type p) \
 	{ \
@@ -243,7 +249,13 @@ static inline bool apple_smc_key_exists(struct apple_smc *smc, smc_key key)
 					      type w, type *r) \
 	{ \
 		int ret = apple_smc_rw(smc, key, &w, sizeof(w), r, sizeof(*r)); \
-		return (ret < 0) ? ret : ((ret != sizeof(*r)) ? -EINVAL : 0); \
+		if (ret < 0) \
+			return ret; \
+		if (ret != sizeof(*r)) { \
+			*r = 0; \
+			return -EIO; \
+		} \
+		return 0; \
 	}
 
 APPLE_SMC_TYPE_OPS(u64)

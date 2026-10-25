@@ -12,8 +12,11 @@
 #if !defined(_TPS6598X_TRACE_H_) || defined(TRACE_HEADER_MULTI_READ)
 #define _TPS6598X_TRACE_H_
 
+#include "cd321x-dp.h"
 #include "tps6598x.h"
 
+#include <drm/drm_connector.h>
+#include <linux/device.h>
 #include <linux/stringify.h>
 #include <linux/types.h>
 #include <linux/tracepoint.h>
@@ -425,6 +428,61 @@ TRACE_EVENT(cd321x_data_status,
 		  __entry->data_status & TPS_DATA_STATUS_DP_CONNECTION ? ", DP pinout " : "",
 		  maybe_show_data_status_dp_pin_assignment(__entry->data_status)
 		)
+);
+
+TRACE_DEFINE_ENUM(connector_status_connected);
+TRACE_DEFINE_ENUM(connector_status_disconnected);
+TRACE_DEFINE_ENUM(connector_status_unknown);
+
+#define show_dp_hotplug_status(status) \
+	__print_symbolic(status, \
+		{ connector_status_connected,		"connected" }, \
+		{ connector_status_disconnected,	"disconnected" }, \
+		{ connector_status_unknown,		"unknown" })
+
+#define show_dp_reset_flags(flags) \
+	__print_flags(flags, "|", \
+		{ CD321X_DP_RESET_UNPLUG,	"UNPLUG" }, \
+		{ CD321X_DP_RESET_PLUG,		"PLUG" }, \
+		{ CD321X_DP_RESET_FLIP,		"FLIP" }, \
+		{ CD321X_DP_RESET_TUNNEL,	"TUNNEL" }, \
+		{ CD321X_DP_RESET_PARTNER,	"PARTNER" }, \
+		{ CD321X_DP_RESET_FORCED,	"FORCED" })
+
+TRACE_EVENT(cd321x_dp_hotplug,
+	    TP_PROTO(const struct device *dev, const struct cd321x_dp_update *u,
+		     enum drm_connector_status status),
+	    TP_ARGS(dev, u, status),
+
+	    TP_STRUCT__entry(__string(dev, dev_name(dev))
+			     __field(u32, data_status)
+			     __field(u32, changed)
+			     __field(u32, link_reset)
+			     __field(bool, irq_hpd)
+			     __field(bool, route_active)
+			     __field(bool, sink_reported)
+			     __field(int, status)),
+
+	    TP_fast_assign(__assign_str(dev);
+			   __entry->data_status = u->data_status;
+			   __entry->changed = u->changed;
+			   __entry->link_reset = u->link_reset;
+			   __entry->irq_hpd = u->irq_hpd;
+			   __entry->route_active = u->route_active;
+			   __entry->sink_reported = u->sink_reported;
+			   __entry->status = status;),
+
+	    TP_printk("%s: %s: route %d, sink %d, HPD %d%s%s, IRQ_HPD %d, reset %s, changed %s%s",
+		      __get_str(dev), show_dp_hotplug_status(__entry->status),
+		      __entry->route_active, __entry->sink_reported,
+		      !!(__entry->data_status & CD321X_DATA_STATUS_HPD_LEVEL),
+		      __entry->data_status & TPS_DATA_STATUS_DP_CONNECTION ? ", DP pinout " : "",
+		      maybe_show_data_status_dp_pin_assignment(__entry->data_status),
+		      __entry->irq_hpd,
+		      __entry->link_reset ? show_dp_reset_flags(__entry->link_reset) : "none",
+		      show_cd321x_data_status_flags(__entry->changed),
+		      __entry->changed & TPS_DATA_STATUS_DP_PIN_ASSIGNMENT_MASK ?
+			      "|DP_PIN_ASSIGNMENT" : "")
 );
 
 #endif /* _TPS6598X_TRACE_H_ */

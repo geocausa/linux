@@ -48,6 +48,9 @@ properties:
               - apple,t6030-pmgr-pwrstate
               - apple,t6031-pmgr-pwrstate
               - apple,t8122-pmgr-pwrstate
+              - apple,t8132-pmgr-pwrstate
+              - apple,t8140-pmgr-pwrstate
+              - apple,t8142-pmgr-pwrstate
           - const: apple,t8103-pmgr-pwrstate
 
   reg:
@@ -76,6 +79,34 @@ properties:
       Forces this power domain to always be powered up.
     type: boolean
 
+  apple,no-auto-pm:
+    description: |
+      Never enables automatic power management (auto-enable) for this
+      domain: once powered up it stays at its requested state until
+      Linux changes it. Required for a coprocessor CPU domain whose
+      firmware is started cold by Linux and must not be clock or power
+      gated behind its back, such as the T6030 external display
+      coprocessors' CPU domains.
+    type: boolean
+
+  apple,firmware-owned:
+    description:
+      The boot loader hands over the coprocessor in this domain running, and its
+      firmware owns the domain's power state; writing it faults. The OS keeps the
+      domain on and never changes its power target, automatic gating or reset.
+    type: boolean
+
+  apple,inherited-on:
+    description: |
+      The boot loader leaves this domain powered, with the coprocessor it
+      feeds running (the internal display chain of the T6030, T6031 and
+      T8122 MacBook Pros: DISP_SYS, DISP_FE and DISP_CPU). The power state
+      driver treats it as any domain found on; the display handoff requires
+      the marker before it adds the PMP and sets apple,min-state on the
+      chain, so the PMP cannot power the running display coprocessor down.
+      Unlike apple,firmware-owned, the domain's register is still written.
+    type: boolean
+
   apple,min-state:
     description:
       Specifies the minimum power state for auto-PM.
@@ -83,6 +114,18 @@ properties:
     $ref: /schemas/types.yaml#/definitions/uint32
     minimum: 0
     maximum: 15
+
+  apple,force-disable:
+    description:
+      Forces this device to be disabled (bus access blocked) when the power
+      domain is powered down.
+    type: boolean
+
+  apple,force-reset:
+    description:
+      Forces a reset/error recovery of the power control logic when the power
+      domain is powered down.
+    type: boolean
 
 required:
   - compatible

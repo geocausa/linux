@@ -247,6 +247,11 @@ Description:
 		attached to the port will not be detected, initialized,
 		or enumerated.
 
+		A driver that moves the data lanes behind a port can hold
+		the port off for a while, see usb_hub_port_power_off().
+		Writing 0 then fails with -EBUSY. Writing 1 takes the port
+		over from the driver, which leaves it off from then on.
+
 What:		/sys/bus/usb/devices/.../<hub_interface>/port<X>/early_stop
 Date:		Sep 2022
 Contact:	Ray Chi <raychi@google.com>

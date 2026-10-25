@@ -80,3 +80,24 @@ config TRUSTED_KEYS_PKWM
 if !HAVE_TRUSTED_KEYS
 	comment "No trust source selected!"
 endif
+
+config TRUSTED_SOURCE_KUNIT_TEST
+	tristate "KUnit tests for trusted-key sources registered at runtime" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  This builds unit tests for register_trusted_key_source() and
+	  unregister_trusted_key_source(), called before and after the
+	  core's own init, using synthetic sources that touch no hardware
+	  and no real key material.
+
+	  Built in, they run before mark_readonly(), while read-only-after-init
+	  data can still be written. Build them as a module and load it after
+	  boot to test registration the way a source module such as apple_sep
+	  does it. They skip when another source holds the slot; a source
+	  module that registers while they run gets -EBUSY.
+
+	  For more information on KUnit and unit tests in general,
+	  please refer to the KUnit documentation in Documentation/dev-tools/kunit/.
+
+	  If unsure, say N.

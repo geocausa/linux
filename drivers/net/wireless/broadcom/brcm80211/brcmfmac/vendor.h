@@ -11,7 +11,20 @@
 enum brcmf_vndr_cmds {
 	BRCMF_VNDR_CMDS_UNSPEC,
 	BRCMF_VNDR_CMDS_DCMD,
+	/* Last in brcmf_vendor_cmds[]: not registered with awdl=0. */
+	BRCMF_VNDR_CMDS_AWDL,
 	BRCMF_VNDR_CMDS_LAST
+};
+
+/**
+ * enum brcmf_vndr_awdl_op - operations for BRCMF_VNDR_CMDS_AWDL
+ *
+ * @BRCMF_VNDR_AWDL_OP_CREATE: create the AWDL interface
+ * @BRCMF_VNDR_AWDL_OP_DESTROY: remove the AWDL interface
+ */
+enum brcmf_vndr_awdl_op {
+	BRCMF_VNDR_AWDL_OP_CREATE,
+	BRCMF_VNDR_AWDL_OP_DESTROY,
 };
 
 /**

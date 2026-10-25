@@ -51,6 +51,16 @@ config USB_DWC3_DUAL_ROLE
 
 endchoice
 
+config USB_DWC3_HOST_KUNIT_TEST
+	tristate "KUnit tests for the DWC3 host glue" if !KUNIT_ALL_TESTS
+	depends on KUNIT && (USB_DWC3_HOST || USB_DWC3_DUAL_ROLE)
+	default KUNIT_ALL_TESTS
+	help
+	  Test the properties with which the DWC3 driver configures its
+	  xHCI platform device. The tests need no DWC3 hardware.
+
+	  If unsure, say N.
+
 comment "Platform Glue Driver Support"
 
 config USB_DWC3_OMAP
@@ -222,6 +232,20 @@ config USB_DWC3_APPLE
 	  The DesignWare Core USB3 IP has to be used in dual-role
 	  mode on these machines.
 	  Say 'Y' or 'M' if you have such device.
+
+config USB_DWC3_APPLE_KUNIT_TEST
+	tristate "KUnit tests for the Apple Silicon DWC3 glue" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  Test the helper with which the Apple Silicon DWC3 glue chooses
+	  the USB2 PHY mode it selects before the core leaves reset:
+	  device mode, never host mode, and nothing for other states.
+	  The tests need no Apple hardware or platform support. They are
+	  built under USB_DWC3, so UML without DMA emulation cannot run
+	  them.
+
+	  If unsure, say N.
 
 config USB_DWC3_GOOGLE
 	tristate "Google Platform"

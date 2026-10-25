@@ -253,6 +253,10 @@ static int shpc_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	int rc;
 	struct controller *ctrl;
 
+	/* Do not grant a slot-removal path into a retained-DMA hierarchy. */
+	if (pci_find_host_bridge(pdev->bus)->no_user_remove)
+		return -ENODEV;
+
 	if (!shpc_capable(pdev))
 		return -ENODEV;
 

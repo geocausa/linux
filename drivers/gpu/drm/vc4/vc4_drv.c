@@ -297,7 +297,7 @@ static int vc4_drm_bind(struct device *dev)
 
 	dev->coherent_dma_mask = DMA_BIT_MASK(32);
 
-	gen = (enum vc4_gen)of_device_get_match_data(dev);
+	gen = (enum vc4_gen)(uintptr_t)of_device_get_match_data(dev);
 
 	if (gen > VC4_GEN_4)
 		driver = &vc5_drm_driver;

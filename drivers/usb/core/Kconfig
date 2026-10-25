@@ -97,6 +97,28 @@ config USB_OTG_FSM
 	  Implements OTG Finite State Machine as specified in On-The-Go
 	  and Embedded Host Supplement to the USB Revision 2.0 Specification.
 
+config USB_QUIRKS_KUNIT_TEST
+	tristate "KUnit tests for USB device and hub quirk matching" if !KUNIT_ALL_TESTS
+	depends on USB && KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  Test that the USB core matches devices and hubs against its quirk
+	  tables as intended for the entries these tests cover. The tests
+	  need no USB hardware.
+
+	  If unsure, say N.
+
+config USB_WAKEUP_KUNIT_TEST
+	tristate "KUnit tests for USB wakeup in system sleep" if !KUNIT_ALL_TESTS
+	depends on USB && PM && KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  Test which USB devices the USB core finds able to wake the system
+	  once it has suspended them, on device trees built in memory. The
+	  tests need no USB hardware.
+
+	  If unsure, say N.
+
 config USB_LEDS_TRIGGER_USBPORT
 	tristate "USB port LED trigger"
 	depends on USB && LEDS_TRIGGERS
@@ -143,3 +165,16 @@ config USB_DEFAULT_AUTHORIZATION_MODE
 	  ACPI selecting value 2 is analogous to selecting value 0.
 
 	  If unsure, keep the default value.
+
+config USB_PORT_POWER_KUNIT_TEST
+	tristate "KUnit tests for switching hub port power" if !KUNIT_ALL_TESTS
+	depends on USB && KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  Test that a port powered off with usb_hub_port_power_off() stays
+	  off until usb_hub_port_power_on(), whatever port runtime PM and
+	  the port's "disable" attribute do in between. The tests run the
+	  hub driver on the root hubs of a software host controller and
+	  need no USB hardware.
+
+	  If unsure, say N.

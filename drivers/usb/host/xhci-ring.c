@@ -52,6 +52,7 @@
  *   endpoint rings; it generates events on the event ring for these.
  */
 
+#include <kunit/visibility.h>
 #include <linux/jiffies.h>
 #include <linux/scatterlist.h>
 #include <linux/slab.h>
@@ -1413,6 +1414,7 @@ void xhci_hc_died(struct xhci_hcd *xhci)
 	if (notify)
 		usb_hc_died(xhci_to_hcd(xhci));
 }
+EXPORT_SYMBOL_GPL(xhci_hc_died);
 
 /*
  * When we get a completion for a Set Transfer Ring Dequeue Pointer command,
@@ -1948,6 +1950,113 @@ static void handle_vendor_event(struct xhci_hcd *xhci,
 		handle_cmd_completion(xhci, &event->event_cmd);
 }
 
+/*
+ * A controller kept running in suspend-to-idle interrupts for every event, see
+ * xhci_run_in_s2idle_begin(). The event handling decides which of them wake
+ * the system, as the platform has no other wake logic that would.
+ */
+void xhci_s2idle_wakeup(struct xhci_hcd *xhci)
+{
+	pm_wakeup_hard_event(xhci_to_hcd(xhci)->self.controller);
+}
+
+/*
+ * Whether a port change is one that a halted controller would wake the system
+ * on: resume signalling, which a device only sends once the USB core enabled
+ * its remote wakeup, or a connect, disconnect or over-current change that
+ * xhci_bus_suspend() armed the port for, which it does only when the root hub
+ * may wake the system. Any other change, such as a SuperSpeed link going to
+ * SS.Inactive, does not wake it.
+ */
+VISIBLE_IF_KUNIT bool xhci_s2idle_port_wakeup(u32 portsc)
+{
+	if ((portsc & PORT_PLC) && (portsc & PORT_PLS_MASK) == XDEV_RESUME)
+		return true;
+
+	if ((portsc & PORT_CSC) && (portsc & (PORT_WKCONN_E | PORT_WKDISC_E)))
+		return true;
+
+	return (portsc & PORT_OCC) && (portsc & PORT_WKOC_E);
+}
+EXPORT_SYMBOL_IF_KUNIT(xhci_s2idle_port_wakeup);
+
+/**
+ * xhci_s2idle_port_change - Decide on a port change in suspend-to-idle
+ * @xhci: The controller, running in suspend-to-idle, with its lock held
+ * @port: The port
+ * @portsc: PORTSC as the event handling read it, updated as it is read again
+ *
+ * A port posts a Port Status Change Event only for a change made while none of
+ * its change bits is set, see xHCI 1.2 section 4.19.2. Left set in PORTSC until
+ * the hub driver clears it after resume, a change that does not wake the system
+ * would keep the port from posting one for a later change that does, such as a
+ * connect. Clear the change bits and hold them in software instead, where
+ * xhci_get_port_status() and xhci_hub_status_data() report them as before.
+ *
+ * Clearing them is part of the decision. A change that the port latched in the
+ * meantime, while other change bits were still set, posted no event, so PORTSC
+ * is read and judged again after each write. And a remote wakeup that started
+ * while PLC was set sets no new PLC, so clearing PLC removes its only change
+ * bit: if the link is then in Resume, PLC is put back into @portsc for the
+ * event handling, as if it had stayed set.
+ *
+ * Return: true if a change of the port wakes the system, or if the port keeps
+ * changing. The event handling then carries on with @portsc.
+ */
+static bool xhci_s2idle_port_change(struct xhci_hcd *xhci, struct xhci_port *port,
+				    u32 *portsc)
+{
+	u32 reported = PORT_CHANGE_MASK;
+	int retries = 4;
+
+	/* The hub driver sees no USB 2 link state change, the event handling deals with it */
+	if (port->rhub == &xhci->usb2_rhub)
+		reported &= ~PORT_PLC;
+
+	while (!xhci_s2idle_port_wakeup(*portsc)) {
+		u32 changes = *portsc & PORT_CHANGE_MASK;
+
+		if (!changes)
+			return false;
+		if (retries-- == 0)
+			return true;
+
+		xhci_dbg(xhci, "port %d-%d: no s2idle wakeup, change left for resume\n",
+			 port->rhub->hcd->self.busnum, port->hcd_portnum + 1);
+		port->held_changes |= changes & reported;
+		xhci_portsc_writel(port, xhci_port_state_to_neutral(*portsc) | changes);
+		*portsc = xhci_portsc_readl(port);
+
+		if ((changes & PORT_PLC) && (*portsc & PORT_PLS_MASK) == XDEV_RESUME)
+			*portsc |= PORT_PLC;
+	}
+
+	return true;
+}
+
+/*
+ * Only hubs that the USB core kept awake for a remote wakeup have transfers in
+ * flight, see usb_suspend_both(): a completed one reports a change on one of
+ * their ports.
+ */
+VISIBLE_IF_KUNIT bool xhci_s2idle_transfer_wakeup(const struct usb_device *udev)
+{
+	return udev && udev->awake_in_sleep;
+}
+EXPORT_SYMBOL_IF_KUNIT(xhci_s2idle_transfer_wakeup);
+
+static void xhci_s2idle_transfer_event(struct xhci_hcd *xhci,
+				       struct xhci_transfer_event *event)
+{
+	unsigned int slot_id = TRB_TO_SLOT_ID(le32_to_cpu(event->flags));
+	struct xhci_virt_device *vdev = xhci->devs[slot_id];
+
+	if (vdev && xhci_s2idle_transfer_wakeup(vdev->udev)) {
+		xhci_dbg(xhci, "slot %u transfer: s2idle wakeup\n", slot_id);
+		xhci_s2idle_wakeup(xhci);
+	}
+}
+
 static void handle_device_notification(struct xhci_hcd *xhci,
 		union xhci_trb *event)
 {
@@ -1963,6 +2072,8 @@ static void handle_device_notification(struct xhci_hcd *xhci,
 
 	xhci_dbg(xhci, "Device Wake Notification event for slot ID %u\n",
 			slot_id);
+	if (xhci->running_in_s2idle)
+		xhci_s2idle_wakeup(xhci);
 	udev = xhci->devs[slot_id]->udev;
 	if (udev && udev->parent)
 		usb_wakeup_notification(udev->parent, udev->portnum);
@@ -2052,11 +2163,6 @@ static void handle_port_status(struct xhci_hcd *xhci, union xhci_trb *event)
 
 	trace_xhci_handle_port_status(port, portsc);
 
-	if (hcd->state == HC_STATE_SUSPENDED) {
-		xhci_dbg(xhci, "resume root hub\n");
-		usb_hcd_resume_root_hub(hcd);
-	}
-
 	/*
 	 * Tag broken links to avoid retries while hub driver sorts it out.
 	 * Link status is not relible while port is in reset.
@@ -2064,6 +2170,26 @@ static void handle_port_status(struct xhci_hcd *xhci, union xhci_trb *event)
 	if (!(portsc & PORT_RESET)) {
 		port->link_inactive = (pls == XDEV_INACTIVE);
 		port->connected = !!(portsc & PORT_CONNECT);
+	}
+
+	/*
+	 * Running in suspend-to-idle, wake the system only as a halted
+	 * controller would. Hold any other change for the USB core until
+	 * resume, and do not resume or poll the root hub for it now. Nothing
+	 * below may clear a change bit before this decision, see
+	 * xhci_s2idle_port_change().
+	 */
+	if (xhci->running_in_s2idle) {
+		if (!xhci_s2idle_port_change(xhci, port, &portsc))
+			return;
+		xhci_dbg(xhci, "port %d-%d: s2idle wakeup\n",
+			 hcd->self.busnum, hcd_portnum + 1);
+		xhci_s2idle_wakeup(xhci);
+	}
+
+	if (hcd->state == HC_STATE_SUSPENDED) {
+		xhci_dbg(xhci, "resume root hub\n");
+		usb_hcd_resume_root_hub(hcd);
 	}
 
 	if ((portsc & PORT_PLC) && (portsc & PORT_PLS_MASK) == XDEV_RESUME) {
@@ -2174,6 +2300,33 @@ cleanup:
 	/* Pass this up to the core */
 	usb_hcd_poll_rh_status(hcd);
 	spin_lock(&xhci->lock);
+}
+
+/**
+ * xhci_s2idle_latched_changes - Decide on the changes latched before suspend-to-idle
+ * @xhci: The controller, just set running in suspend-to-idle, with its lock held
+ *
+ * A port whose change bits are still set, such as one whose changes the hub
+ * driver had no chance to clear before it froze, posts no event for its next
+ * change. Handle each such port as if it had just posted an event, so that its
+ * changes are held, or wake the system, as for any other event.
+ */
+void xhci_s2idle_latched_changes(struct xhci_hcd *xhci)
+{
+	union xhci_trb event = {};
+	unsigned int i;
+
+	event.generic.field[2] = cpu_to_le32(COMP_SUCCESS << 24);
+	for (i = 0; i < xhci->max_ports; i++) {
+		struct xhci_port *port = &xhci->hw_ports[i];
+
+		if (!port->rhub || !port->rhub->hcd ||
+		    port->hcd_portnum == DUPLICATE_ENTRY ||
+		    !(xhci_portsc_readl(port) & PORT_CHANGE_MASK))
+			continue;
+		event.generic.field[0] = cpu_to_le32((i + 1) << 24);
+		handle_port_status(xhci, &event);
+	}
 }
 
 static void xhci_clear_hub_tt_buffer(struct xhci_hcd *xhci, struct xhci_td *td,
@@ -3014,6 +3167,8 @@ static int xhci_handle_event_trb(struct xhci_hcd *xhci, struct xhci_interrupter 
 		handle_port_status(xhci, event);
 		break;
 	case TRB_TRANSFER:
+		if (xhci->running_in_s2idle)
+			xhci_s2idle_transfer_event(xhci, &event->trans_event);
 		handle_tx_event(xhci, ir, &event->trans_event);
 		break;
 	case TRB_DEV_NOTE:
@@ -3221,6 +3376,15 @@ irqreturn_t xhci_irq(struct usb_hcd *hcd)
 	/* This is the handler of the primary interrupter */
 	xhci_handle_events(xhci, xhci->interrupters[0], false);
 out:
+	/*
+	 * A controller that stopped or failed in suspend-to-idle is dealt with
+	 * on resume. A Host Controller or Host System Error wakes the system
+	 * even if xhci_halt() timed out: a failing controller may never halt.
+	 */
+	if (xhci->running_in_s2idle &&
+	    ((status & (STS_HCE | STS_FATAL)) ||
+	     (xhci->xhc_state & (XHCI_STATE_DYING | XHCI_STATE_HALTED))))
+		xhci_s2idle_wakeup(xhci);
 	spin_unlock(&xhci->lock);
 
 	return ret;

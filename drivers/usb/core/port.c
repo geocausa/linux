@@ -151,10 +151,26 @@ static ssize_t disable_store(struct device *dev, struct device_attribute *attr,
 		goto out_hdev_lock;
 	}
 
+	/*
+	 * A driver holds the port off while it moves the lanes behind it, see
+	 * usb_hub_port_power_off(). Powering it on would run its link on lanes
+	 * in transition. Keeping it off takes the port over from the driver,
+	 * which then leaves it off.
+	 */
+	if (port_dev->held_off && !disabled) {
+		rc = -EBUSY;
+		goto out_hdev_lock;
+	}
+
 	if (disabled && port_dev->child)
 		usb_disconnect(&port_dev->child);
 
-	rc = usb_hub_set_port_power(hdev, hub, port1, !disabled);
+	/* Runtime resume must not repower the port after a successful disable. */
+	scoped_guard(mutex, &port_dev->power_lock) {
+		rc = usb_hub_set_port_power(hdev, hub, port1, !disabled);
+		if (!rc)
+			port_dev->disabled = disabled;
+	}
 	msleep(2 * hub_power_on_good_delay(hub));
 
 	if (disabled) {
@@ -163,8 +179,13 @@ static ssize_t disable_store(struct device *dev, struct device_attribute *attr,
 			usb_clear_port_feature(hdev, port1, USB_PORT_FEAT_C_ENABLE);
 	}
 
-	if (!rc)
+	if (!rc) {
+		if (port_dev->held_off) {
+			port_dev->held_off = false;
+			pm_runtime_put(&port_dev->dev);
+		}
 		rc = count;
+	}
 
  out_hdev_lock:
 	usb_unlock_device(hdev);
@@ -377,7 +398,10 @@ static int usb_port_runtime_resume(struct device *dev)
 	if (!hub)
 		return -EINVAL;
 	if (hub->in_reset) {
-		set_bit(port1, hub->power_bits);
+		guard(mutex)(&port_dev->power_lock);
+
+		if (!port_dev->disabled)
+			set_bit(port1, hub->power_bits);
 		return 0;
 	}
 
@@ -392,7 +416,14 @@ static int usb_port_runtime_resume(struct device *dev)
 	if (retval < 0)
 		return retval;
 
-	retval = usb_hub_set_port_power(hdev, hub, port1, true);
+	/* hub_event() waits for port PM under the hub lock; do not take it here. */
+	scoped_guard(mutex, &port_dev->power_lock) {
+		if (port_dev->disabled) {
+			retval = 0;
+			goto out;
+		}
+		retval = usb_hub_set_port_power(hdev, hub, port1, true);
+	}
 	msleep(hub_power_on_good_delay(hub));
 	if (udev && !retval) {
 		/*
@@ -417,6 +448,7 @@ static int usb_port_runtime_resume(struct device *dev)
 		}
 	}
 
+out:
 	usb_autopm_put_interface(intf);
 
 	return retval;
@@ -783,6 +815,7 @@ int usb_hub_create_port_device(struct usb_hub *hub, int port1)
 	dev_set_name(&port_dev->dev, "%s-port%d", dev_name(&hub->hdev->dev),
 			port1);
 	mutex_init(&port_dev->status_lock);
+	mutex_init(&port_dev->power_lock);
 	retval = device_register(&port_dev->dev);
 	if (retval) {
 		put_device(&port_dev->dev);
@@ -860,6 +893,8 @@ void usb_hub_remove_port_device(struct usb_hub *hub, int port1)
 	peer = port_dev->peer;
 	if (peer)
 		unlink_peers(port_dev, peer);
+	if (port_dev->held_off)
+		pm_runtime_put_noidle(&port_dev->dev);
 	component_del(&port_dev->dev, &connector_ops);
 	sysfs_put(port_dev->state_kn);
 	device_unregister(&port_dev->dev);

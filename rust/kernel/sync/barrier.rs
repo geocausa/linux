@@ -130,3 +130,23 @@ pub fn smp_mb<T: MemoryBarrier<Smp>>(_: T) {
 pub fn dma_mb<T: MemoryBarrier<Dma>>(_: T) {
     T::run()
 }
+
+/// A write-write memory barrier for memory shared with a device.
+///
+/// Orders the CPU's writes to memory a device reads, such as a coherent DMA buffer, before its
+/// later writes, including a relaxed MMIO write that tells the device to read that memory.
+#[inline(always)]
+pub fn dma_wmb() {
+    // SAFETY: `dma_wmb()` is safe to call.
+    unsafe { bindings::dma_wmb() };
+}
+
+/// A read-read memory barrier for memory shared with a device.
+///
+/// Orders the CPU's reads of memory a device writes, such as a coherent DMA buffer, after its
+/// earlier reads, including a relaxed MMIO read that told it the device had written that memory.
+#[inline(always)]
+pub fn dma_rmb() {
+    // SAFETY: `dma_rmb()` is safe to call.
+    unsafe { bindings::dma_rmb() };
+}

@@ -82,6 +82,10 @@ description: |
   - iPhone 8 Plus
   - iPhone X
 
+  Devices based on the "A18 Pro" SoC:
+
+  - MacBook Neo (A18 Pro, 2026)
+
   Devices based on the "M1" SoC:
 
   - Mac mini (M1, 2020)
@@ -102,6 +106,14 @@ description: |
   - MacBook Air (15-inch, M3, 2024)
   - MacBook Pro (14-inch, M3, 2023)
   - iMac (24-inch, M3, 2023)
+
+  Devices based on the "M5" SoC:
+
+  - MacBook Air (13-inch, M5, 2026)
+
+  Devices based on the "M6" SoC:
+
+  - Mac mini (M6, J873g)
 
   Devices based on the "M1 Pro", "M1 Max" and "M1 Ultra" SoCs:
 
@@ -291,6 +303,13 @@ properties:
           - const: apple,t8015
           - const: apple,arm-platform
 
+      - description: Apple A18 Pro SoC based platforms
+        items:
+          - enum:
+              - apple,j700  # MacBook Neo (A18 Pro, 2026)
+          - const: apple,t8140
+          - const: apple,arm-platform
+
       - description: Apple M1 SoC based platforms
         items:
           - enum:
@@ -321,6 +340,30 @@ properties:
               - apple,j613 # MacBook Air (13-inch, M3, 2024)
               - apple,j615 # MacBook Air (15-inch, M3, 2024)
           - const: apple,t8122
+          - const: apple,arm-platform
+
+      - description: Apple M4 SoC based platforms
+        items:
+          - enum:
+              - apple,j604  # MacBook Pro (14-inch, M4, 2024)
+              - apple,j623  # iMac (24-inch, 2x USB-C, M4, 2024)
+              - apple,j624  # iMac (24-inch, 4x USB-C, M4, 2024)
+              - apple,j713  # MacBook Air (13-inch, M3, 2025)
+              - apple,j715  # MacBook Air (15-inch, M3, 2025)
+              - apple,j773g # Mac mini (M4, 2024)
+          - const: apple,t8132
+          - const: apple,arm-platform
+
+      - description: Apple M5 SoC based platforms
+        items:
+          - const: apple,j813  # MacBook Air (13-inch, M5, 2026)
+          - const: apple,t8142
+          - const: apple,arm-platform
+
+      - description: Apple M6 SoC based platforms
+        items:
+          - const: apple,j873g # Mac mini (M6)
+          - const: apple,t8152
           - const: apple,arm-platform
 
       - description: Apple M1 Pro SoC based platforms
@@ -401,6 +444,15 @@ properties:
           - const: apple,j575d  # Mac Studio (M3 Ultra, 2025)
           - const: apple,t6032
           - const: apple,arm-platform
+
+  aurora,minimal-boot:
+    type: boolean
+    description:
+      Request a minimal native RAM boot from the Aurora m1n1 loader. Skip
+      generic PCIe and DAPF initialization and the legacy EL2 Apple Device
+      Tree handoff. The loader still supplies the Linux flattened device
+      tree, usable memory, reserved regions and CPU release addresses.
+      Used during initial bring-up without DMA peripherals.
 
 additionalProperties: true
 

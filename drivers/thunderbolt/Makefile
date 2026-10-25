@@ -16,3 +16,7 @@ obj-$(CONFIG_USB4_DMA_TEST) += thunderbolt_dma_test.o
 
 thunderbolt_stream-${CONFIG_USB4_STREAM} += stream.o
 obj-$(CONFIG_USB4_STREAM) += thunderbolt_stream.o
+
+obj-$(CONFIG_USB4_APPLE_SOC) += thunderbolt_apple.o
+thunderbolt_apple-y := apple.o apple-dpin-state.o
+thunderbolt_apple-$(CONFIG_USB4_APPLE_DPIN_KUNIT_TEST) += apple-dpin-test.o

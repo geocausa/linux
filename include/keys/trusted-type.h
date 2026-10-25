@@ -83,6 +83,14 @@ struct trusted_key_source {
 
 extern struct key_type key_type_trusted;
 
+int register_trusted_key_source(struct trusted_key_source *src);
+void unregister_trusted_key_source(struct trusted_key_source *src);
+
+#if IS_ENABLED(CONFIG_KUNIT)
+/* For the KUnit tests of the trusted-key core only. */
+int trusted_key_core_init(const struct trusted_key_source *sources, size_t n);
+#endif
+
 #ifdef CONFIG_TRUSTED_KEYS_DEBUG
 extern bool trusted_debug;
 

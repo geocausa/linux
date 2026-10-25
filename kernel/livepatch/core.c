@@ -216,7 +216,16 @@ static int klp_resolve_symbols(Elf_Shdr *sechdrs, const char *strtab,
 	 * we use the smallest/strictest upper bound possible (56, based on
 	 * the current definition of MODULE_NAME_LEN) to prevent overflows.
 	 */
+#if KSYM_NAME_LEN == 1024
+	/*
+	 * The GPU kallsyms carrier grows the output buffer. Keep the existing
+	 * 511-character livepatch parser; a larger destination is still safe.
+	 * This changes only the compile-time bound, not symbol parsing.
+	 */
+	BUILD_BUG_ON(MODULE_NAME_LEN < 56);
+#else
 	BUILD_BUG_ON(MODULE_NAME_LEN < 56 || KSYM_NAME_LEN != 512);
+#endif
 
 	relas = (Elf_Rela *) relasec->sh_addr;
 	/* For each rela in this klp relocation section */

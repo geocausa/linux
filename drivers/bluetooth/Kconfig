@@ -23,6 +23,40 @@ config BT_MTK
 	tristate
 	select FW_LOADER
 
+config BT_MTK7932_PCIE
+	tristate "J700 MT7932 PCIe Bluetooth transport"
+	depends on BT && PCI && ARCH_APPLE && IOMMU_DMA
+	depends on MT7932_FULLMAC
+	select FW_LOADER
+	help
+	  Support the J700 Bluetooth PCIe function with locally installed firmware
+	  and calibration. The function is probed once the Wi-Fi function has
+	  initialized under the mt7932-fullmac driver. Both functions appear
+	  before the root filesystem is mounted and read their firmware when
+	  probed, so say M, like the Wi-Fi driver.
+	  System suspend uses the firmware sleep handshake and preserves DMA
+	  storage. Hibernation and firmware reloading are unsupported. A
+	  controller that stops answering commands is reset over HCI and set
+	  up again; if that setup fails, the transport stays faulted.
+	  Removal drains the PCI function before releasing device-visible memory;
+	  an unconfirmed drain retains it until a full hardware reset.
+
+	  To build as a module, choose M. The module is mt7932_bt_pcie.
+
+config BT_MTK7932_PCIE_KUNIT_TEST
+	bool "KUnit tests for the MT7932 Bluetooth transport" if !KUNIT_ALL_TESTS
+	depends on KUNIT=y && BT_MTK7932_PCIE
+	default KUNIT_ALL_TESTS
+	help
+	  Build KUnit tests into the MT7932 Bluetooth transport. They check,
+	  without radio hardware, that HCI packets whose length does not
+	  match their header are rejected in both directions, that a
+	  board file with a bad layout or checksum is never sent to the
+	  controller, and which received events end a system sleep with
+	  Bluetooth wakeup enabled.
+
+	  If unsure, say N.
+
 config BT_HCIBTUSB
 	tristate "HCI USB driver"
 	depends on USB

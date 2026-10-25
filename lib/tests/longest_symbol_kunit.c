@@ -19,8 +19,14 @@
 #define DDDDI(name) DDDI(n##name##name)
 #define DDDDDI(name) DDDDI(n##name##name)
 
+#if KSYM_NAME_LEN == 1024
+/* Match the larger kallsyms buffer used by long Rust graphics symbols. */
+#define DDDDDDI(name) DDDDDI(n##name##name)
+#define LONGEST_SYM_NAME DDDDDDI(g1h2i3j4k5l6m7n)
+#else
 /*Generate a symbol whose name length is 511 */
 #define LONGEST_SYM_NAME  DDDDDI(g1h2i3j4k5l6m7n)
+#endif
 
 #define RETURN_LONGEST_SYM 0xAAAAA
 

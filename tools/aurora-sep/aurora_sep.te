@@ -1,0 +1,24 @@
+policy_module(aurora_sep, 1.0.0)
+
+########################################
+#
+# Declarations
+#
+
+# /dev/sep-bio, the apple_sep driver's Touch ID device.
+type sep_bio_device_t;
+dev_node(sep_bio_device_t)
+
+########################################
+#
+# Local policy
+#
+
+# fprintd, through libfprint's aurora driver, is the device's only user.
+optional_policy(`
+	gen_require(`
+		type fprintd_t;
+	')
+
+	allow fprintd_t sep_bio_device_t:chr_file rw_chr_file_perms;
+')

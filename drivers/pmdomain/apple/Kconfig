@@ -14,4 +14,90 @@ config APPLE_PMGR_PWRSTATE
 	  controls for SoC devices. This driver manages them through the
 	  generic power domain framework, and also provides reset support.
 
+config APPLE_PMGR_PWRSTATE_KUNIT_TEST
+	bool "KUnit tests for the Apple PMGR power state driver" if !KUNIT_ALL_TESTS
+	depends on APPLE_PMGR_PWRSTATE && KUNIT=y
+	default KUNIT_ALL_TESTS
+	help
+	  Check that a domain marked apple,no-auto-pm never gets automatic
+	  power management when it is powered on or when a failed power-off
+	  is undone, and that other domains still do. The tests run the
+	  driver's power callbacks against an emulated power state register
+	  and need no Apple hardware.
+
+config APPLE_PMP_REPORT
+	bool "Apple PMP report control"
+	depends on OF
+	depends on PM
+	select PM_GENERIC_DOMAINS
+	select OF_DYNAMIC
+	help
+	  Power domains for the SoC device power requests that the power
+	  management processor (PMP) of some Apple SoCs takes from the
+	  report region it shares with the system, and the PMP's report of
+	  its own state.
+
+	  On T8122 (M3), T6031 (M3 Max), and opted-in T6030 (M3 Pro) Macs
+	  whose boot loader hands the
+	  internal display over (see APPLE_T6030_DISPLAY_GATE), iBoot leaves
+	  the PMP halted, and this driver starts it when the display driver
+	  first asks for it. Once its nodes are enabled the PMP may run until
+	  the next reboot. That holds when the start then fails, too (the PMP
+	  driver does not bind, or the PMP does not report ready or does not
+	  acknowledge the startup requests): nothing stops the PMP, this
+	  driver does not check the SoC's power or temperature afterwards,
+	  and the display stays on the boot framebuffer. There is no safe
+	  way to stop the PMP short of a reboot, so reboot. To boot without starting the PMP, put
+	  apple_t8122_display.enable=0 (T8122) or nomodeset on the kernel
+	  command line; on T6031 it is only started with
+	  apple_t6031_display.enable=1. The start's state is in debugfs, in
+	  apple-pmp-report/<report device>.
+
+config APPLE_PMC
+	bool "Apple PMC voter interface"
+	depends on OF
+	depends on PM
+	select PM_GENERIC_DOMAINS
+	default ARCH_APPLE
+	help
+	  The PMC in some Apple SoCs arbitrates the performance states of
+	  shared rails, such as the DRAM controller and the SoC fabric,
+	  between voter agents. This driver enables the static agents and
+	  provides power domains that enable a dynamic agent, such as the
+	  GPU, while its device is powered on. It can also limit the DRAM
+	  controller rail as a thermal cooling device.
+
+config APPLE_PMC_KUNIT_TEST
+	bool "KUnit tests for the Apple PMC voter interface" if !KUNIT_ALL_TESTS
+	depends on APPLE_PMC && KUNIT=y
+	default KUNIT_ALL_TESTS
+	help
+	  Unit tests for the Apple PMC driver. They check that enabling and
+	  disabling a voter agent only changes that agent on each rail, and
+	  that lifting a DCS limit gives the AP agent its own vote back. The
+	  registers are simulated in memory. Only useful for kernel developers.
+
+config APPLE_PMP_REPORT_START_KUNIT_TEST
+	bool "KUnit tests for starting a halted Apple PMP" if !KUNIT_ALL_TESTS
+	depends on APPLE_PMP_REPORT && KUNIT=y
+	default KUNIT_ALL_TESTS
+	help
+	  Injects faults into the start of a halted PMP (APPLE_PMP_REPORT):
+	  failed checks, a PMP driver that does not bind, a PMP that does not
+	  report ready or acknowledge its startup requests, consumers that
+	  time out, and the teardown of the report and its entries while a
+	  start or a consumer waits. The report region is simulated in
+	  memory. Only useful for kernel developers.
+
 endif
+
+config APPLE_PMP_REPORT_KUNIT_TEST
+	tristate "Apple PMP report validation tests" if !KUNIT_ALL_TESTS
+	depends on KUNIT && PM
+	select PM_GENERIC_DOMAINS
+	default KUNIT_ALL_TESTS
+	help
+	  Tests the PMP report layout, request acknowledgment flags and boot
+	  argument validation without accessing hardware.
+	  Includes malformed tables, address arithmetic and device ordering.
+	  The PMP report driver does not need to be enabled to run this suite.

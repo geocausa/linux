@@ -11,6 +11,17 @@ config VMCORE_INFO
 config KEXEC_CORE
 	bool
 
+config KEXEC_BLOCK_KUNIT_TEST
+	bool "Unit tests for retained-memory kexec blockers" if !KUNIT_ALL_TESTS
+	depends on KEXEC_CORE && KUNIT=y
+	default KUNIT_ALL_TESTS
+	help
+	  Test balanced and nested retained-memory blockers and acquisition
+	  failure when the kexec lock is held, plus execution refusal with no
+	  image loaded. These tests never load or execute a kernel, or modify
+	  a loaded normal or crash image.
+	  Tests are skipped if a real device already blocks kexec.
+
 config KEXEC_ELF
 	bool
 

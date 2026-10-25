@@ -708,6 +708,7 @@ struct usb_device {
 	unsigned usb2_hw_lpm_allowed:1;
 	unsigned usb3_lpm_u1_enabled:1;
 	unsigned usb3_lpm_u2_enabled:1;
+	unsigned awake_in_sleep:1;
 	int string_langid;
 
 	/* static strings from the device */
@@ -953,6 +954,10 @@ int usb_hub_claim_port(struct usb_device *hdev, unsigned port1,
 		struct usb_dev_state *owner);
 int usb_hub_release_port(struct usb_device *hdev, unsigned port1,
 		struct usb_dev_state *owner);
+
+/* port power switching for a driver that moves the lanes behind a port */
+int usb_hub_port_power_off(struct usb_device *hdev, int port1);
+int usb_hub_port_power_on(struct usb_device *hdev, int port1);
 
 /**
  * usb_make_path - returns stable device path in the usb tree

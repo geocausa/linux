@@ -11,9 +11,13 @@
 #include <linux/of.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/phy/phy.h>
 #include <linux/platform_device.h>
+#include <linux/pm_wakeup.h>
 #include <linux/reset.h>
+#include <linux/usb/phy.h>
 
+#include "dwc3-apple-state.h"
 #include "glue.h"
 
 /*
@@ -67,13 +71,23 @@
  * in DWC3_APPLE_PROBE_PENDING.
  * Once a cable is connected we then keep track of the controller mode here by transitioning to
  * DWC3_APPLE_HOST or DWC3_APPLE_DEVICE.
+ *
+ * Some boards do not wire the controller's USB2 pairs to a connector but to a fixed USB2 hub on
+ * the board, whose downstream ports serve the Type-C connectors (Apple J700). Such a controller is
+ * a host whatever happens at the connectors and never sees a role change: it is brought up in
+ * DWC3_APPLE_HOST at probe and stays there. The Type-C port controllers only drive the PHY's
+ * Type-C mux for the SuperSpeed lanes, and the PHY follows those mode changes on its own. It keeps
+ * to the order above for the SuperSpeed side: the USB core holds the controller's SuperSpeed root
+ * port powered off for the PHY, port runtime PM included, from before the PIPE goes to the dummy
+ * backend until the PIPE is back on the USB3 PHY. The USB2 root port and the hub on it stay up
+ * throughout.
+ *
+ * Whenever the core is up, for either kind of port, it is kept running across system sleep, see
+ * dwc3_apple_init(). In host mode xHCI then keeps running in suspend-to-idle when a USB device
+ * may wake the system, as a halted xHC could not signal the wakeup.
+ *
+ * enum dwc3_apple_state is defined in dwc3-apple-state.h.
  */
-enum dwc3_apple_state {
-	DWC3_APPLE_PROBE_PENDING, /* Before first cable connection, dwc3_core_probe not called */
-	DWC3_APPLE_NO_CABLE, /* No cable connected, dwc3 suspended after dwc3_core_exit */
-	DWC3_APPLE_HOST, /* Cable connected, dwc3 in host mode */
-	DWC3_APPLE_DEVICE, /* Cable connected, dwc3 in device mode */
-};
 
 /**
  * struct dwc3_apple - Apple-specific DWC3 USB controller
@@ -82,9 +96,18 @@ enum dwc3_apple_state {
  * @mmio_resource: Resource to be passed to dwc3_core_probe
  * @apple_regs: Apple-specific DWC3 registers
  * @reset: Reset control
+ * @usb2_phy: USB2 PHY, set to device mode before the core is brought up; the xHCI root hub
+ *	      sets host mode
+ * @usb3_phy: USB3 PHY, configured after the core is brought up
  * @role_sw: USB role switch
+ * @fixed_hub: A fixed hub sits on the controller's USB2 port, the controller stays in host mode
  * @lock: Mutex for synchronizing access
- * @state: Current state of the controller, see documentation for the enum for details
+ * @state: Current state of the controller, see enum dwc3_apple_state and the comment above
+ * @core_active: Core still owns initialized PHYs
+ * @core_exit_pending: Event buffers have been cleaned for this shutdown
+ * @reset_pending: Controller reset must complete before another start
+ * @usb2_power_off_pending: Core-owned USB2 references still to release
+ * @usb3_power_off_pending: Core-owned USB3 references still to release
  */
 struct dwc3_apple {
 	struct dwc3 dwc;
@@ -94,11 +117,19 @@ struct dwc3_apple {
 	void __iomem *apple_regs;
 
 	struct reset_control *reset;
+	struct phy *usb2_phy;
+	struct phy *usb3_phy;
 	struct usb_role_switch *role_sw;
+	bool fixed_hub;
 
 	struct mutex lock;
 
 	enum dwc3_apple_state state;
+	bool core_active;
+	bool core_exit_pending;
+	bool reset_pending;
+	unsigned long usb2_power_off_pending;
+	unsigned long usb3_power_off_pending;
 };
 
 #define to_dwc3_apple(d) container_of((d), struct dwc3_apple, dwc)
@@ -171,6 +202,7 @@ static void dwc3_apple_set_ptrcap(struct dwc3_apple *appledwc, u32 mode)
 static int dwc3_apple_core_probe(struct dwc3_apple *appledwc)
 {
 	struct dwc3_probe_data probe_data = {};
+	void *group;
 	int ret;
 
 	lockdep_assert_held(&appledwc->lock);
@@ -182,10 +214,37 @@ static int dwc3_apple_core_probe(struct dwc3_apple *appledwc)
 	probe_data.ignore_clocks_and_resets = true;
 	probe_data.skip_core_init_mode = true;
 	probe_data.properties = DWC3_DEFAULT_PROPERTIES;
+	/*
+	 * The controller has no wake signal of its own, and a halted xHC writes no events, so its
+	 * interrupt cannot fire either. xHCI keeps running instead and decides which of its events
+	 * wake the system; the core stays powered across system sleep, see dwc3_apple_init().
+	 */
+	probe_data.properties.xhci_run_in_s2idle = true;
+
+	/*
+	 * This runs from the role switch callback, so a failure leaves the glue
+	 * device bound with everything dwc3_core_probe() acquired through devres
+	 * still attached, the request of the core register region included. The
+	 * next cable event retries dwc3_core_probe() on this struct and would fail
+	 * with -EBUSY on that region. Group the devres of one attempt so that a
+	 * failed attempt can be released.
+	 */
+	group = devres_open_group(appledwc->dev, NULL, GFP_KERNEL);
+	if (!group)
+		return -ENOMEM;
 
 	ret = dwc3_core_probe(&probe_data);
-	if (ret)
+	if (ret) {
+		devres_release_group(appledwc->dev, group);
+		/*
+		 * dwc3_core_probe() initialised the locks, work items and lists of
+		 * the embedded struct dwc3. The retry expects a zeroed struct, as
+		 * on the first attempt.
+		 */
+		memset(&appledwc->dwc, 0, sizeof(appledwc->dwc));
 		return ret;
+	}
+	devres_remove_group(appledwc->dev, group);
 
 	appledwc->state = DWC3_APPLE_NO_CABLE;
 	return 0;
@@ -218,29 +277,92 @@ static int dwc3_apple_core_init(struct dwc3_apple *appledwc)
 	return ret;
 }
 
-static int dwc3_apple_init(struct dwc3_apple *appledwc, enum dwc3_apple_state state)
+/* Keep failed releases owned by the glue, without repeating completed teardown. */
+static int dwc3_apple_core_stop(struct dwc3_apple *appledwc)
 {
+	struct dwc3 *dwc = &appledwc->dwc;
+	int i, ret;
+
+	lockdep_assert_held(&appledwc->lock);
+	if (appledwc->core_active) {
+		if (!appledwc->core_exit_pending) {
+			dwc3_enable_susphy(dwc, true);
+			dwc3_event_buffers_cleanup(dwc);
+			appledwc->core_exit_pending = true;
+		}
+		for (i = 0; i < dwc->num_usb3_ports; i++) {
+			if (!(appledwc->usb3_power_off_pending & BIT(i)))
+				continue;
+			ret = phy_power_off(dwc->usb3_generic_phy[i]);
+			if (ret)
+				return ret;
+			appledwc->usb3_power_off_pending &= ~BIT(i);
+		}
+		for (i = 0; i < dwc->num_usb2_ports; i++) {
+			if (!(appledwc->usb2_power_off_pending & BIT(i)))
+				continue;
+			ret = phy_power_off(dwc->usb2_generic_phy[i]);
+			if (ret)
+				return ret;
+			appledwc->usb2_power_off_pending &= ~BIT(i);
+		}
+		usb_phy_set_suspend(dwc->usb3_phy, 1);
+		usb_phy_set_suspend(dwc->usb2_phy, 1);
+		dwc3_core_exit_after_phy_power_off(dwc);
+		appledwc->core_active = false;
+		appledwc->core_exit_pending = false;
+	}
+	if (appledwc->reset_pending) {
+		ret = reset_control_assert(appledwc->reset);
+		if (ret)
+			return ret;
+		appledwc->reset_pending = false;
+	}
+	dev_pm_syscore_device(appledwc->dev, false);
+
+	return 0;
+}
+
+/*
+ * Bring the core up for the given role: configure the USB2 PHY, release the reset and probe
+ * (on the first call) or initialise the core.
+ */
+static int dwc3_apple_core_start(struct dwc3_apple *appledwc, enum dwc3_apple_state state)
+{
+	enum phy_mode mode;
 	int ret, ret_reset;
 
 	lockdep_assert_held(&appledwc->lock);
 
+	/* A failed exit must finish before any new PHY reference is acquired. */
+	ret = dwc3_apple_core_stop(appledwc);
+	if (ret)
+		return ret;
+
 	/*
-	 * The USB2 PHY on this platform must be configured for host or device mode while it is
-	 * still powered off and before dwc3 tries to access it. Otherwise, the new configuration
-	 * will sometimes only take affect after the *next* time dwc3 is brought up which causes
-	 * the connected device to just not work.
+	 * The USB2 PHY on this platform must be configured for device mode before dwc3 tries to
+	 * access it. Otherwise, the new configuration will sometimes only take affect after the
+	 * *next* time dwc3 is brought up which causes the connected device to just not work.
+	 * Host mode is left to the xHCI root hub, which selects it once the core is out of reset
+	 * (usb_add_hcd() asks for PHY_MODE_USB_HOST_SS, which the PHY rejects, and then for
+	 * PHY_MODE_USB_HOST). On a Type-C port the PHY is already running at this point, because
+	 * the Type-C mux starts it before the role switch reaches this driver, and switching the
+	 * running PHY to host mode while the core is still held in reset leaves the USB2 port
+	 * without a connection for the whole session. A PHY that is in host mode already needs no
+	 * selection here either.
 	 * The USB3 PHY must be configured later after dwc3 has already been initialized.
+	 * Both PHYs were looked up at probe, so device mode is also selected on the first
+	 * bring-up, before dwc3_core_probe() has looked them up itself.
 	 */
-	switch (state) {
-	case DWC3_APPLE_HOST:
-		phy_set_mode(appledwc->dwc.usb2_generic_phy[0], PHY_MODE_USB_HOST);
-		break;
-	case DWC3_APPLE_DEVICE:
-		phy_set_mode(appledwc->dwc.usb2_generic_phy[0], PHY_MODE_USB_DEVICE);
-		break;
-	default:
+	ret = dwc3_apple_usb2_mode_before_reset(state, &mode);
+	if (ret) {
 		/* Unreachable unless there's a bug in this driver */
-		return -EINVAL;
+		return ret;
+	}
+	if (mode != PHY_MODE_INVALID) {
+		ret = phy_set_mode(appledwc->usb2_phy, mode);
+		if (ret)
+			dev_warn(appledwc->dev, "Failed to set the USB2 PHY mode, err=%d\n", ret);
 	}
 
 	ret = reset_control_deassert(appledwc->reset);
@@ -249,44 +371,72 @@ static int dwc3_apple_init(struct dwc3_apple *appledwc, enum dwc3_apple_state st
 		return ret;
 	}
 
+	appledwc->reset_pending = true;
+	/* Keep register access powered until both PHY shutdown and reset finish. */
+	dev_pm_syscore_device(appledwc->dev, true);
 	ret = dwc3_apple_core_init(appledwc);
-	if (ret)
-		goto reset_assert;
+	if (ret) {
+		ret_reset = dwc3_apple_core_stop(appledwc);
+		if (ret_reset)
+			dev_warn(appledwc->dev, "Failed to finish core shutdown, err=%d\n", ret_reset);
+		return ret;
+	}
 
 	/*
 	 * Now that the core is initialized and already went through dwc3_core_soft_reset we can
 	 * configure some unknown Apple-specific settings and then bring up xhci or gadget mode.
 	 */
 	dwc3_apple_setup_cio(appledwc);
+	appledwc->core_active = true;
+	appledwc->usb2_power_off_pending = BIT(appledwc->dwc.num_usb2_ports) - 1;
+	appledwc->usb3_power_off_pending = BIT(appledwc->dwc.num_usb3_ports) - 1;
+
+	return 0;
+}
+
+/* Select the role in the core and route the USB3 PHY, before xhci or the gadget is started */
+static void dwc3_apple_set_role(struct dwc3_apple *appledwc, enum dwc3_apple_state state)
+{
+	bool host = state == DWC3_APPLE_HOST;
+	int ret;
+
+	lockdep_assert_held(&appledwc->lock);
+
+	appledwc->dwc.dr_mode = host ? USB_DR_MODE_HOST : USB_DR_MODE_PERIPHERAL;
+	dwc3_apple_set_ptrcap(appledwc, host ? DWC3_GCTL_PRTCAP_HOST : DWC3_GCTL_PRTCAP_DEVICE);
+	/*
+	 * This platform requires SUSPHY to be enabled here already in order to properly
+	 * configure the PHY and switch dwc3's PIPE interface to USB3 PHY. The USB2 PHY's
+	 * device mode has already been selected in dwc3_apple_core_start(); its host mode
+	 * is selected by the xHCI root hub as it starts.
+	 */
+	dwc3_enable_susphy(&appledwc->dwc, true);
+	ret = phy_set_mode(appledwc->usb3_phy, host ? PHY_MODE_USB_HOST : PHY_MODE_USB_DEVICE);
+	if (ret)
+		dev_warn(appledwc->dev, "USB3 PHY setup failed, USB2 only, err=%d\n", ret);
+}
+
+static int dwc3_apple_init(struct dwc3_apple *appledwc, enum dwc3_apple_state state)
+{
+	int ret, ret_reset;
+
+	lockdep_assert_held(&appledwc->lock);
+
+	ret = dwc3_apple_core_start(appledwc, state);
+	if (ret)
+		return ret;
+
+	dwc3_apple_set_role(appledwc, state);
 
 	switch (state) {
 	case DWC3_APPLE_HOST:
-		appledwc->dwc.dr_mode = USB_DR_MODE_HOST;
-		dwc3_apple_set_ptrcap(appledwc, DWC3_GCTL_PRTCAP_HOST);
-		/*
-		 * This platform requires SUSPHY to be enabled here already in order to properly
-		 * configure the PHY and switch dwc3's PIPE interface to USB3 PHY. The USB2 PHY
-		 * has already been configured to the correct mode earlier.
-		 */
-		dwc3_enable_susphy(&appledwc->dwc, true);
-		phy_set_mode(appledwc->dwc.usb3_generic_phy[0], PHY_MODE_USB_HOST);
 		ret = dwc3_host_init(&appledwc->dwc);
 		if (ret) {
 			dev_err(appledwc->dev, "Failed to initialize host, ret=%d\n", ret);
 			goto core_exit;
 		}
-
 		break;
 	case DWC3_APPLE_DEVICE:
-		appledwc->dwc.dr_mode = USB_DR_MODE_PERIPHERAL;
-		dwc3_apple_set_ptrcap(appledwc, DWC3_GCTL_PRTCAP_DEVICE);
-		/*
-		 * This platform requires SUSPHY to be enabled here already in order to properly
-		 * configure the PHY and switch dwc3's PIPE interface to USB3 PHY. The USB2 PHY
-		 * has already been configured to the correct mode earlier.
-		 */
-		dwc3_enable_susphy(&appledwc->dwc, true);
-		phy_set_mode(appledwc->dwc.usb3_generic_phy[0], PHY_MODE_USB_DEVICE);
 		ret = dwc3_gadget_init(&appledwc->dwc);
 		if (ret) {
 			dev_err(appledwc->dev, "Failed to initialize gadget, ret=%d\n", ret);
@@ -301,53 +451,47 @@ static int dwc3_apple_init(struct dwc3_apple *appledwc, enum dwc3_apple_state st
 	}
 
 	appledwc->state = state;
+	/*
+	 * A connected cable leaves the Apple DWC3 core and its PHY as one live,
+	 * stateful unit.  The glue driver tears that unit down explicitly on a
+	 * role change or disconnect.  Do not let generic system PM independently
+	 * power-gate the DWC3 device in between: xHCI then observes a dead core on
+	 * resume and cannot restore the root hubs without a full cable teardown.
+	 * The same holds for a fixed-hub controller, whose core is up for as long
+	 * as the driver is bound. As a syscore device the core is not counted as
+	 * suspended in its power domain, so the domain stays on, and xHCI saves
+	 * its state on suspend and restores it on resume.
+	 */
+	dev_pm_syscore_device(appledwc->dev, true);
 	return 0;
 
 core_exit:
-	dwc3_core_exit(&appledwc->dwc);
-reset_assert:
-	ret_reset = reset_control_assert(appledwc->reset);
+	ret_reset = dwc3_apple_core_stop(appledwc);
 	if (ret_reset)
-		dev_warn(appledwc->dev, "Failed to assert reset, err=%d\n", ret_reset);
+		dev_warn(appledwc->dev, "Failed to finish core shutdown, err=%d\n", ret_reset);
 
 	return ret;
 }
 
 static int dwc3_apple_exit(struct dwc3_apple *appledwc)
 {
-	int ret = 0;
-
 	lockdep_assert_held(&appledwc->lock);
 
 	switch (appledwc->state) {
 	case DWC3_APPLE_PROBE_PENDING:
 	case DWC3_APPLE_NO_CABLE:
-		/* Nothing to do if we're already off */
-		return 0;
+		break;
 	case DWC3_APPLE_DEVICE:
 		dwc3_gadget_exit(&appledwc->dwc);
+		appledwc->state = DWC3_APPLE_NO_CABLE;
 		break;
 	case DWC3_APPLE_HOST:
 		dwc3_host_exit(&appledwc->dwc);
+		appledwc->state = DWC3_APPLE_NO_CABLE;
 		break;
 	}
 
-	/*
-	 * This platform requires SUSPHY to be enabled in order to properly power down the PHY
-	 * and switch dwc3's PIPE interface back to a dummy PHY (i.e. no USB3 support and USB2 via
-	 * a different PHY connected through ULPI).
-	 */
-	dwc3_enable_susphy(&appledwc->dwc, true);
-	dwc3_core_exit(&appledwc->dwc);
-	appledwc->state = DWC3_APPLE_NO_CABLE;
-
-	ret = reset_control_assert(appledwc->reset);
-	if (ret) {
-		dev_err(appledwc->dev, "Failed to assert reset, err=%d\n", ret);
-		return ret;
-	}
-
-	return 0;
+	return dwc3_apple_core_stop(appledwc);
 }
 
 static int dwc3_usb_role_switch_set(struct usb_role_switch *sw, enum usb_role role)
@@ -356,6 +500,10 @@ static int dwc3_usb_role_switch_set(struct usb_role_switch *sw, enum usb_role ro
 	int ret;
 
 	guard(mutex)(&appledwc->lock);
+
+	/* A controller behind a fixed hub is a host regardless of the connectors */
+	if (appledwc->fixed_hub)
+		return 0;
 
 	/*
 	 * Skip role switches if appledwc is already in the desired state. The
@@ -432,6 +580,14 @@ static int dwc3_apple_setup_role_switch(struct dwc3_apple *appledwc)
 	return 0;
 }
 
+static bool dwc3_apple_has_fixed_hub(struct device *dev)
+{
+	struct device_node *hub __free(device_node) =
+		of_get_available_child_by_name(dev->of_node, "hub");
+
+	return hub;
+}
+
 static int dwc3_apple_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -443,12 +599,23 @@ static int dwc3_apple_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	appledwc->dev = &pdev->dev;
+	appledwc->fixed_hub = dwc3_apple_has_fixed_hub(dev);
 	mutex_init(&appledwc->lock);
 
 	appledwc->reset = devm_reset_control_get_exclusive(dev, NULL);
 	if (IS_ERR(appledwc->reset))
 		return dev_err_probe(&pdev->dev, PTR_ERR(appledwc->reset),
 				     "Failed to get reset control\n");
+
+	appledwc->usb2_phy = devm_phy_get(dev, "usb2-phy");
+	if (IS_ERR(appledwc->usb2_phy))
+		return dev_err_probe(dev, PTR_ERR(appledwc->usb2_phy),
+				     "Failed to get the USB2 PHY\n");
+
+	appledwc->usb3_phy = devm_phy_get(dev, "usb3-phy");
+	if (IS_ERR(appledwc->usb3_phy))
+		return dev_err_probe(dev, PTR_ERR(appledwc->usb3_phy),
+				     "Failed to get the USB3 PHY\n");
 
 	ret = reset_control_assert(appledwc->reset);
 	if (ret) {
@@ -468,6 +635,14 @@ static int dwc3_apple_probe(struct platform_device *pdev)
 				     "Failed to map Apple-specific MMIO\n");
 
 	/*
+	 * Like a PCI xHCI controller, allow USB devices to wake the system by default. This has
+	 * to be set before dwc3_core_probe(), which hands it on to the xHCI device.
+	 */
+	ret = devm_device_init_wakeup(dev);
+	if (ret)
+		return dev_err_probe(dev, ret, "Failed to set up wakeup\n");
+
+	/*
 	 * On this platform, DWC3 can only be brought up after parts of the PHY have been
 	 * initialized with knowledge of the target mode and cable orientation from typec_set_mux.
 	 * Since this has not happened here we cannot setup DWC3 yet and instead defer this until
@@ -478,6 +653,26 @@ static int dwc3_apple_probe(struct platform_device *pdev)
 	ret = dwc3_apple_setup_role_switch(appledwc);
 	if (ret)
 		return dev_err_probe(&pdev->dev, ret, "Failed to setup role switch\n");
+
+	if (!appledwc->fixed_hub)
+		return 0;
+
+	/*
+	 * The hub is the controller's permanent USB2 peer, and the PHY has kept
+	 * its USB2 path up for it since its own probe, so there is nothing to
+	 * wait for: bring the host up now.
+	 */
+	scoped_guard(mutex, &appledwc->lock)
+		ret = dwc3_apple_init(appledwc, DWC3_APPLE_HOST);
+	if (ret) {
+		/* A failed cleanup remains visible even when probe cannot be retried. */
+		if (appledwc->core_active || appledwc->reset_pending)
+			dev_err(dev, "Host startup left pending PHY/reset cleanup\n");
+		if (appledwc->state != DWC3_APPLE_PROBE_PENDING)
+			dwc3_core_remove_no_shutdown(&appledwc->dwc);
+		usb_role_switch_unregister(appledwc->role_sw);
+		return dev_err_probe(dev, ret, "Failed to start host mode\n");
+	}
 
 	return 0;
 }
@@ -496,9 +691,10 @@ static void dwc3_apple_remove(struct platform_device *pdev)
 	 * dwc3_core_probe was never called and there's hence no need to call dwc3_core_remove.
 	 * dwc3_apple_exit can be called unconditionally because it checks the state itself.
 	 */
-	dwc3_apple_exit(appledwc);
+	if (dwc3_apple_exit(appledwc))
+		dev_err(appledwc->dev, "Removal left pending PHY/reset cleanup\n");
 	if (appledwc->state != DWC3_APPLE_PROBE_PENDING)
-		dwc3_core_remove(&appledwc->dwc);
+		dwc3_core_remove_no_shutdown(&appledwc->dwc);
 }
 
 static const struct of_device_id dwc3_apple_of_match[] = {

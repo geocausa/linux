@@ -8,6 +8,7 @@
 
 /* for brcmu_d11inf */
 #include <brcmu_d11.h>
+#include <brcmu_wifi.h>
 
 #include "core.h"
 #include "fwil_types.h"
@@ -46,7 +47,6 @@
  * problematic on some systems and should be avoided.
  */
 #define BRCMF_ESCAN_BUF_SIZE		65000
-#define BRCMF_ESCAN_TIMER_INTERVAL_MS	10000	/* E-Scan timeout */
 
 #define WL_ESCAN_ACTION_START		1
 #define WL_ESCAN_ACTION_CONTINUE	2
@@ -127,7 +127,8 @@ enum brcmf_profile_fwsup {
 	BRCMF_PROFILE_FWSUP_NONE,
 	BRCMF_PROFILE_FWSUP_PSK,
 	BRCMF_PROFILE_FWSUP_1X,
-	BRCMF_PROFILE_FWSUP_SAE
+	BRCMF_PROFILE_FWSUP_SAE,
+	BRCMF_PROFILE_FWSUP_ROAM
 };
 
 /**
@@ -172,6 +173,7 @@ struct brcmf_cfg80211_profile {
 	enum brcmf_profile_fwsup use_fwsup;
 	u16 use_fwauth;
 	bool is_ft;
+	bool is_okc;
 };
 
 /**
@@ -354,6 +356,7 @@ struct brcmf_cfg80211_wowl {
  * @dongle_up: indicate whether dongle up or not.
  * @roam_on: on/off switch for dongle self-roaming.
  * @scan_tried: indicates if first scan attempted.
+ * @force_band_setup: indicates if we should force band setup
  * @dcmd_buf: dcmd buffer.
  * @extra_buf: mainly to grab assoc information.
  * @debugfsdir: debugfs folder for this device.
@@ -384,6 +387,7 @@ struct brcmf_cfg80211_info {
 	bool pwr_save;
 	bool dongle_up;
 	bool scan_tried;
+	bool force_band_setup;
 	u8 *dcmd_buf;
 	u8 *extra_buf;
 	struct dentry *debugfsdir;
@@ -392,6 +396,14 @@ struct brcmf_cfg80211_info {
 	struct work_struct escan_timeout_work;
 	struct list_head vif_list;
 	struct brcmf_cfg80211_vif_event vif_event;
+	/* Protected by vif_event.vif_event_lock. */
+	bool awdl_pending;
+	bool awdl_attaching;
+	struct brcmf_cfg80211_vif *awdl_vif;
+	struct brcmf_if *awdl_failed_ifp;
+	struct wiphy_delayed_work awdl_timeout;
+	struct wiphy_work awdl_cleanup;
+	char awdl_ifname[IFNAMSIZ];
 	struct completion vif_disabled;
 	struct brcmu_d11inf d11inf;
 	struct brcmf_assoclist_le assoclist;
@@ -412,6 +424,22 @@ struct brcmf_tlv {
 	u8 len;
 	u8 data[];
 };
+
+static inline enum nl80211_band fwil_band_to_nl80211(u16 band)
+{
+	switch (band) {
+	case WLC_BAND_2G:
+		return NL80211_BAND_2GHZ;
+	case WLC_BAND_5G:
+		return NL80211_BAND_5GHZ;
+	case WLC_BAND_6G:
+		return NL80211_BAND_6GHZ;
+	default:
+		WARN_ON(1);
+		break;
+	}
+	return 0;
+}
 
 static inline struct wiphy *cfg_to_wiphy(struct brcmf_cfg80211_info *cfg)
 {
@@ -480,11 +508,17 @@ s32 brcmf_vif_set_mgmt_ie(struct brcmf_cfg80211_vif *vif, s32 pktflag,
 s32 brcmf_vif_clear_mgmt_ies(struct brcmf_cfg80211_vif *vif);
 u16 channel_to_chanspec(struct brcmu_d11inf *d11inf,
 			struct ieee80211_channel *ch);
+u16 chandef_to_chanspec(struct brcmu_d11inf *d11inf,
+			struct cfg80211_chan_def *ch);
 bool brcmf_get_vif_state_any(struct brcmf_cfg80211_info *cfg,
 			     unsigned long state);
 void brcmf_cfg80211_arm_vif_event(struct brcmf_cfg80211_info *cfg,
 				  struct brcmf_cfg80211_vif *vif);
 bool brcmf_cfg80211_vif_event_armed(struct brcmf_cfg80211_info *cfg);
+void brcmf_cfg80211_awdl_stop(struct brcmf_cfg80211_info *cfg);
+int brcmf_awdl_add_vif(struct wiphy *wiphy, const char *name);
+void brcmf_cfg80211_awdl_attach_pending(struct brcmf_if *ifp);
+int brcmf_awdl_del_vif(struct wiphy *wiphy, struct wireless_dev *wdev);
 int brcmf_cfg80211_wait_vif_event(struct brcmf_cfg80211_info *cfg,
 				  u8 action, ulong timeout);
 s32 brcmf_notify_escan_complete(struct brcmf_cfg80211_info *cfg,

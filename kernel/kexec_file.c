@@ -362,9 +362,8 @@ out_free_image:
 	return ret;
 }
 
-SYSCALL_DEFINE5(kexec_file_load, int, kernel_fd, int, initrd_fd,
-		unsigned long, cmdline_len, const char __user *, cmdline_ptr,
-		unsigned long, flags)
+int do_kexec_file_load(int kernel_fd, int initrd_fd, unsigned long cmdline_len,
+		       const char __user *cmdline_ptr, unsigned long flags)
 {
 	int image_type = (flags & KEXEC_FILE_ON_CRASH) ?
 			 KEXEC_TYPE_CRASH : KEXEC_TYPE_DEFAULT;
@@ -383,6 +382,12 @@ SYSCALL_DEFINE5(kexec_file_load, int, kernel_fd, int, initrd_fd,
 
 	if (!kexec_trylock())
 		return -EBUSY;
+	if (!(flags & KEXEC_FILE_UNLOAD) && kexec_blocked()) {
+		pr_warn_ratelimited("kexec file load refused by active interlock; first reason: %s\n",
+				    kexec_block_reason());
+		kexec_unlock();
+		return -EOPNOTSUPP;
+	}
 
 #ifdef CONFIG_CRASH_DUMP
 	if (image_type == KEXEC_TYPE_CRASH) {
@@ -468,6 +473,14 @@ out:
 	kexec_unlock();
 	kimage_free(image);
 	return ret;
+}
+
+SYSCALL_DEFINE5(kexec_file_load, int, kernel_fd, int, initrd_fd,
+		unsigned long, cmdline_len, const char __user *, cmdline_ptr,
+		unsigned long, flags)
+{
+	return do_kexec_file_load(kernel_fd, initrd_fd, cmdline_len,
+				  cmdline_ptr, flags);
 }
 
 static int locate_mem_hole_top_down(unsigned long start, unsigned long end,

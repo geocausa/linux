@@ -14,10 +14,14 @@
  * @gsbuscfg0_reqinfo: Value to be programmed in the GSBUSCFG0.REQINFO field
  * @needs_full_reinit: indicate the controller may not remain power during system
  *			pm and need full initialization
+ * @xhci_run_in_s2idle: the controller stays powered in suspend-to-idle and has no
+ *			wake signal of its own, so xHCI has to keep running for
+ *			USB devices to wake the system
  */
 struct dwc3_properties {
 	u32 gsbuscfg0_reqinfo;
 	unsigned needs_full_reinit:1;
+	unsigned xhci_run_in_s2idle:1;
 };
 
 #define DWC3_DEFAULT_PROPERTIES ((struct dwc3_properties){		\
@@ -107,6 +111,26 @@ int dwc3_core_init(struct dwc3 *dwc);
  * again.
  */
 void dwc3_core_exit(struct dwc3 *dwc);
+
+/**
+ * dwc3_core_exit_after_phy_power_off - Finish a glue-owned core shutdown
+ * @dwc: Pointer to DWC3 controller context
+ *
+ * The glue must first stop host/gadget operation, clean up event buffers,
+ * release every core-owned generic PHY power reference and suspend legacy
+ * USB PHYs. This finishes PHY exit, clock disable and reset exactly once.
+ */
+void dwc3_core_exit_after_phy_power_off(struct dwc3 *dwc);
+
+/**
+ * dwc3_core_remove_no_shutdown - Release resources without a second shutdown
+ * @dwc: Pointer to DWC3 controller context
+ *
+ * The glue owns host/gadget and core shutdown, including reporting any
+ * failure to finish it. This releases software resources without repeating
+ * those operations or discarding another generic PHY reference.
+ */
+void dwc3_core_remove_no_shutdown(struct dwc3 *dwc);
 
 /**
  * dwc3_host_init - Initialize host mode operation

@@ -3,6 +3,8 @@
 #ifndef __USB_TYPEC_MUX__
 #define __USB_TYPEC_MUX__
 
+#include <linux/notifier.h>
+#include <linux/rwsem.h>
 #include <linux/usb/typec_mux.h>
 
 struct typec_switch_dev {
@@ -11,8 +13,16 @@ struct typec_switch_dev {
 };
 
 struct typec_mux_dev {
+	struct module *owner;
 	struct device dev;
 	typec_mux_set_fn_t set;
+	typec_mux_set_fn_t prepare;
+	typec_mux_set_fn_t finish;
+	typec_mux_notify_fn_t commit;
+	typec_mux_notify_fn_t abort;
+	bool removed;
+	bool safe_after_role;
+	bool transient_timeouts;
 };
 
 #define to_typec_switch_dev(_dev_) container_of(_dev_, struct typec_switch_dev, dev)
@@ -23,5 +33,21 @@ extern const struct device_type typec_mux_dev_type;
 
 #define is_typec_switch_dev(dev) ((dev)->type == &typec_switch_dev_type)
 #define is_typec_mux_dev(dev) ((dev)->type == &typec_mux_dev_type)
+#define is_typec_thunderbolt_switch_dev(dev) \
+	((dev)->type == &typec_thunderbolt_switch_dev_type)
+
+struct typec_thunderbolt_switch_dev {
+	struct device dev;
+	/* Consumers keep this device after the provider has unbound. */
+	struct rw_semaphore set_lock;
+	struct module *owner;
+	typec_thunderbolt_switch_set_fn_t set;
+	struct atomic_notifier_head notifiers;
+};
+
+#define to_typec_thunderbolt_switch_dev(_dev_) \
+	container_of(_dev_, struct typec_thunderbolt_switch_dev, dev)
+
+extern const struct device_type typec_thunderbolt_switch_dev_type;
 
 #endif /* __USB_TYPEC_MUX__ */

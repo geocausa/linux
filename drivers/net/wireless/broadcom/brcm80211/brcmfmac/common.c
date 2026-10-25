@@ -13,6 +13,7 @@
 #include "core.h"
 #include "bus.h"
 #include "debug.h"
+#include "fweh.h"
 #include "fwil.h"
 #include "fwil_types.h"
 #include "tracepoint.h"
@@ -42,9 +43,26 @@ int brcmf_msg_level;
 module_param_named(debug, brcmf_msg_level, int, 0600);
 MODULE_PARM_DESC(debug, "Level of debug output");
 
+/* AWDL tx completions are logged per frame. Userspace counts them to tell a
+ * radio that is transmitting from one whose firmware has parked the AWDL data
+ * path: a parked radio completes nothing, and it looks healthy by every other
+ * measure. Off by default, writable at runtime so no reload is needed.
+ */
+int brcmf_awdl_trace;
+module_param_named(awdl_trace, brcmf_awdl_trace, int, 0644);
+MODULE_PARM_DESC(awdl_trace, "Log AWDL tx completions");
+
 static int brcmf_p2p_enable;
 module_param_named(p2pon, brcmf_p2p_enable, int, 0);
 MODULE_PARM_DESC(p2pon, "Enable legacy p2p management functionality");
+
+/* AWDL interface creation through the vendor command is on by default.
+ * awdl=0 at module load turns it off: the AWDL vendor command is then not
+ * registered, and nothing in the driver creates or drives an AWDL interface.
+ */
+static int brcmf_awdl_enable = 1;
+module_param_named(awdl, brcmf_awdl_enable, int, 0444);
+MODULE_PARM_DESC(awdl, "AWDL interface creation through the vendor command (default 1, 0 turns it off)");
 
 static int brcmf_feature_disable;
 module_param_named(feature_disable, brcmf_feature_disable, int, 0);
@@ -265,7 +283,6 @@ static int brcmf_c_process_cal_blob(struct brcmf_if *ifp)
 int brcmf_c_preinit_dcmds(struct brcmf_if *ifp)
 {
 	struct brcmf_pub *drvr = ifp->drvr;
-	struct brcmf_fweh_info *fweh = drvr->fweh;
 	u8 buf[BRCMF_DCMD_SMLEN];
 	struct brcmf_bus *bus;
 	struct brcmf_rev_info_le revinfo;
@@ -411,27 +428,6 @@ int brcmf_c_preinit_dcmds(struct brcmf_if *ifp)
 
 	brcmf_c_set_joinpref_default(ifp);
 
-	/* Setup event_msgs, enable E_IF */
-	err = brcmf_fil_iovar_data_get(ifp, "event_msgs", fweh->event_mask,
-				       fweh->event_mask_len);
-	if (err) {
-		bphy_err(drvr, "Get event_msgs error (%d)\n", err);
-		goto done;
-	}
-	/*
-	 * BRCMF_E_IF can safely be used to set the appropriate bit
-	 * in the event_mask as the firmware event code is guaranteed
-	 * to match the value of BRCMF_E_IF because it is old cruft
-	 * that all vendors have.
-	 */
-	setbit(fweh->event_mask, BRCMF_E_IF);
-	err = brcmf_fil_iovar_data_set(ifp, "event_msgs", fweh->event_mask,
-				       fweh->event_mask_len);
-	if (err) {
-		bphy_err(drvr, "Set event_msgs error (%d)\n", err);
-		goto done;
-	}
-
 	/* Setup default scan channel time */
 	err = brcmf_fil_cmd_int_set(ifp, BRCMF_C_SET_SCAN_CHANNEL_TIME,
 				    BRCMF_DEFAULT_SCAN_CHANNEL_TIME);
@@ -526,6 +522,7 @@ struct brcmf_mp_device *brcmf_get_module_param(struct device *dev,
 
 	/* start by using the module parameters */
 	settings->p2p_enable = !!brcmf_p2p_enable;
+	settings->awdl_enable = !!brcmf_awdl_enable;
 	settings->feature_disable = brcmf_feature_disable;
 	settings->fcmode = brcmf_fcmode;
 	settings->roamoff = !!brcmf_roamoff;

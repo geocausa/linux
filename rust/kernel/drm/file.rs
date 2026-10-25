@@ -18,7 +18,8 @@ pub trait DriverFile {
     type Driver: drm::Driver;
 
     /// Open a new file (called when a client opens the DRM device).
-    fn open(device: &drm::Device<Self::Driver>) -> Result<Pin<KBox<Self>>>;
+    fn open(device: &drm::Device<Self::Driver, crate::drm::Registered>) -> Result<Pin<KBox<Self>>>;
+
 }
 
 /// An open DRM File.
@@ -45,6 +46,14 @@ impl<T: DriverFile> File<T> {
         self.0.get()
     }
 
+    /// Tag recent feeder work for temporary capacity hints during syncobj waits.
+    /// User scheduling attributes and CPU affinity remain unchanged.
+    pub fn set_syncobj_wait_hint(&self, util_min: u32, duration_ms: u32) {
+        // SAFETY: this File keeps the opened drm_file alive; the C helper
+        // bounds both arguments and serializes the per-file hint internally.
+        unsafe { bindings::drm_syncobj_set_wait_hint(self.as_raw(), util_min, duration_ms) };
+    }
+
     fn driver_priv(&self) -> *mut T {
         // SAFETY: By the type invariants of `Self`, `self.as_raw()` is always valid.
         unsafe { (*self.as_raw()).driver_priv }.cast()
@@ -65,7 +74,8 @@ impl<T: DriverFile> File<T> {
         // SAFETY: A callback from `struct drm_driver::open` guarantees that
         // - `raw_dev` is valid pointer to a `struct drm_device`,
         // - the corresponding `struct drm_device` has been registered.
-        let drm = unsafe { drm::Device::from_raw(raw_dev) };
+        let drm: &drm::Device<T::Driver> = unsafe { drm::Device::from_raw(raw_dev) };
+        let drm = unsafe { drm.assume_ctx::<crate::drm::Registered>() };
 
         // SAFETY: `raw_file` is a valid pointer to a `struct drm_file`.
         let file = unsafe { File::<T>::from_raw(raw_file) };

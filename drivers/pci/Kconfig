@@ -29,6 +29,15 @@ menuconfig PCI
 
 if PCI
 
+config PCI_SYSFS_KUNIT_TEST
+	bool "Unit tests for PCI sysfs removal and reset restrictions" if !KUNIT_ALL_TESTS
+	depends on SYSFS && KUNIT=y
+	default KUNIT_ALL_TESTS
+	help
+	  Test userspace-removal and reset policy lookup for root ports and
+	  descendants under independent host bridges. The synthetic objects are separately
+	  allocated and never registered or passed to a sysfs callback.
+
 config PCI_DOMAINS
 	bool
 

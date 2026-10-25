@@ -6,7 +6,8 @@
 #include "fb_internal.h"
 
 bool fb_center_logo __read_mostly;
-int fb_logo_count __read_mostly = -1;
+/* One Omarchy logo, not one per CPU; fbcon=logo-count:-1 restores the row. */
+int fb_logo_count __read_mostly = 1;
 
 static inline unsigned int safe_shift(unsigned int d, int n)
 {

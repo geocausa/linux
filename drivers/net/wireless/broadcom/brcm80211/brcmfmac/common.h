@@ -44,6 +44,7 @@ extern struct brcmf_mp_global_t brcmf_mp_global;
  */
 struct brcmf_mp_device {
 	bool		p2p_enable;
+	bool		awdl_enable;
 	unsigned int	feature_disable;
 	int		fcmode;
 	bool		roamoff;

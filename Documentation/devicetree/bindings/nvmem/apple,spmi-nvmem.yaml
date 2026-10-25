@@ -18,6 +18,7 @@ properties:
   compatible:
     items:
       - enum:
+          - apple,baku-pmic
           - apple,maverick-pmic
           - apple,sera-pmic
           - apple,stowe-pmic
@@ -25,6 +26,9 @@ properties:
 
   reg:
     maxItems: 1
+
+  rtc:
+    $ref: /schemas/rtc/apple,j700-pmu-rtc.yaml#
 
 required:
   - compatible

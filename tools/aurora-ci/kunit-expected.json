@@ -1,0 +1,23 @@
+{
+ "comment": [
+  "Known results of run-kunit.py with aurora.kunitconfig. Keys are suite.test[.param].",
+  "results: cases that do not pass, with the status they are expected to have and why.",
+  "warnings: kernel splats (WARNING, BUG, ...) inside a case, by call site and count. KTAP still",
+  "reports these cases as passed, so they are tracked here; a new or missing one is a mismatch."
+ ],
+ "results": {
+  "apple-dcp-fabric.fabric_scenario_test.S35_dual_retry_off": {
+   "status": "SKIP",
+   "reason": "Unconditional: scenario 35 of the fabric scenario table only calls kunit_skip(\"TB match-data retry policy is tested by W3\") (drivers/gpu/drm/apple/dcp-fabric-test.c). No other code in the tree is named W3; the retry policy is not exercised by this case."
+  },
+  "rust_kernel_kunit.rust_test_kunit_always_disabled_test": {
+   "status": "SKIP",
+   "reason": "By design (upstream Rust KUnit selftest): the case carries #[cfg(not(all()))], so #[kunit_tests] reports it as skipped to show that cfg'd-out tests are not run (rust/kernel/kunit.rs)."
+  },
+  "trusted_source.trusted_source_after_mark_readonly": {
+   "status": "SKIP",
+   "reason": "By design when built in: the case skips while system_state < SYSTEM_RUNNING, because built-in KUnit runs before mark_readonly(). It only runs when trusted_source_kunit is loaded as a module after boot, which kunit.py run does not do (security/keys/trusted-keys/tests/trusted_source_kunit.c)."
+  }
+ },
+ "warnings": {}
+}

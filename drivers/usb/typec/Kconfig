@@ -110,6 +110,18 @@ config TYPEC_WUSB3801
 	  If you choose to build this driver as a dynamically linked module, the
 	  module will be called wusb3801.ko.
 
+config TYPEC_MUX_KUNIT_TEST
+	tristate "KUnit tests for the Type-C mux lookup" if !KUNIT_ALL_TESTS
+	depends on KUNIT && OF
+	default KUNIT_ALL_TESTS
+	select DTC
+	help
+	  Test that a connector's mux lookup passes over a mux inside a device
+	  tree node that is not available, still waits for one in a node that
+	  is, still uses one registered there, and uses an available mux beside
+	  an unavailable one. The tests apply a device tree overlay and need
+	  OF_OVERLAY and OF_EARLY_FLATTREE; without them they are skipped.
+
 source "drivers/usb/typec/mux/Kconfig"
 
 source "drivers/usb/typec/altmodes/Kconfig"

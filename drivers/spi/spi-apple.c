@@ -99,12 +99,31 @@
 
 #define APPLE_SPI_DELAY_PRE		0x160
 #define APPLE_SPI_DELAY_POST		0x168
+#define APPLE_SPI_DELAY_POST_CYCLES	0x194
 #define APPLE_SPI_DELAY_ENABLE		BIT(0)
 #define APPLE_SPI_DELAY_NO_INTERBYTE	BIT(1)
 #define APPLE_SPI_DELAY_SET_SCK		BIT(4)
+#define APPLE_SPI_DELAY_SET_CS		BIT(5)
 #define APPLE_SPI_DELAY_SET_MOSI	BIT(6)
 #define APPLE_SPI_DELAY_SCK_VAL		BIT(8)
+#define APPLE_SPI_DELAY_CS_VAL		BIT(10)
+#define APPLE_SPI_DELAY_PRE_ARM		BIT(11)
 #define APPLE_SPI_DELAY_MOSI_VAL	BIT(12)
+#define APPLE_SPI_DELAY_CYCLES		GENMASK(31, 16)
+
+/*
+ * Hardware CS delays: the pre-delay asserts the active-low CS and the
+ * post-delay releases it.  Bit 11 is undocumented and named for its observed
+ * role only.
+ */
+#define APPLE_SPI_DELAY_PRE_FLAGS	(APPLE_SPI_DELAY_PRE_ARM | \
+					 APPLE_SPI_DELAY_SET_CS | \
+					 APPLE_SPI_DELAY_NO_INTERBYTE | \
+					 APPLE_SPI_DELAY_ENABLE)
+#define APPLE_SPI_DELAY_POST_FLAGS	(APPLE_SPI_DELAY_CS_VAL | \
+					 APPLE_SPI_DELAY_SET_CS | \
+					 APPLE_SPI_DELAY_NO_INTERBYTE | \
+					 APPLE_SPI_DELAY_ENABLE)
 
 #define APPLE_SPI_FIFO_DEPTH		16
 
@@ -168,6 +187,94 @@ static void apple_spi_init(struct apple_spi *spi)
 	/* Disable delays */
 	reg_write(spi, APPLE_SPI_DELAY_PRE, 0);
 	reg_write(spi, APPLE_SPI_DELAY_POST, 0);
+	reg_write(spi, APPLE_SPI_DELAY_POST_CYCLES, 0);
+}
+
+static void apple_spi_set_cs(struct spi_device *device, bool is_high)
+{
+	struct apple_spi *spi = spi_controller_get_devdata(device->controller);
+
+	reg_mask(spi, APPLE_SPI_PIN, APPLE_SPI_PIN_CS, is_high ? APPLE_SPI_PIN_CS : 0);
+}
+
+static int apple_spi_delay_cycles(struct apple_spi *spi, struct spi_delay *delay,
+				  u32 *cycles)
+{
+	u64 value;
+	int ns;
+
+	ns = spi_delay_to_ns(delay, NULL);
+	if (ns < 0)
+		return ns;
+
+	value = DIV_ROUND_UP_ULL((u64)clk_get_rate(spi->clk) * ns,
+				  1000000000ULL);
+	if (value > FIELD_MAX(APPLE_SPI_DELAY_CYCLES))
+		return -ERANGE;
+
+	*cycles = value;
+	return 0;
+}
+
+static int apple_spi_cs_timing_cycles(struct apple_spi *spi,
+				      struct spi_device *device,
+				      u32 *setup_cycles, u32 *hold_cycles)
+{
+	int ret;
+
+	/* This controller path has no hardware representation for inactive time. */
+	if (device->cs_inactive.value)
+		return -EOPNOTSUPP;
+
+	ret = apple_spi_delay_cycles(spi, &device->cs_setup, setup_cycles);
+	if (ret)
+		return ret;
+	return apple_spi_delay_cycles(spi, &device->cs_hold, hold_cycles);
+}
+
+static void apple_spi_write_cs_timing(struct apple_spi *spi, u32 setup_cycles,
+				      u32 hold_cycles)
+{
+	if (!setup_cycles && !hold_cycles) {
+		reg_mask(spi, APPLE_SPI_SHIFTCFG,
+			 APPLE_SPI_SHIFTCFG_OVERRIDE_CS, 0);
+		reg_write(spi, APPLE_SPI_DELAY_PRE, 0);
+		reg_write(spi, APPLE_SPI_DELAY_POST, 0);
+		reg_write(spi, APPLE_SPI_DELAY_POST_CYCLES, 0);
+		return;
+	}
+
+	reg_write(spi, APPLE_SPI_DELAY_PRE,
+		  FIELD_PREP(APPLE_SPI_DELAY_CYCLES, setup_cycles) |
+		  APPLE_SPI_DELAY_PRE_FLAGS);
+	reg_write(spi, APPLE_SPI_DELAY_POST_CYCLES, hold_cycles);
+	reg_write(spi, APPLE_SPI_DELAY_POST,
+		  FIELD_PREP(APPLE_SPI_DELAY_CYCLES, hold_cycles) |
+		  APPLE_SPI_DELAY_POST_FLAGS);
+	reg_mask(spi, APPLE_SPI_SHIFTCFG, 0,
+		 APPLE_SPI_SHIFTCFG_OVERRIDE_CS);
+}
+
+/*
+ * Only validate the delays here. The registers are programmed for each
+ * message in apple_spi_prepare_message(): their contents are lost when
+ * runtime PM gates the controller's power domain between messages, and
+ * they are shared by all devices on the bus.
+ */
+static int apple_spi_set_cs_timing(struct spi_device *device)
+{
+	struct apple_spi *spi = spi_controller_get_devdata(device->controller);
+	u32 setup_cycles, hold_cycles;
+	int ret;
+
+	ret = apple_spi_cs_timing_cycles(spi, device, &setup_cycles,
+					 &hold_cycles);
+	if (ret)
+		return ret;
+
+	dev_dbg(&device->dev, "hardware CS setup=%u hold=%u cycles\n",
+		setup_cycles, hold_cycles);
+	return 0;
 }
 
 static int apple_spi_prepare_message(struct spi_controller *ctlr, struct spi_message *msg)
@@ -183,14 +290,18 @@ static int apple_spi_prepare_message(struct spi_controller *ctlr, struct spi_mes
 	reg_mask(spi, APPLE_SPI_CFG,
 		 APPLE_SPI_CFG_CPHA | APPLE_SPI_CFG_CPOL | APPLE_SPI_CFG_LSB_FIRST, cfg);
 
+	if (ctlr->set_cs_timing) {
+		u32 setup_cycles, hold_cycles;
+		int ret;
+
+		ret = apple_spi_cs_timing_cycles(spi, device, &setup_cycles,
+						 &hold_cycles);
+		if (ret)
+			return ret;
+		apple_spi_write_cs_timing(spi, setup_cycles, hold_cycles);
+	}
+
 	return 0;
-}
-
-static void apple_spi_set_cs(struct spi_device *device, bool is_high)
-{
-	struct apple_spi *spi = spi_controller_get_devdata(device->controller);
-
-	reg_mask(spi, APPLE_SPI_PIN, APPLE_SPI_PIN_CS, is_high ? APPLE_SPI_PIN_CS : 0);
 }
 
 static bool apple_spi_prep_transfer(struct apple_spi *spi, struct spi_transfer *t)
@@ -459,6 +570,7 @@ static int apple_spi_probe(struct platform_device *pdev)
 	struct apple_spi *spi;
 	int ret, irq;
 	struct spi_controller *ctlr;
+	struct device_node *np;
 
 	ctlr = devm_spi_alloc_host(&pdev->dev, sizeof(struct apple_spi));
 	if (!ctlr)
@@ -491,6 +603,18 @@ static int apple_spi_probe(struct platform_device *pdev)
 	ctlr->bits_per_word_mask = SPI_BPW_RANGE_MASK(1, 32);
 	ctlr->prepare_message = apple_spi_prepare_message;
 	ctlr->set_cs = apple_spi_set_cs;
+	/*
+	 * Only the Mesa fingerprint sensor's bus uses the hardware CS delays.
+	 * The SPI core stops running software CS delays for every device on a
+	 * controller that provides set_cs_timing, so installing it everywhere
+	 * would move the keyboard, NOR flash and others off their working
+	 * timing, and the keyboard's inactive delay has no hardware form.
+	 */
+	np = of_get_compatible_child(pdev->dev.of_node, "apple,mesa-fingerprint");
+	if (np) {
+		ctlr->set_cs_timing = apple_spi_set_cs_timing;
+		of_node_put(np);
+	}
 	ctlr->transfer_one = apple_spi_transfer_one;
 	ctlr->use_gpio_descriptors = true;
 	ctlr->auto_runtime_pm = true;

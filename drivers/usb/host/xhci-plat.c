@@ -8,6 +8,7 @@
  * A lot of code borrowed from the Linux xHCI driver.
  */
 
+#include <kunit/visibility.h>
 #include <linux/clk.h>
 #include <linux/dma-mapping.h>
 #include <linux/module.h>
@@ -20,6 +21,7 @@
 #include <linux/acpi.h>
 #include <linux/usb/of.h>
 #include <linux/reset.h>
+#include <linux/suspend.h>
 #include <linux/usb/xhci-sideband.h>
 
 #include "xhci.h"
@@ -153,6 +155,50 @@ static const struct of_device_id usb_xhci_of_match[] = {
 MODULE_DEVICE_TABLE(of, usb_xhci_of_match);
 #endif
 
+/* The quirks that the boolean properties of a device, or of one of its parents, ask for */
+VISIBLE_IF_KUNIT u64 xhci_plat_property_quirks(struct device *dev)
+{
+	u64 quirks = 0;
+
+	if (device_property_read_bool(dev, "usb2-lpm-disable"))
+		quirks |= XHCI_HW_LPM_DISABLE;
+
+	if (device_property_read_bool(dev, "usb3-lpm-capable"))
+		quirks |= XHCI_LPM_SUPPORT;
+
+	if (device_property_read_bool(dev, "quirk-broken-port-ped"))
+		quirks |= XHCI_BROKEN_PORT_PED;
+
+	if (device_property_read_bool(dev, "xhci-sg-trb-cache-size-quirk"))
+		quirks |= XHCI_SG_TRB_CACHE_SIZE_QUIRK;
+
+	if (device_property_read_bool(dev, "write-64-hi-lo-quirk"))
+		quirks |= XHCI_WRITE_64_HI_LO;
+
+	if (device_property_read_bool(dev, "xhci-missing-cas-quirk"))
+		quirks |= XHCI_MISSING_CAS;
+
+	if (device_property_read_bool(dev, "xhci-skip-phy-init-quirk"))
+		quirks |= XHCI_SKIP_PHY_INIT;
+
+	if (device_property_read_bool(dev, "xhci-run-in-s2idle"))
+		quirks |= XHCI_RUN_IN_S2IDLE;
+
+	return quirks;
+}
+EXPORT_SYMBOL_IF_KUNIT(xhci_plat_property_quirks);
+
+/*
+ * A controller kept running in suspend-to-idle decides in its event handling which events wake the
+ * system, see xhci_run_in_s2idle_begin(). Its interrupt handler has to run while the system
+ * sleeps, so keep the interrupt enabled across suspend instead of arming it for wakeup.
+ */
+VISIBLE_IF_KUNIT unsigned long xhci_plat_irq_flags(u64 quirks)
+{
+	return IRQF_SHARED | ((quirks & XHCI_RUN_IN_S2IDLE) ? IRQF_NO_SUSPEND : 0);
+}
+EXPORT_SYMBOL_IF_KUNIT(xhci_plat_irq_flags);
+
 int xhci_plat_probe(struct platform_device *pdev, struct device *sysdev, const struct xhci_plat_priv *priv_match)
 {
 	const struct hc_driver	*driver;
@@ -160,6 +206,7 @@ int xhci_plat_probe(struct platform_device *pdev, struct device *sysdev, const s
 	struct xhci_hcd		*xhci;
 	struct resource         *res;
 	struct usb_hcd		*hcd, *usb3_hcd;
+	unsigned long		irqflags;
 	int			ret;
 	int			irq;
 	struct xhci_plat_priv	*priv = NULL;
@@ -255,27 +302,7 @@ int xhci_plat_probe(struct platform_device *pdev, struct device *sysdev, const s
 
 	/* Iterate over all parent nodes for finding quirks */
 	for (tmpdev = &pdev->dev; tmpdev; tmpdev = tmpdev->parent) {
-
-		if (device_property_read_bool(tmpdev, "usb2-lpm-disable"))
-			xhci->quirks |= XHCI_HW_LPM_DISABLE;
-
-		if (device_property_read_bool(tmpdev, "usb3-lpm-capable"))
-			xhci->quirks |= XHCI_LPM_SUPPORT;
-
-		if (device_property_read_bool(tmpdev, "quirk-broken-port-ped"))
-			xhci->quirks |= XHCI_BROKEN_PORT_PED;
-
-		if (device_property_read_bool(tmpdev, "xhci-sg-trb-cache-size-quirk"))
-			xhci->quirks |= XHCI_SG_TRB_CACHE_SIZE_QUIRK;
-
-		if (device_property_read_bool(tmpdev, "write-64-hi-lo-quirk"))
-			xhci->quirks |= XHCI_WRITE_64_HI_LO;
-
-		if (device_property_read_bool(tmpdev, "xhci-missing-cas-quirk"))
-			xhci->quirks |= XHCI_MISSING_CAS;
-
-		if (device_property_read_bool(tmpdev, "xhci-skip-phy-init-quirk"))
-			xhci->quirks |= XHCI_SKIP_PHY_INIT;
+		xhci->quirks |= xhci_plat_property_quirks(tmpdev);
 
 		device_property_read_u32(tmpdev, "imod-interval-ns",
 					 &xhci->imod_interval);
@@ -311,7 +338,8 @@ int xhci_plat_probe(struct platform_device *pdev, struct device *sysdev, const s
 	if (priv && (priv->quirks & XHCI_SG_TRB_CACHE_SIZE_QUIRK))
 		xhci->quirks |= XHCI_SG_TRB_CACHE_SIZE_QUIRK;
 
-	ret = usb_add_hcd(hcd, irq, IRQF_SHARED);
+	irqflags = xhci_plat_irq_flags(xhci->quirks);
+	ret = usb_add_hcd(hcd, irq, irqflags);
 	if (ret)
 		goto disable_usb_phy;
 
@@ -347,10 +375,26 @@ int xhci_plat_probe(struct platform_device *pdev, struct device *sysdev, const s
 	if (xhci->shared_hcd) {
 		xhci->shared_hcd->rsrc_start = hcd->rsrc_start;
 		xhci->shared_hcd->rsrc_len = hcd->rsrc_len;
-		ret = usb_add_hcd(xhci->shared_hcd, irq, IRQF_SHARED);
+		ret = usb_add_hcd(xhci->shared_hcd, irq, irqflags);
 		if (ret)
 			goto put_usb3_hcd;
 	}
+
+	/*
+	 * Running in suspend-to-idle needs the interrupt requested above for it,
+	 * so a later quirk source, such as the xhci_hcd quirks module parameter,
+	 * cannot turn it on.
+	 */
+	if (!(irqflags & IRQF_NO_SUSPEND))
+		xhci->quirks &= ~XHCI_RUN_IN_S2IDLE;
+
+	/*
+	 * Let the USB core keep hubs awake that need it for wakeup, see
+	 * XHCI_RUN_IN_S2IDLE.
+	 */
+	hcd->runs_in_s2idle = !!(xhci->quirks & XHCI_RUN_IN_S2IDLE);
+	if (xhci->shared_hcd)
+		xhci->shared_hcd->runs_in_s2idle = hcd->runs_in_s2idle;
 
 	device_enable_async_suspend(&pdev->dev);
 	pm_runtime_put_noidle(&pdev->dev);
@@ -466,14 +510,28 @@ void xhci_plat_remove(struct platform_device *dev)
 }
 EXPORT_SYMBOL_GPL(xhci_plat_remove);
 
+/* A runtime suspended controller is halted: bring it back before system sleep. */
+VISIBLE_IF_KUNIT int xhci_plat_resume_from_runtime(struct device *dev)
+{
+	int ret;
+
+	if (!pm_runtime_suspended(dev))
+		return 0;
+
+	ret = pm_runtime_resume(dev);
+	return ret < 0 ? ret : 0;
+}
+EXPORT_SYMBOL_IF_KUNIT(xhci_plat_resume_from_runtime);
+
 static int xhci_plat_suspend_common(struct device *dev)
 {
 	struct usb_hcd	*hcd = dev_get_drvdata(dev);
 	struct xhci_hcd	*xhci = hcd_to_xhci(hcd);
 	int ret;
 
-	if (pm_runtime_suspended(dev))
-		pm_runtime_resume(dev);
+	ret = xhci_plat_resume_from_runtime(dev);
+	if (ret)
+		return ret;
 
 	ret = xhci_priv_suspend_quirk(hcd);
 	if (ret)
@@ -494,6 +552,56 @@ static int xhci_plat_suspend_common(struct device *dev)
 	return 0;
 }
 
+/*
+ * Some platforms have no wake signal for a halted xHC: a halted controller writes no events, so
+ * its interrupt cannot fire, and on PCI the remote wakeup or port change would be signalled as a
+ * PME instead. Where the platform keeps the controller powered and clocked in suspend-to-idle,
+ * leave it running instead, with the root hubs suspended and armed for wakeup as usual. The
+ * controller then interrupts for every event, its interrupt stays enabled (see
+ * xhci_plat_irq_flags()), and the event handling wakes the system for the events that a halted
+ * controller would signal. That costs power, so do it only when a USB device can wake the system
+ * through one of its root hubs, see xhci_plat_usb_wakeup().
+ */
+VISIBLE_IF_KUNIT bool xhci_plat_keep_running(u64 quirks, suspend_state_t target,
+					     bool may_wakeup, bool usb_wakeup)
+{
+	return (quirks & XHCI_RUN_IN_S2IDLE) && target == PM_SUSPEND_TO_IDLE &&
+	       may_wakeup && usb_wakeup;
+}
+EXPORT_SYMBOL_IF_KUNIT(xhci_plat_keep_running);
+
+/*
+ * Whether a USB device can wake the system through the root hub of @hcd, once the USB core has
+ * suspended them all: the root hub is armed for connect, disconnect and over-current changes, or
+ * kept awake for a hub below it, or the remote wakeup of a device below reaches it. A device with
+ * wakeup enabled does not count if a hub on its way does not pass the wakeup on.
+ */
+VISIBLE_IF_KUNIT bool xhci_plat_usb_wakeup(struct usb_hcd *hcd)
+{
+	struct usb_device *rhdev = hcd ? hcd->self.root_hub : NULL;
+
+	return rhdev && (rhdev->do_remote_wakeup || rhdev->awake_in_sleep ||
+			 usb_wakeup_reaches(rhdev));
+}
+EXPORT_SYMBOL_IF_KUNIT(xhci_plat_usb_wakeup);
+
+/* Whether a controller that was left running reads back as stopped or failed */
+VISIBLE_IF_KUNIT bool xhci_plat_stopped(u32 usbsts)
+{
+	return usbsts == ~(u32)0 || (usbsts & (STS_HALT | STS_FATAL | STS_HCE));
+}
+EXPORT_SYMBOL_IF_KUNIT(xhci_plat_stopped);
+
+static bool xhci_plat_run_in_s2idle(struct device *dev)
+{
+	struct usb_hcd	*hcd = dev_get_drvdata(dev);
+	struct xhci_hcd	*xhci = hcd_to_xhci(hcd);
+
+	return xhci_plat_keep_running(xhci->quirks, pm_suspend_target_state, device_may_wakeup(dev),
+				      xhci_plat_usb_wakeup(xhci->main_hcd) ||
+				      xhci_plat_usb_wakeup(xhci->shared_hcd));
+}
+
 static int xhci_plat_suspend(struct device *dev)
 {
 	struct usb_hcd	*hcd = dev_get_drvdata(dev);
@@ -502,6 +610,16 @@ static int xhci_plat_suspend(struct device *dev)
 	if (xhci_sideband_check(hcd)) {
 		priv->sideband_at_suspend = 1;
 		dev_dbg(dev, "sideband instance active, skip suspend.\n");
+		return 0;
+	}
+
+	if (xhci_plat_run_in_s2idle(dev)) {
+		int ret = xhci_plat_resume_from_runtime(dev);
+
+		if (ret)
+			return ret;
+		xhci_run_in_s2idle_begin(hcd_to_xhci(hcd));
+		dev_dbg(dev, "wakeup enabled, keep running in suspend-to-idle.\n");
 		return 0;
 	}
 
@@ -563,10 +681,39 @@ static int xhci_plat_resume(struct device *dev)
 {
 	struct usb_hcd	*hcd = dev_get_drvdata(dev);
 	struct xhci_plat_priv *priv = hcd_to_xhci_priv(hcd);
+	struct xhci_hcd *xhci = hcd_to_xhci(hcd);
 
 	if (priv->sideband_at_suspend) {
 		priv->sideband_at_suspend = 0;
 		dev_dbg(dev, "sideband instance active, skip resume.\n");
+		return 0;
+	}
+
+	if (xhci->running_in_s2idle) {
+		u32 status = readl(&xhci->op_regs->status);
+
+		if (!xhci_plat_stopped(status)) {
+			xhci_run_in_s2idle_end(xhci);
+			dev_dbg(dev, "kept running in suspend-to-idle, skip resume.\n");
+			return 0;
+		}
+
+		/*
+		 * The controller was left running on the platform's promise that it
+		 * stays powered, and stopped all the same: power was cut, or it hit an
+		 * error. It is not brought back here. Devices may have been kept awake
+		 * through the sleep, with URBs queued and their interrupt and retry
+		 * paths live, and a reset under them is not safe. Mask its interrupts and
+		 * halt it, and report it dead, which gives back every pending URB and
+		 * lets the USB core disconnect the devices. USB then needs the controller
+		 * bound again.
+		 */
+		dev_err(dev, "stopped in suspend-to-idle (USBSTS %#010x)\n", status);
+		spin_lock_irq(&xhci->lock);
+		xhci_quiesce_dying(xhci);
+		xhci_hc_died(xhci);
+		spin_unlock_irq(&xhci->lock);
+		xhci_run_in_s2idle_end(xhci);
 		return 0;
 	}
 

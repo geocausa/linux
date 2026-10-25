@@ -51,6 +51,69 @@
 
 atomic_t __kexec_lock = ATOMIC_INIT(0);
 
+/* Acquisition is serialized with load and execution by __kexec_lock. */
+static atomic_t kexec_blockers = ATOMIC_INIT(0);
+/* An immutable built-in reason remains valid after its guard is released. */
+static const char *kexec_first_reason;
+
+/**
+ * kexec_block - prevent loading and executing kernels while memory is retained
+ *
+ * @blocker: built-in guard with a boot-lifetime immutable reason
+ *
+ * Acquire before publishing memory to hardware that cannot be quiesced for
+ * kexec. Existing normal and crash images remain loaded, but cannot execute.
+ * Acquisition is serialized with load and execution, including crash/NMI
+ * execution, and returns -EBUSY if one of those operations is in progress.
+ * Callers must leave hardware untouched on acquisition failure. A successful
+ * acquisition must be paired with kexec_unblock() only after DMA has stopped.
+ *
+ * Return: 0 on success, or -EBUSY if load or execution is in progress.
+ */
+int kexec_block(struct kexec_blocker *blocker)
+{
+	if (!blocker || !blocker->reason || !*blocker->reason)
+		return -EINVAL;
+	if (!kexec_trylock())
+		return -EBUSY;
+	if (atomic_inc_return(&kexec_blockers) == 1)
+		kexec_first_reason = blocker->reason;
+	atomic_inc(&blocker->users);
+	kexec_unlock();
+	return 0;
+}
+
+/**
+ * kexec_unblock - release a successful kexec_block() acquisition
+ *
+ * @blocker: guard from a successful kexec_block() acquisition
+ *
+ * Only call after the retained memory is no longer accessible by hardware.
+ */
+void kexec_unblock(struct kexec_blocker *blocker)
+{
+	if (WARN_ON_ONCE(atomic_dec_if_positive(&blocker->users) < 0))
+		return;
+	/* Releasing after DMA stops cannot make any transition unsafe. */
+	WARN_ON_ONCE(atomic_dec_if_positive(&kexec_blockers) < 0);
+}
+
+/* All callers hold __kexec_lock, so checking and execution cannot race. */
+bool notrace kexec_blocked(void)
+{
+	return atomic_read(&kexec_blockers) != 0;
+}
+
+/*
+ * Called under __kexec_lock. With several guards, report the first reason in
+ * the current nonzero interval, even if that guard has since been released.
+ * The reason has boot lifetime; release remains lock-free and NMI-safe.
+ */
+const char *notrace kexec_block_reason(void)
+{
+	return kexec_first_reason;
+}
+
 /* Flag to indicate we are going to kexec a new kernel */
 bool kexec_in_progress = false;
 
@@ -1030,6 +1093,22 @@ static struct kexec_load_limit load_limit_panic = {
 	.limit = -1,
 };
 
+#ifdef CONFIG_KEXEC_BLOCK_KUNIT_TEST
+bool kexec_test_load_limits_unlimited(void)
+{
+	bool unlimited;
+
+	/* Never let a test consume a deliberately finite load-attempt budget. */
+	mutex_lock(&load_limit_reboot.mutex);
+	unlimited = load_limit_reboot.limit == -1;
+	mutex_unlock(&load_limit_reboot.mutex);
+	mutex_lock(&load_limit_panic.mutex);
+	unlimited &= load_limit_panic.limit == -1;
+	mutex_unlock(&load_limit_panic.mutex);
+	return unlimited;
+}
+#endif
+
 struct kimage *kexec_image;
 struct kimage *kexec_crash_image;
 static int kexec_load_disabled;
@@ -1141,6 +1220,12 @@ int kernel_kexec(void)
 
 	if (!kexec_trylock())
 		return -EBUSY;
+	if (kexec_blocked()) {
+		pr_warn_ratelimited("kexec refused by active interlock; first reason: %s\n",
+				    kexec_block_reason());
+		kexec_unlock();
+		return -EOPNOTSUPP;
+	}
 	if (!kexec_image) {
 		error = -EINVAL;
 		goto Unlock;

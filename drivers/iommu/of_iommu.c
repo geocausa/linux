@@ -145,6 +145,8 @@ int of_iommu_configure(struct device *dev, struct device_node *master_np,
 		of_pci_check_device_ats(dev, master_np);
 	} else {
 		err = of_iommu_configure_device(master_np, dev, id);
+		if (err == -EPROBE_DEFER)
+			iommu_fwspec_free(dev);
 	}
 
 	if (err && dev_iommu_present)
@@ -185,9 +187,7 @@ iommu_resv_region_get_type(struct device *dev,
 	if (start == phys->start && end == phys->end)
 		return IOMMU_RESV_DIRECT;
 
-	dev_warn(dev, "treating non-direct mapping [%pr] -> [%pap-%pap] as reservation\n", phys,
-		 &start, &end);
-	return IOMMU_RESV_RESERVED;
+	return IOMMU_RESV_TRANSLATED;
 }
 
 /**
@@ -231,35 +231,66 @@ void of_iommu_get_resv_regions(struct device *dev, struct list_head *list)
 		maps = of_get_property(it.node, "iommu-addresses", &size);
 		if (!maps)
 			continue;
+		if (size % sizeof(*maps)) {
+			dev_warn(dev, "Invalid iommu-addresses size %d\n", size);
+			continue;
+		}
 
 		end = maps + size / sizeof(__be32);
 
 		while (maps < end) {
-			struct device_node *np;
+			struct device_node *np __free(device_node) = NULL;
+			phys_addr_t iova;
+			size_t length;
 			u32 phandle;
 
 			phandle = be32_to_cpup(maps++);
 			np = of_find_node_by_phandle(phandle);
+			if (!np) {
+				/*
+				 * A boot loader writes phandle 0 for an owner that has
+				 * none. Such a tuple cannot name this device, and its
+				 * cell count is unknown, so stop as for any unknown
+				 * owner, without warning about the loader's form.
+				 */
+				if (phandle)
+					dev_warn(dev, "Invalid iommu-addresses phandle %#x\n",
+						 phandle);
+				else
+					dev_dbg(dev, "%pOF: iommu-addresses owner without a phandle\n",
+						it.node);
+				break;
+			}
+
+			/* Consume every tuple, including mappings owned by another device. */
+			maps = of_translate_dma_region_checked(np, maps, end - maps,
+							       &iova, &length);
+			if (!maps) {
+				dev_warn(dev, "Invalid iommu-addresses translation\n");
+				break;
+			}
 
 			if (np == dev->of_node) {
 				int prot = IOMMU_READ | IOMMU_WRITE;
 				struct iommu_resv_region *region;
 				enum iommu_resv_type type;
-				phys_addr_t iova;
-				size_t length;
 
 				if (of_dma_is_coherent(dev->of_node))
 					prot |= IOMMU_CACHE;
 
-				maps = of_translate_dma_region(np, maps, &iova, &length);
 				if (length == 0) {
 					dev_warn(dev, "Cannot reserve IOVA region of 0 size\n");
 					continue;
 				}
 				type = iommu_resv_region_get_type(dev, &phys, iova, length);
 
-				region = iommu_alloc_resv_region(iova, length, prot, type,
+				if (type == IOMMU_RESV_TRANSLATED)
+					region = iommu_alloc_resv_region_tr(phys.start, iova, length, prot, type,
+								    GFP_KERNEL);
+				else
+					region = iommu_alloc_resv_region(iova, length, prot, type,
 								 GFP_KERNEL);
+
 				if (region)
 					list_add_tail(&region->list, list);
 			}

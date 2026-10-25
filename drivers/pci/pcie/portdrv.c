@@ -220,7 +220,15 @@ static int get_port_device_capability(struct pci_dev *dev)
 	struct pci_host_bridge *host = pci_find_host_bridge(dev->bus);
 	int services = 0;
 
-	if (dev->is_pciehp &&
+	if (host->reset_sensitive && (pcie_ports_native || pcie_ports_dpc_native))
+		dev_info_once(&dev->dev, "native PCIe error-recovery override withheld for reset-sensitive host\n");
+
+	/* Retained hosts have no HP service to consume firmware-enabled events. */
+	if (host->no_user_remove) {
+		pcie_capability_clear_word(dev, PCI_EXP_SLTCTL,
+			PCI_EXP_SLTCTL_CCIE | PCI_EXP_SLTCTL_HPIE |
+			PCI_EXP_SLTCTL_DLLSCE);
+	} else if (dev->is_pciehp &&
 	    (pci_pcie_type(dev) == PCI_EXP_TYPE_ROOT_PORT ||
 	     pci_pcie_type(dev) == PCI_EXP_TYPE_DOWNSTREAM) &&
 	    (pcie_ports_native || host->native_pcie_hotplug)) {
@@ -237,7 +245,8 @@ static int get_port_device_capability(struct pci_dev *dev)
 	}
 
 #ifdef CONFIG_PCIEAER
-	if ((pci_pcie_type(dev) == PCI_EXP_TYPE_ROOT_PORT ||
+	/* Error recovery may reset links and invalidate retained DMA ownership. */
+	if (!host->reset_sensitive && (pci_pcie_type(dev) == PCI_EXP_TYPE_ROOT_PORT ||
              pci_pcie_type(dev) == PCI_EXP_TYPE_RC_EC) &&
 	    dev->aer_cap && pci_aer_available() &&
 	    (pcie_ports_native || host->native_aer))
@@ -262,7 +271,8 @@ static int get_port_device_capability(struct pci_dev *dev)
 	 * With dpc-native, allow Linux to use DPC even if it doesn't have
 	 * permission to use AER.
 	 */
-	if (pci_find_ext_capability(dev, PCI_EXT_CAP_ID_DPC) &&
+	if (!host->reset_sensitive &&
+	    pci_find_ext_capability(dev, PCI_EXT_CAP_ID_DPC) &&
 	    pci_aer_available() &&
 	    (pcie_ports_dpc_native || host->native_aer))
 		services |= PCIE_PORT_SERVICE_DPC;

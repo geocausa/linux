@@ -88,8 +88,8 @@ out_free_image:
 	return ret;
 }
 
-static int do_kexec_load(unsigned long entry, unsigned long nr_segments,
-		struct kexec_segment *segments, unsigned long flags)
+int do_kexec_load(unsigned long entry, unsigned long nr_segments,
+		  struct kexec_segment *segments, unsigned long flags)
 {
 	struct kimage **dest_image, *image;
 	unsigned long i;
@@ -102,6 +102,12 @@ static int do_kexec_load(unsigned long entry, unsigned long nr_segments,
 	 */
 	if (!kexec_trylock())
 		return -EBUSY;
+	if (nr_segments && kexec_blocked()) {
+		pr_warn_ratelimited("kexec load refused by active interlock; first reason: %s\n",
+				    kexec_block_reason());
+		ret = -EOPNOTSUPP;
+		goto out_unlock;
+	}
 
 #ifdef CONFIG_CRASH_DUMP
 	if (flags & KEXEC_ON_CRASH) {

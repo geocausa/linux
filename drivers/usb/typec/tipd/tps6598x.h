@@ -6,11 +6,22 @@
  * Author: Heikki Krogerus <heikki.krogerus@linux.intel.com>
  */
 
+#include <linux/atomic.h>
 #include <linux/bits.h>
 #include <linux/bitfield.h>
+#include <linux/interrupt.h>
+#include <linux/notifier.h>
+#include <linux/power_supply.h>
+#include <linux/usb/typec.h>
+#include <linux/usb/typec_mux.h>
+
+#include "cd321x-pm.h"
 
 #ifndef __TPS6598X_H__
 #define __TPS6598X_H__
+
+/* Also read by the SPMI glue to tell when the controller has woken up */
+#define TPS_REG_MODE			0x03
 
 #define TPS_FIELD_GET(_mask, _reg) ((typeof(_mask))(((_reg) & (_mask)) >> __bf_shf(_mask)))
 
@@ -136,6 +147,12 @@
 #define APPLE_CD_REG_INT_STATUS_UPDATE			BIT(8)
 #define APPLE_CD_REG_INT_PLUG_EVENT			BIT(1)
 
+/*
+ * SN201202x: the DP SID status register changed, that is the DisplayPort
+ * status the partner sent last (DP Status Update or Attention).
+ */
+#define SN201202X_INT_DP_SID_UPDATE			BIT_ULL(37)
+
 /* TPS_REG_SYSTEM_POWER_STATE states */
 #define TPS_SYSTEM_POWER_STATE_S0	0x00
 #define TPS_SYSTEM_POWER_STATE_S3	0x03
@@ -204,6 +221,7 @@
 /* modified TPS_REG_DATA_STATUS bits for CD321x (and likely also TPS65987DDK) */
 #define CD321X_DATA_STATUS_HPD_IRQ	     BIT(14)
 #define CD321X_DATA_STATUS_HPD_LEVEL	     BIT(15)
+#define CD321X_DATA_STATUS_ACTIVE_CABLE	     BIT(22)
 #define CD321X_DATA_STATUS_USB4_CONNECTION   BIT(23)
 
 #define TPS_DATA_STATUS_DP_PIN_ASSIGNMENT_MASK GENMASK(11, 10)
@@ -272,5 +290,208 @@
 /* Int Event Register length */
 #define TPS_65981_2_6_INTEVENT_LEN             8
 #define TPS_65987_8_INTEVENT_LEN               11
+
+/*
+ * Max data bytes for Data1, Data2, and other registers. See ch 1.3.2:
+ * https://www.ti.com/lit/ug/slvuan1a/slvuan1a.pdf
+ */
+#define TPS_MAX_LEN	64
+
+/* Standard Task return codes */
+#define TPS_TASK_TIMEOUT		1
+#define TPS_TASK_REJECTED		3
+
+enum tipd_hw_variant {
+	TIPD_VARIANT_INVALID = 0,
+	TIPD_VARIANT_CD321X,
+	TIPD_VARIANT_TPS6598X,
+	TIPD_VARIANT_TPS25750,
+	TIPD_VARIANT_SN201202X,
+	TIPD_VARIANT_MAX,
+};
+
+struct tps6598x;
+
+struct tipd_data {
+	irq_handler_t irq_handler;
+	u64 irq_mask1;
+	size_t tps_struct_size;
+	int (*remove)(struct tps6598x *tps);
+	int (*register_port)(struct tps6598x *tps, struct fwnode_handle *node);
+	void (*unregister_port)(struct tps6598x *tps);
+	void (*ready)(struct tps6598x *tps);
+	void (*trace_data_status)(u32 status);
+	void (*trace_power_status)(u16 status);
+	void (*trace_status)(u32 status);
+	int (*apply_patch)(struct tps6598x *tps);
+	int (*init)(struct tps6598x *tps);
+	int (*switch_power_state)(struct tps6598x *tps, u8 target_state);
+	bool (*read_data_status)(struct tps6598x *tps);
+	bool (*read_power_status)(struct tps6598x *tps);
+	int (*reset)(struct tps6598x *tps);
+	int (*connect)(struct tps6598x *tps, u32 status);
+	void (*prepare)(struct tps6598x *tps);
+	void (*complete)(struct tps6598x *tps);
+};
+
+struct tps6598x {
+	/* Native H17 routes retain ENOSPC admission and their own HPD path. */
+	u8 h17_display:1;
+	struct device *dev;
+	struct regmap *regmap;
+	struct mutex lock; /* device lock */
+	int irq;
+	u8 i2c_protocol:1;
+	u8 dbma_at_probe:1; /* Apple "DBMa" debug mode was active at probe */
+
+	struct gpio_desc *reset;
+	struct typec_port *port;
+	struct typec_partner *partner;
+	struct usb_pd_identity partner_identity;
+	struct usb_role_switch *role_sw;
+	struct typec_capability typec_cap;
+	struct typec_mux *mux;
+	/*
+	 * Set by ->remove() while its SAFE transaction is still open, so that
+	 * tps6598x_disconnect() ends it after shutting down the USB role.
+	 */
+	bool remove_safe_prepared;
+
+	struct power_supply *psy;
+	struct power_supply_desc psy_desc;
+	enum power_supply_usb_type usb_type;
+
+	int wakeup;
+	u32 status; /* status reg */
+	u32 data_status;
+	u16 pwr_status;
+	struct delayed_work	wq_poll;
+
+	const struct tipd_data *data;
+
+	struct tipd_debugfs *debugfs;
+};
+
+/* TPS_REG_USB4_STATUS */
+struct tps6598x_usb4_status_reg {
+	u8 mode_status;
+	__le32 eudo;
+	__le32 unknown;
+} __packed;
+
+/* TPS_REG_DP_SID_STATUS */
+struct tps6598x_dp_sid_status_reg {
+	u8 mode_status;
+	__le32 status_tx;
+	__le32 status_rx;
+	__le32 configure;
+	__le32 mode_data;
+} __packed;
+
+/* TPS_REG_INTEL_VID_STATUS */
+struct tps6598x_intel_vid_status_reg {
+	u8 mode_status;
+	__le32 attention_vdo;
+	__le16 enter_vdo;
+	__le16 device_mode;
+} __packed;
+
+struct cd321x_status {
+	u32 status;
+	u32 pwr_status;
+	u32 data_status;
+	u32 status_changed;
+	u32 data_status_changed;
+	struct usb_pd_identity partner_identity;
+	struct tps6598x_dp_sid_status_reg dp_sid_status;
+	struct tps6598x_intel_vid_status_reg intel_vid_status;
+	struct tps6598x_usb4_status_reg usb4_status;
+	/* SN201202x: what the DP status showed since the last update */
+	bool dp_sid_event;
+	bool dp_sid_hpd_low;
+	bool dp_sid_irq;
+};
+
+struct cd321x {
+	struct tps6598x tps;
+
+	struct tps6598x_dp_sid_status_reg dp_sid_status;
+	struct tps6598x_intel_vid_status_reg intel_vid_status;
+	struct tps6598x_usb4_status_reg usb4_status;
+
+	struct typec_altmode *port_altmode_dp;
+	struct typec_altmode *port_altmode_tbt;
+
+	struct typec_mux *mux;
+	struct typec_mux_state state;
+	bool state_valid;
+	u32 dp_status;
+	u32 dp_conf;
+	/* SN201202x: the partner's DP status is current for this DP connection */
+	bool dp_sid_valid;
+	struct typec_thunderbolt_switch *tbt_switch;
+	struct notifier_block tbt_notifier;
+	bool tbt_notifier_registered;
+	atomic_t link_event;
+	atomic_t ready_event;
+	atomic_t restore_event;
+	bool display_route_active;
+	bool dp_sink_reported;
+	bool dp_irq_hpd;
+
+	struct cd321x_status update_status;
+	struct delayed_work update_work;
+	struct delayed_work resume_work;
+	struct cd321x_pm_state pm;
+	struct usb_pd_identity cur_partner_identity;
+	bool cur_partner_is_pd;
+
+	struct fwnode_handle *connector_fwnode;
+};
+
+struct sn201202x {
+	struct cd321x cd;
+	bool polled;
+	struct completion select_completion;
+	struct completion sleep_completion;
+	struct completion wake_completion;
+	struct spmi_device *sdev;
+};
+
+extern const struct tipd_data *tipd_hw_variants[];
+extern const struct regmap_config tps6598x_regmap_config;
+
+int tipd_init(struct tps6598x *tps);
+void tipd_remove(struct tps6598x *tps);
+int tipd_prepare(struct device *dev);
+void tipd_complete(struct device *dev);
+int tipd_suspend(struct tps6598x *tps);
+int tipd_resume(struct tps6598x *tps);
+
+/* Internal to tps6598x-core */
+int tps6598x_block_read(struct tps6598x *tps, u8 reg, void *val, size_t len);
+int tps6598x_exec_cmd_tmo(struct tps6598x *tps, const char *cmd,
+			  size_t in_len, const u8 *in_data,
+			  size_t out_len, u8 *out_data,
+			  u32 cmd_timeout_ms, u32 res_delay_ms);
+
+#ifdef CONFIG_DEBUG_FS
+void tipd_debugfs_register(struct tps6598x *tps);
+void tipd_debugfs_unregister(struct tps6598x *tps);
+void tipd_debugfs_exit(void);
+#else
+static inline void tipd_debugfs_register(struct tps6598x *tps) { }
+static inline void tipd_debugfs_unregister(struct tps6598x *tps) { }
+static inline void tipd_debugfs_exit(void) { }
+#endif
+
+#if IS_ENABLED(CONFIG_KUNIT)
+void cd321x_init_work(struct cd321x *cd321x);
+bool cd321x_tbt_switch_keep_waiting(struct device *dev);
+struct typec_thunderbolt_switch *
+cd321x_tbt_switch_get(struct device *dev, struct fwnode_handle *fwnode);
+int sn201202x_suspend(struct device *dev);
+int sn201202x_resume(struct device *dev);
+#endif
 
 #endif /* __TPS6598X_H__ */

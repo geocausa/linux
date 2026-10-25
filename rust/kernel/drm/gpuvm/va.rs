@@ -1,6 +1,29 @@
 // SPDX-License-Identifier: GPL-2.0 OR MIT
 
 use super::*;
+use kernel::impl_flags;
+
+impl_flags!(
+    /// GpuVaFlags to be used for a GpuVa.
+    #[derive(Debug, Clone, Default, Copy, PartialEq, Eq)]
+    pub struct GpuVaFlags(u32);
+    /// GpuVaFlag definitions.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum GpuVaFlag {
+        /// The backing GEM is invalidated.
+        INVALIDATED = bindings::drm_gpuva_flags_DRM_GPUVA_INVALIDATED,
+        /// The GpuVa is a sparse mapping.
+        SPARSE = bindings::drm_gpuva_flags_DRM_GPUVA_SPARSE,
+        /// The GpuVa is a repeat mapping.
+        REPEAT = bindings::drm_gpuva_flags_DRM_GPUVA_REPEAT,
+    }
+);
+
+impl ::core::convert::From<u32> for GpuVaFlags {
+    fn from(value: u32) -> Self {
+        Self(value)
+    }
+}
 
 /// Represents that a range of a GEM object is mapped in this [`GpuVm`] instance.
 ///
@@ -79,12 +102,24 @@ impl<T: DriverGpuVm> GpuVa<T> {
         unsafe { (*self.as_raw()).gem.offset }
     }
 
+    /// Returns the GpuVa flags of this mapping.
+    pub fn flags(&self) -> GpuVaFlags {
+        GpuVaFlags(unsafe { (*self.as_raw()).flags })
+    }
+
     /// Returns the GEM object.
     #[inline]
     pub fn obj(&self) -> &T::Object {
         // SAFETY: The `gem.obj` field of `drm_gpuva` is immutable. We know that it's not null
         // because this VA is associated with a `GpuVmBo<T>`.
         unsafe { <T::Object as IntoGEMObject>::from_raw((*self.as_raw()).gem.obj) }
+    }
+
+    /// HACK: added for the asahi downstream driver. Driver metadata retained independently of
+    /// the resident page tables.
+    #[inline]
+    pub fn data(&self) -> &T::VaData {
+        &self.data
     }
 
     /// Returns the underlying [`GpuVmBo`] object that backs this [`GpuVa`].

@@ -619,7 +619,8 @@ static void xhci_clear_port_change_bit(struct xhci_hcd *xhci, u16 wValue, struct
 		/* Should never happen */
 		return;
 	}
-	/* Change bits are all write 1 to clear */
+	/* Change bits are all write 1 to clear, also when held in software */
+	port->held_changes &= ~status;
 	xhci_portsc_writel(port, portsc | status);
 	portsc = xhci_portsc_readl(port);
 
@@ -1144,6 +1145,9 @@ static u32 xhci_get_port_status(struct usb_hcd *hcd, struct xhci_bus_state *bus_
 	rhub = xhci_get_rhub(hcd);
 	port = rhub->ports[portnum];
 
+	/* Changes held while running in suspend-to-idle count as set */
+	portsc |= port->held_changes;
+
 	/* common wPortChange bits */
 	if (portsc & PORT_CSC)
 		status |= USB_PORT_STAT_C_CONNECTION << 16;
@@ -1660,6 +1664,8 @@ int xhci_hub_status_data(struct usb_hcd *hcd, char *buf)
 			break;
 		}
 		trace_xhci_hub_status_data(ports[i], temp);
+		/* Changes held while running in suspend-to-idle count as set */
+		temp |= ports[i]->held_changes & mask;
 
 		if ((temp & mask) != 0 ||
 			(bus_state->port_c_suspend & 1 << i) ||

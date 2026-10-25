@@ -15,6 +15,9 @@ description:
   high-dynamic-range ADC for audio capture. There is an integrated headset
   detection block.
 
+  On Apple Silicon machines the supplies of the CS42L83 are platform-managed
+  rails that are not described as regulators, so they are optional there.
+
 properties:
   compatible:
     enum:
@@ -25,6 +28,9 @@ properties:
     description:
       The I2C address of the CS42L42.
     maxItems: 1
+
+  '#sound-dai-cells':
+    const: 0
 
   VP-supply:
     description:
@@ -187,13 +193,22 @@ properties:
 required:
   - compatible
   - reg
-  - VP-supply
-  - VCP-supply
-  - VD_FILT-supply
-  - VL-supply
-  - VA-supply
 
-additionalProperties: false
+allOf:
+  - $ref: dai-common.yaml#
+  - if:
+      properties:
+        compatible:
+          const: cirrus,cs42l42
+    then:
+      required:
+        - VP-supply
+        - VCP-supply
+        - VD_FILT-supply
+        - VL-supply
+        - VA-supply
+
+unevaluatedProperties: false
 
 examples:
   - |

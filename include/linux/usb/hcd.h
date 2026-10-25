@@ -160,6 +160,8 @@ struct usb_hcd {
 	unsigned		tpl_support:1; /* OTG & EH TPL support */
 	unsigned		cant_recv_wakeups:1;
 			/* wakeup requests from downstream aren't received */
+	unsigned		runs_in_s2idle:1;
+			/* HC keeps running in suspend-to-idle with wakeup on */
 
 	unsigned int		irq;		/* irq allocated */
 	void __iomem		*regs;		/* device memory/io */
@@ -690,6 +692,7 @@ extern wait_queue_head_t usb_kill_urb_queue;
 
 #ifdef CONFIG_PM
 extern unsigned usb_wakeup_enabled_descendants(struct usb_device *udev);
+bool usb_wakeup_reaches(struct usb_device *hdev);
 extern void usb_root_hub_lost_power(struct usb_device *rhdev);
 extern int hcd_bus_suspend(struct usb_device *rhdev, pm_message_t msg);
 extern int hcd_bus_resume(struct usb_device *rhdev, pm_message_t msg);
@@ -698,6 +701,11 @@ extern void usb_hcd_resume_root_hub(struct usb_hcd *hcd);
 static inline unsigned usb_wakeup_enabled_descendants(struct usb_device *udev)
 {
 	return 0;
+}
+
+static inline bool usb_wakeup_reaches(struct usb_device *hdev)
+{
+	return false;
 }
 static inline void usb_hcd_resume_root_hub(struct usb_hcd *hcd)
 {

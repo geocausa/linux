@@ -1135,6 +1135,8 @@ struct dwc3_glue_ops {
  * @usb2_gadget_lpm_disable: set to disable usb2 lpm for gadget
  * @needs_full_reinit: set to indicate the core may lose power and need full
  *			initialization during system pm
+ * @xhci_run_in_s2idle: set to keep xHCI running in suspend-to-idle when it may
+ *			wake the system
  * @disable_scramble_quirk: set if we enable the disable scramble quirk
  * @u2exit_lfps_quirk: set if we enable u2exit lfps quirk
  * @u2ss_inp3_quirk: set if we enable P3 OK for U2/SS Inactive quirk
@@ -1403,6 +1405,7 @@ struct dwc3 {
 	unsigned		usb2_lpm_disable:1;
 	unsigned		usb2_gadget_lpm_disable:1;
 	unsigned		needs_full_reinit:1;
+	unsigned		xhci_run_in_s2idle:1;
 
 	unsigned		disable_scramble_quirk:1;
 	unsigned		u2exit_lfps_quirk:1;
@@ -1677,6 +1680,12 @@ static inline void dwc3_pre_run_stop(struct dwc3 *dwc, bool is_on)
 #if IS_ENABLED(CONFIG_USB_DWC3_HOST) || IS_ENABLED(CONFIG_USB_DWC3_DUAL_ROLE)
 int dwc3_host_init(struct dwc3 *dwc);
 void dwc3_host_exit(struct dwc3 *dwc);
+/* Most properties dwc3_host_xhci_properties() fills in, not counting the empty entry */
+#define DWC3_XHCI_MAX_PROPERTIES	7
+#if IS_ENABLED(CONFIG_KUNIT)
+struct property_entry;
+unsigned int dwc3_host_xhci_properties(const struct dwc3 *dwc, struct property_entry *props);
+#endif
 #else
 static inline int dwc3_host_init(struct dwc3 *dwc)
 { return 0; }

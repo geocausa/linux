@@ -343,6 +343,17 @@ config MFD_MACSMC
 	  various features. The MFD core device handles this protocol and
 	  exposes it to the sub-devices.
 
+config MFD_MACSMC_KUNIT_TEST
+	bool "KUnit tests for Apple SMC key readers" if !KUNIT_ALL_TESTS
+	depends on MFD_MACSMC && KUNIT=y
+	default KUNIT_ALL_TESTS
+	help
+	  Build tests for SMC key/value readers, request limits and metadata
+	  decoding. Static stubs replace mailbox commands and SRAM access,
+	  allowing malformed replies and output buffer limits to be checked
+	  without a running SMC. Client driver tests can also replace
+	  apple_smc_read() and apple_smc_write() with a model of their keys.
+
 config MFD_MADERA
 	tristate "Cirrus Logic Madera codecs"
 	select MFD_CORE

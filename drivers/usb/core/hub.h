@@ -17,6 +17,11 @@
 #include <linux/usb/typec.h>
 #include "usb.h"
 
+/* Quirks that hub_id_table assigns through driver_info */
+#define HUB_QUIRK_CHECK_PORT_AUTOSUSPEND	BIT(0)
+#define HUB_QUIRK_DISABLE_AUTOSUSPEND		BIT(1)
+#define HUB_QUIRK_REDUCE_FRAME_INTR_BINTERVAL	BIT(2)
+
 struct usb_hub {
 	struct device		*intfdev;	/* the "interface" device */
 	struct usb_device	*hdev;
@@ -91,12 +96,16 @@ struct usb_hub {
  * @state_kn: kernfs_node of the sysfs attribute that accesses @state
  * @location: opaque representation of platform connector location
  * @status_lock: synchronize port_event() vs usb_port_{suspend|resume}
+ * @power_lock: serialize administrative disable with runtime resume
  * @portnum: port index num based one
  * @is_superspeed cache super-speed status
  * @usb3_lpm_u1_permit: whether USB3 U1 LPM is permitted.
  * @usb3_lpm_u2_permit: whether USB3 U2 LPM is permitted.
  * @early_stop: whether port initialization will be stopped earlier.
  * @ignore_event: whether events of the port are ignored.
+ * @disabled: switched off through the "disable" attribute
+ * @held_off: switched off by usb_hub_port_power_off(), which holds the port
+ *	runtime-active until usb_hub_port_power_on()
  */
 struct usb_port {
 	struct usb_device *child;
@@ -110,6 +119,7 @@ struct usb_port {
 	struct kernfs_node *state_kn;
 	usb_port_location_t location;
 	struct mutex status_lock;
+	struct mutex power_lock; /* administrative disable vs runtime resume */
 	u32 over_current_count;
 	u8 portnum;
 	u32 quirks;
@@ -118,6 +128,8 @@ struct usb_port {
 	unsigned int is_superspeed:1;
 	unsigned int usb3_lpm_u1_permit:1;
 	unsigned int usb3_lpm_u2_permit:1;
+	bool disabled;
+	bool held_off;
 };
 
 #define to_usb_port(_dev) \
@@ -183,3 +195,7 @@ static inline int hub_port_debounce_be_stable(struct usb_hub *hub,
 {
 	return hub_port_debounce(hub, port1, false);
 }
+
+#if IS_ENABLED(CONFIG_KUNIT)
+unsigned long usb_hub_id_quirks(struct usb_interface *intf);
+#endif

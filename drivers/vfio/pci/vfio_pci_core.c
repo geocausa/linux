@@ -2221,6 +2221,13 @@ int vfio_pci_core_register_device(struct vfio_pci_core_device *vdev)
 	struct device *dev = &pdev->dev;
 	int ret;
 
+	/* Assignment exposes function/bus resets outside PCI sysfs. */
+	if (pci_find_host_bridge(pdev->bus)->reset_sensitive) {
+		dev_warn_ratelimited(dev,
+				     "VFIO assignment refused: host bridge retains reset-sensitive DMA\n");
+		return -EOPNOTSUPP;
+	}
+
 	/* Drivers must set the vfio_pci_core_device to their drvdata */
 	if (WARN_ON(vdev != dev_get_drvdata(dev)))
 		return -EINVAL;

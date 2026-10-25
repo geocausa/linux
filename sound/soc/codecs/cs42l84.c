@@ -16,8 +16,10 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/delay.h>
+#include <linux/devm-helpers.h>
 #include <linux/i2c.h>
 #include <linux/regmap.h>
+#include <linux/workqueue.h>
 #include <linux/slab.h>
 #include <linux/acpi.h>
 #include <linux/platform_device.h>
@@ -51,6 +53,10 @@ struct cs42l84_private {
 	u32 srate;
 	u8 stream_use;
 	int hs_type;
+	bool remote_active;
+	unsigned int remote_btn1_prev;
+	unsigned int remote_short_prev;
+	struct delayed_work remote_poll_work;
 };
 
 static bool cs42l84_volatile_register(struct device *dev, unsigned int reg)
@@ -61,6 +67,7 @@ static bool cs42l84_volatile_register(struct device *dev, unsigned int reg)
 	case CS42L84_PLL_LOCK_STATUS:
 	case CS42L84_TSRS_PLUG_STATUS:
 	case CS42L84_HS_DET_STATUS2:
+	case CS42L84_REMOTE_BUTTON_STATUS1:
 		return true;
 	default:
 		return false;
@@ -600,6 +607,12 @@ static int cs42l84_mute_stream(struct snd_soc_dai *dai, int mute, int stream)
 							CS42L84_CCM_CTL4_REFCLK_EN, 0);
 		}
 	} else {
+		/*
+		 * ASoC also unmutes here at D2 during card resume. A PCM
+		 * advertising RESUME can restart without another prepare, so
+		 * do not discard that unmute based on the card power state.
+		 * The PLL path below still requires lock before switching.
+		 */
 		if (!cs42l84->stream_use) {
 			/* SCLK must be running before codec unmute.
 			 *
@@ -628,8 +641,24 @@ static int cs42l84_mute_stream(struct snd_soc_dai *dai, int mute, int stream)
 							       (regval & CS42L84_PLL_LOCK_STATUS_LOCKED),
 							       CS42L84_PLL_LOCK_POLL_US,
 							       CS42L84_PLL_LOCK_TIMEOUT_US);
-				if (ret < 0)
+				if (ret < 0) {
+					/*
+					 * Without a locked PLL the codec has no clock
+					 * once it leaves the oscillator, and then the
+					 * I2C bus stops working. Stay on the oscillator
+					 * and undo what was enabled above, in the same
+					 * order as the mute path.
+					 */
 					dev_warn(component->dev, "PLL failed to lock: %d\n", ret);
+					snd_soc_component_update_bits(component,
+								      CS42L84_PLL_CTL1,
+								      CS42L84_PLL_CTL1_EN, 0);
+					snd_soc_component_update_bits(component,
+								      CS42L84_CCM_CTL4,
+								      CS42L84_CCM_CTL4_REFCLK_EN,
+								      0);
+					return ret;
+				}
 
 				if (regval & CS42L84_PLL_LOCK_STATUS_ERROR)
 					dev_warn(component->dev, "PLL lock error\n");
@@ -709,9 +738,88 @@ static const struct cs42l84_irq_params irq_params_table[] = {
 		CS42L84_TSRS_PLUG_VAL_MASK}
 };
 
+/*
+ * Poll for Apple remote button pulses while a mic-equipped headset is
+ * attached. CS42L84 has no known interrupt source for these (the only
+ * entry in irq_params_table is TSRS plug/unplug), so this polls the two
+ * empirically-discovered status bits at CS42L84_REMOTE_POLL_MS cadence and
+ * reports a press/release pair on each rising edge, matching how the
+ * CS42L83 reports its volume pulses. The work is freezable so it does not
+ * touch the codec across system suspend.
+ */
+static void cs42l84_remote_poll(struct work_struct *work)
+{
+	struct cs42l84_private *cs42l84 = container_of(to_delayed_work(work),
+							struct cs42l84_private,
+							remote_poll_work);
+	unsigned int btn1 = 0, short_status = 0, short_bit;
+	int ret;
+
+	mutex_lock(&cs42l84->irq_lock);
+
+	if (!cs42l84->remote_active)
+		goto out_unlock;
+
+	ret = regmap_read(cs42l84->regmap, CS42L84_REMOTE_BUTTON_STATUS1, &btn1);
+	if (ret)
+		goto reschedule;
+
+	ret = regmap_read(cs42l84->regmap, CS42L84_HS_DET_STATUS2, &short_status);
+	if (ret)
+		goto reschedule;
+
+	short_bit = short_status & CS42L84_HS_DET_STATUS2_SHORT_TRUE;
+
+	if ((btn1 & CS42L84_REMOTE_VOLUME_DOWN) &&
+	    !(cs42l84->remote_btn1_prev & CS42L84_REMOTE_VOLUME_DOWN)) {
+		snd_soc_jack_report(cs42l84->jack, SND_JACK_BTN_2, SND_JACK_BTN_2);
+		snd_soc_jack_report(cs42l84->jack, 0, SND_JACK_BTN_2);
+	}
+	if ((btn1 & CS42L84_REMOTE_VOLUME_UP) &&
+	    !(cs42l84->remote_btn1_prev & CS42L84_REMOTE_VOLUME_UP)) {
+		snd_soc_jack_report(cs42l84->jack, SND_JACK_BTN_1, SND_JACK_BTN_1);
+		snd_soc_jack_report(cs42l84->jack, 0, SND_JACK_BTN_1);
+	}
+	if (short_bit && !cs42l84->remote_short_prev) {
+		snd_soc_jack_report(cs42l84->jack, SND_JACK_BTN_0, SND_JACK_BTN_0);
+		snd_soc_jack_report(cs42l84->jack, 0, SND_JACK_BTN_0);
+	}
+
+	cs42l84->remote_btn1_prev = btn1;
+	cs42l84->remote_short_prev = short_bit;
+
+reschedule:
+	queue_delayed_work(system_freezable_wq, &cs42l84->remote_poll_work,
+			   msecs_to_jiffies(CS42L84_REMOTE_POLL_MS));
+out_unlock:
+	mutex_unlock(&cs42l84->irq_lock);
+}
+
+/* Called with irq_lock held. */
+static void cs42l84_remote_start(struct cs42l84_private *cs42l84)
+{
+	cs42l84->remote_active = true;
+	/*
+	 * Treat every input as already asserted so the first poll only takes
+	 * a baseline; a line that is shorted at detection is not a key press.
+	 */
+	cs42l84->remote_btn1_prev = CS42L84_REMOTE_VOLUME_DOWN | CS42L84_REMOTE_VOLUME_UP;
+	cs42l84->remote_short_prev = CS42L84_HS_DET_STATUS2_SHORT_TRUE;
+	queue_delayed_work(system_freezable_wq, &cs42l84->remote_poll_work,
+			   msecs_to_jiffies(CS42L84_REMOTE_POLL_MS));
+}
+
+/* Called with irq_lock held. */
+static void cs42l84_remote_stop(struct cs42l84_private *cs42l84)
+{
+	cs42l84->remote_active = false;
+}
+
 static void cs42l84_detect_hs(struct cs42l84_private *cs42l84)
 {
 	unsigned int reg;
+
+	cs42l84_remote_stop(cs42l84);
 
 	/* Power up HSBIAS */
 	regmap_update_bits(cs42l84->regmap,
@@ -772,6 +880,7 @@ static void cs42l84_detect_hs(struct cs42l84_private *cs42l84)
 		cs42l84->hs_type = SND_JACK_HEADSET;
 		snd_soc_jack_report(cs42l84->jack, SND_JACK_HEADSET,
 				SND_JACK_HEADSET);
+		cs42l84_remote_start(cs42l84);
 		break;
 
 	case 0b00: /* open */
@@ -789,6 +898,8 @@ static void cs42l84_detect_hs(struct cs42l84_private *cs42l84)
 
 static void cs42l84_revert_hs(struct cs42l84_private *cs42l84)
 {
+	cs42l84_remote_stop(cs42l84);
+
 	/* Power down HSBIAS */
 	regmap_update_bits(cs42l84->regmap,
 		CS42L84_MISC_DET_CTL,
@@ -998,6 +1109,16 @@ static int cs42l84_i2c_probe(struct i2c_client *i2c_client)
 		return ret;
 	}
 
+	/*
+	 * A plug IRQ during probe can start polling; cancel it on any probe
+	 * failure, and before the regmap it uses is released.
+	 */
+	ret = devm_delayed_work_autocancel(&i2c_client->dev,
+					   &cs42l84->remote_poll_work,
+					   cs42l84_remote_poll);
+	if (ret)
+		return ret;
+
 	/* Reset the Device */
 	cs42l84->reset_gpio = devm_gpiod_get_optional(&i2c_client->dev,
 		"reset", GPIOD_OUT_LOW);
@@ -1086,6 +1207,8 @@ static void cs42l84_i2c_remove(struct i2c_client *i2c_client)
 	if (i2c_client->irq)
 		free_irq(i2c_client->irq, cs42l84);
 
+	cancel_delayed_work_sync(&cs42l84->remote_poll_work);
+
 	gpiod_set_value_cansleep(cs42l84->reset_gpio, 0);
 }
 
@@ -1118,3 +1241,7 @@ MODULE_AUTHOR("Martin Povišer <povik+lin@cutebit.org>");
 MODULE_AUTHOR("Hector Martin <marcan@marcan.st>");
 MODULE_AUTHOR("James Calligeros <jcalligeros99@gmail.com>");
 MODULE_LICENSE("GPL");
+
+#if IS_ENABLED(CONFIG_SND_SOC_CS42L84_TEST)
+#include "cs42l84-test.c"
+#endif

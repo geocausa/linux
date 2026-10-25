@@ -1,0 +1,8 @@
+# Device trees the kernel no longer builds, on purpose.
+#
+# compare-packages.py fails a change that stops building a DTB the target
+# branch ships: the boot bundle picks a Mac's DTB by name, so that Mac would
+# not boot the new kernel. A deliberate retirement goes here, in the change
+# that retires it, one per line: the file name, then the reason.
+#
+#   t8103-j999.dtb  merged into t8103-j998.dtb; m1n1 maps j999 to j998

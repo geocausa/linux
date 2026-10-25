@@ -182,7 +182,7 @@ macro_rules! module_device_table {
     (
         $table_type: literal, $device_id_ty: ty,
         $table_name: ident, $id_info_type: ty,
-        [$(($id: expr, $info:expr $(,)?)),* $(,)?]
+        [$($(#[$attr:meta])* ($id: expr, $info:expr $(,)?)),* $(,)?]
     ) => {
         #[export_name =
             concat!("__mod_device_table__", ::core::line!(),
@@ -193,8 +193,8 @@ macro_rules! module_device_table {
         static $table_name: $crate::device_id::IdArray<
             $device_id_ty,
             $id_info_type,
-            { <[$device_id_ty]>::len(&[$($id,)*]) },
-        > = $crate::device_id::IdArray::new([$(($id, &$info),)*]);
+            { <[$device_id_ty]>::len(&[$($(#[$attr])* $id,)*]) },
+        > = $crate::device_id::IdArray::new([$($(#[$attr])* ($id, &$info),)*]);
     };
 
     // Case for no ID info.

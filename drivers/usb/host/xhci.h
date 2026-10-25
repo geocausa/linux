@@ -1482,6 +1482,8 @@ struct xhci_port {
 	unsigned int		lpm_incapable:1;
 	unsigned long		resume_timestamp;
 	bool			rexit_active;
+	/* Change bits held for the hub driver, see xhci_s2idle_port_change() */
+	u32			held_changes;
 	/* Slot ID is the index of the device directly connected to the port */
 	int			slot_id;
 	struct completion	rexit_done;
@@ -1647,6 +1649,8 @@ struct xhci_hcd {
 #define XHCI_CDNS_SCTX_QUIRK	BIT_ULL(48)
 #define XHCI_ETRON_HOST	BIT_ULL(49)
 #define XHCI_LIMIT_ENDPOINT_INTERVAL_9 BIT_ULL(50)
+#define XHCI_ASMEDIA_FW_QUIRK	BIT_ULL(51)
+#define XHCI_RUN_IN_S2IDLE	BIT_ULL(52)
 
 	unsigned int		num_active_eps;
 	unsigned int		limit_active_eps;
@@ -1659,6 +1663,8 @@ struct xhci_hcd {
 	unsigned		broken_suspend:1;
 	/* Indicates that omitting hcd is supported if root hub has no ports */
 	unsigned		allow_single_roothub:1;
+	/* Kept running in suspend-to-idle, see xhci_run_in_s2idle_begin() */
+	unsigned		running_in_s2idle:1;
 	/* cached extended protocol port capabilities */
 	struct xhci_port_cap	*port_caps;
 	unsigned int		num_port_caps;
@@ -1899,6 +1905,8 @@ int xhci_ext_cap_init(struct xhci_hcd *xhci);
 
 int xhci_suspend(struct xhci_hcd *xhci, bool do_wakeup);
 int xhci_resume(struct xhci_hcd *xhci, bool power_lost, bool is_auto_resume);
+void xhci_run_in_s2idle_begin(struct xhci_hcd *xhci);
+void xhci_run_in_s2idle_end(struct xhci_hcd *xhci);
 
 irqreturn_t xhci_irq(struct usb_hcd *hcd);
 irqreturn_t xhci_msi_irq(int irq, void *hcd);
@@ -1983,6 +1991,13 @@ struct xhci_hub *xhci_get_rhub(struct usb_hcd *hcd);
 enum usb_link_tunnel_mode xhci_port_is_tunneled(struct xhci_hcd *xhci,
 						struct xhci_port *port);
 void xhci_hc_died(struct xhci_hcd *xhci);
+void xhci_quiesce_dying(struct xhci_hcd *xhci);
+void xhci_s2idle_wakeup(struct xhci_hcd *xhci);
+void xhci_s2idle_latched_changes(struct xhci_hcd *xhci);
+#if IS_ENABLED(CONFIG_KUNIT)
+bool xhci_s2idle_port_wakeup(u32 portsc);
+bool xhci_s2idle_transfer_wakeup(const struct usb_device *udev);
+#endif
 
 #ifdef CONFIG_PM
 int xhci_bus_suspend(struct usb_hcd *hcd);

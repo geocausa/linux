@@ -57,6 +57,15 @@ config USB_XHCI_PCI_RENESAS
 	  installed on your system for this device to work.
 	  If unsure, say 'N'.
 
+config USB_XHCI_PCI_ASMEDIA
+	bool "Support firmware loading for ASMedia xHCI controllers"
+	default USB_XHCI_PCI if ARCH_APPLE
+	depends on USB_XHCI_PCI
+	help
+	  Say 'Y' to enable support for ASMedia xHCI controllers with
+	  host-supplied firmware. These are usually present on Apple devices.
+	  If unsure, say 'N'.
+
 config USB_XHCI_PLATFORM
 	tristate "Generic xHCI driver for a platform device"
 	help
@@ -64,6 +73,19 @@ config USB_XHCI_PLATFORM
 	  provides a memory space and an irq.
 	  It is also a prerequisite for platform specific drivers that
 	  implement some extra quirks.
+
+	  If unsure, say N.
+
+config USB_XHCI_PLATFORM_KUNIT_TEST
+	tristate "KUnit tests for the generic xHCI platform driver" if !KUNIT_ALL_TESTS
+	depends on USB_XHCI_PLATFORM && KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  Test how the generic xHCI platform driver turns device properties
+	  into quirks, when it keeps the controller running across
+	  suspend-to-idle instead of halting it, and which events of a
+	  controller kept running wake the system. The tests need no xHCI
+	  hardware.
 
 	  If unsure, say N.
 

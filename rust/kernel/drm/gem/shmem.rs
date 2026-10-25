@@ -59,6 +59,10 @@ use core::{
         self,
         NonNull, //
     },
+    sync::atomic::{
+        AtomicUsize,
+        Ordering, //
+    },
 };
 use gem::{
     BaseObject,
@@ -75,6 +79,9 @@ pub struct ObjectConfig<'a, T: DriverObject> {
     /// Whether to set the write-combine map flag.
     pub map_wc: bool,
 
+    /// Opt in to revocable CPU VMAs, with driver-controlled idle eviction.
+    pub reclaimable_cpu_mappings: bool,
+
     /// Reuse the DMA reservation from another GEM object.
     ///
     /// The newly created [`Object`] will hold an owned refcount to `parent_resv_obj` if specified.
@@ -86,10 +93,15 @@ impl<'a, T: DriverObject> Default for ObjectConfig<'a, T> {
     fn default() -> Self {
         Self {
             map_wc: false,
+            reclaimable_cpu_mappings: false,
             parent_resv_obj: None,
         }
     }
 }
+
+const SGT_PERMANENT: usize = 1 << (usize::BITS - 1);
+const SGT_RECLAIMING: usize = 1 << (usize::BITS - 2);
+const SGT_USERS: usize = SGT_RECLAIMING - 1;
 
 /// A shmem-backed GEM object.
 ///
@@ -109,6 +121,8 @@ pub struct Object<T: DriverObject> {
     #[pin]
     /// Lock for protecting initialization of `sgt_res`.
     sgt_lock: Mutex<()>,
+    /// Owned SGT readers, or permanent borrowed access, exclude backing eviction.
+    sgt_access: AtomicUsize,
     #[pin]
     inner: T,
 }
@@ -132,7 +146,11 @@ impl<T: DriverObject> Object<T> {
         open: Some(super::open_callback::<T>),
         close: Some(super::close_callback::<T>),
         print_info: Some(bindings::drm_gem_shmem_object_print_info),
-        export: None,
+        export: if T::HAS_EXPORT {
+            Some(super::export_callback::<T>)
+        } else {
+            None
+        },
         pin: Some(bindings::drm_gem_shmem_object_pin),
         unpin: Some(bindings::drm_gem_shmem_object_unpin),
         get_sg_table: Some(bindings::drm_gem_shmem_object_get_sg_table),
@@ -270,6 +288,28 @@ impl<T: DriverObject> Object<T> {
             return Err(EINVAL);
         }
 
+        // SAFETY: `import_attach` is set before an imported object is published and does not
+        // change until the object is freed.
+        if !unsafe { (*self.as_raw()).import_attach }.is_null() {
+            // The SG table of an imported object is the dma-buf attachment's mapping, which the
+            // exporter made for this device at import time. It belongs to the attachment, and
+            // `drm_gem_shmem_release()` hands it back to the exporter through
+            // `drm_prime_gem_destroy()`. It must not be placed in `sgt_res`, whose `SGTableMap`
+            // would unmap and free it as if these helpers had built it.
+            //
+            // SAFETY: `sgt` of an imported object is set before the object is published and stays
+            // valid and unmodified until the object is freed, which `'a` cannot outlive.
+            let sgt = unsafe { (*self.as_raw_shmem()).sgt };
+            if sgt.is_null() {
+                return Err(EINVAL);
+            }
+            // SAFETY: See above.
+            return Ok(unsafe { scatterlist::SGTable::from_raw(sgt) });
+        }
+
+        // The borrowed reference can outlive any lock, so pin the backing permanently.
+        self.acquire_sgt_access(true)?;
+
         let sgt_res = 'out: {
             // Fast path: sgt_res is already initialized
             if let Some(sgt_res) = self.sgt_res.as_ref() {
@@ -311,6 +351,7 @@ impl<T: DriverObject> Object<T> {
                 parent_resv_obj: config.parent_resv_obj.map(|p| p.into()),
                 sgt_res: ManuallyDrop::new(SetOnce::new()),
                 sgt_lock <- new_mutex!(()),
+                sgt_access: AtomicUsize::new(0),
                 inner <- T::new(dev, size, args),
             }),
             GFP_KERNEL,
@@ -339,8 +380,152 @@ impl<T: DriverObject> Object<T> {
         // to have exclusive access - thus making this safe to hold a mutable reference to.
         let shmem = unsafe { &mut *obj.as_raw_shmem() };
         shmem.set_map_wc(config.map_wc);
+        shmem.reclaimable_cpu_mappings = config.reclaimable_cpu_mappings;
 
         Ok(obj)
+    }
+
+    /// `gem_create_object` callback, for the objects the DRM core allocates on the driver's
+    /// behalf (dma-buf imports and dumb buffers) before it initializes their shmem part.
+    ///
+    /// Every GEM object of the driver is taken to be an `Object<T>`, these included, so build one
+    /// with the driver data from [`DriverObject::core_object_args`].
+    extern "C" fn create_object_callback(
+        raw_dev: *mut bindings::drm_device,
+        size: usize,
+    ) -> *mut bindings::drm_gem_object {
+        // SAFETY: The DRM core only calls this for a device of `T::Driver`, which outlives the
+        // call.
+        let dev = unsafe { Device::<T::Driver>::from_raw(raw_dev) };
+
+        let new = T::core_object_args(dev, size).and_then(|args| {
+            KBox::try_pin_init(
+                try_pin_init!(Self {
+                    obj <- Opaque::init_zeroed(),
+                    parent_resv_obj: None,
+                    sgt_res: ManuallyDrop::new(SetOnce::new()),
+                    sgt_lock <- new_mutex!(()),
+                    sgt_access: AtomicUsize::new(0),
+                    inner <- T::new(dev, size, args),
+                }),
+                GFP_KERNEL,
+            )
+        });
+        let new = match new {
+            Ok(new) => new,
+            Err(e) => return e.to_ptr(),
+        };
+
+        // SAFETY: We never move out of `self`. The DRM core owns the object from here on and
+        // releases it through `free_callback()`. An object the core then fails to initialize is
+        // freed with `kfree()`, which the `KBox` allocator allows, without dropping `inner`.
+        let new = KBox::into_raw(unsafe { Pin::into_inner_unchecked(new) });
+
+        // SAFETY: `new` is a valid object that nothing else references yet.
+        unsafe {
+            let obj = (*new).obj.get();
+            (*obj).base.funcs = &Self::VTABLE;
+            &raw mut (*obj).base
+        }
+    }
+
+    fn acquire_sgt_access(&self, permanent: bool) -> Result {
+        let mut state = self.sgt_access.load(Ordering::Acquire);
+        loop {
+            if state & SGT_RECLAIMING != 0 {
+                return Err(EBUSY);
+            }
+            let next = if permanent {
+                state | SGT_PERMANENT
+            } else {
+                if state & SGT_USERS == SGT_USERS {
+                    return Err(EOVERFLOW);
+                }
+                state + 1
+            };
+            match self.sgt_access.compare_exchange_weak(
+                state,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Ok(()),
+                Err(current) => state = current,
+            }
+        }
+    }
+
+    /// Whether the caller's sole SG lease is the last user of the backing.
+    ///
+    /// # Safety
+    ///
+    /// The caller holds the object's DMA reservation lock.
+    pub unsafe fn sole_sg_lease_releasable_locked(&self) -> bool {
+        self.sgt_access.load(Ordering::Acquire) == 1 &&
+            // SAFETY: The caller establishes the reservation-lock contract.
+            unsafe { bindings::drm_gem_shmem_idle_pages_releasable_locked(self.as_raw_shmem()) }
+    }
+
+    /// Release idle backing without discarding contents. A later SG table may have different DMA
+    /// addresses.
+    ///
+    /// Refused with `EBUSY` once [`Self::sg_table`] has handed out a borrowed table, since that
+    /// borrow may outlive any lock.
+    ///
+    /// # Safety
+    ///
+    /// The caller holds this object's DMA reservation lock, has removed and invalidated every
+    /// device mapping, and excludes new device access.
+    pub unsafe fn release_idle_pages_locked(&self) -> Result {
+        self.sgt_access
+            .compare_exchange(0, SGT_RECLAIMING, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| EBUSY)?;
+        // SAFETY: The caller's contract plus the exclusive state above.
+        let result = to_result(unsafe {
+            bindings::drm_gem_shmem_release_idle_pages_locked(self.as_raw_shmem())
+        });
+        self.sgt_access.store(0, Ordering::Release);
+        result
+    }
+
+    /// Apply purge advice (0 = needed, >0 = may be purged) under the
+    /// object's reservation lock. Returns false if the object was already
+    /// purged; the advice is then ignored.
+    pub fn madvise(&self, madv: i32) -> bool {
+        let _guard = DmaResvGuard::new(self);
+        // SAFETY: The reservation lock is held, as the C helper requires.
+        unsafe { bindings::drm_gem_shmem_madvise_locked(self.as_raw_shmem(), madv) != 0 }
+    }
+
+    /// Current purge advice: negative once purged.
+    ///
+    /// # Safety
+    ///
+    /// The caller holds the object's DMA reservation lock.
+    pub unsafe fn madv_locked(&self) -> i32 {
+        // SAFETY: Reservation ownership serializes the field.
+        unsafe { (*self.as_raw_shmem()).madv }
+    }
+
+    /// Discard the backing of a purgeable object. The handle and logical
+    /// mappings remain; the contents are gone and `madv_locked()` turns negative.
+    ///
+    /// # Safety
+    ///
+    /// The caller holds this object's DMA reservation lock, has removed and
+    /// invalidated every device mapping, and no Rust SG lease remains.
+    pub unsafe fn purge_locked(&self) -> Result {
+        // SAFETY: The caller's contract; the exclusive state below excludes new leases.
+        if !unsafe { bindings::drm_gem_shmem_is_purgeable(self.as_raw_shmem()) } {
+            return Err(EBUSY);
+        }
+        self.sgt_access
+            .compare_exchange(0, SGT_RECLAIMING, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| EBUSY)?;
+        // SAFETY: See above.
+        unsafe { bindings::drm_gem_shmem_purge_locked(self.as_raw_shmem()) };
+        self.sgt_access.store(0, Ordering::Release);
+        Ok(())
     }
 
     /// Creates and returns an owned reference to a virtual kernel memory mapping for this object.
@@ -389,7 +574,11 @@ impl<T: DriverObject> driver::AllocImpl for Object<T> {
     type Driver = T::Driver;
 
     const ALLOC_OPS: driver::AllocOps = driver::AllocOps {
-        gem_create_object: None,
+        gem_create_object: if T::HAS_CORE_OBJECT_ARGS {
+            Some(Self::create_object_callback)
+        } else {
+            None
+        },
         prime_handle_to_fd: None,
         prime_fd_to_handle: None,
         gem_prime_import: None,
@@ -435,7 +624,8 @@ where
     D: DriverObject,
     R: Deref<Target = Object<D>>,
 {
-    addr: *mut c_void,
+    /// FIXME: Should not be public!
+    pub addr: *mut c_void,
     owner: R,
 }
 
@@ -607,11 +797,13 @@ mod tests {
     impl drm::file::DriverFile for KunitFile {
         type Driver = KunitDriver;
 
-        fn open(_dev: &drm::Device<KunitDriver>) -> Result<Pin<KBox<Self>>> {
-            Ok(KBox::new(Self, GFP_KERNEL)?.into())
+        fn open(_dev: &drm::Device<KunitDriver, drm::Registered>) -> Result<Pin<KBox<Self>>> {
+            // These object tests never create client files.
+            Err(ENODEV)
         }
     }
 
+    #[vtable]
     impl gem::DriverObject for KunitObject {
         type Driver = KunitDriver;
         type Args = ();

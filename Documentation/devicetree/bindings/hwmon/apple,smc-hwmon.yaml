@@ -40,6 +40,22 @@ properties:
   compatible:
     const: apple,smc-hwmon
 
+  apple,discover-temperatures:
+    type: boolean
+    description:
+      Enumerate readable, non-function temperature keys from the running SMC
+      instead of providing a board-specific temperature table. Only keys
+      beginning with T and reporting a four-byte floating-point value are
+      exposed. Labels are the key identifiers, without inferred locations.
+      Channels are reporting-only; their indices depend on the firmware and
+      must not be used by a static thermal policy.
+
+  "#thermal-sensor-cells":
+    const: 1
+    description:
+      The cell is the zero-based index of a temperature channel, counting
+      the temperature-* child nodes in order.
+
 patternProperties:
   "^current-[A-Za-z0-9]{4}$":
     $ref: "#/$defs/sensor"
@@ -81,5 +97,13 @@ patternProperties:
   "^voltage-[A-Za-z0-9]{4}$":
     $ref: "#/$defs/sensor"
     unevaluatedProperties: false
+
+allOf:
+  - if:
+      required:
+        - apple,discover-temperatures
+    then:
+      patternProperties:
+        "^temperature-": false
 
 additionalProperties: false

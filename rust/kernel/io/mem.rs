@@ -2,12 +2,15 @@
 
 //! Generic memory-mapped IO.
 
+use core::ptr::NonNull;
+
 use crate::{
     device::{
         Bound,
         Device, //
     },
     devres::DevresLt,
+    impl_flags,
     io::{
         self,
         resource::{
@@ -160,6 +163,27 @@ impl<'a> IoRequest<'a> {
     }
 }
 
+fn reserve_exclusive_region(resource: &Resource) -> Result<Region> {
+    let start = resource.start();
+    let size = resource.size();
+    let name = resource.name().unwrap_or_default();
+
+    // Reserve against the global MMIO tree, as request_mem_region() does.
+    // An OF platform resource can be a detached descriptor rather than a
+    // node in that tree. Requesting a child of that descriptor neither
+    // excludes other devices nor pairs with Region's release_mem_region().
+    // SAFETY: iomem_resource is the permanent global MMIO resource root;
+    // request_region serializes mutations through the C resource lock.
+    let root = unsafe { Resource::from_raw(&raw mut bindings::iomem_resource) };
+    root.request_region(
+        start,
+        size,
+        name.to_cstring()?,
+        io::resource::Flags::IORESOURCE_MEM,
+    )
+    .ok_or(EBUSY)
+}
+
 /// An exclusive memory-mapped IO region.
 ///
 /// # Invariants
@@ -192,18 +216,7 @@ pub type DevresExclusiveIoMem<const SIZE: usize> = DevresLt<ExclusiveIoMem<'stat
 impl<'a, const SIZE: usize> ExclusiveIoMem<'a, SIZE> {
     /// Creates a new `ExclusiveIoMem` instance.
     fn ioremap(dev: &'a Device<Bound>, resource: &Resource) -> Result<Self> {
-        let start = resource.start();
-        let size = resource.size();
-        let name = resource.name().unwrap_or_default();
-
-        let region = resource
-            .request_region(
-                start,
-                size,
-                name.to_cstring()?,
-                io::resource::Flags::IORESOURCE_MEM,
-            )
-            .ok_or(EBUSY)?;
+        let region = reserve_exclusive_region(resource)?;
 
         let iomem = IoMem::ioremap(dev, resource)?;
 
@@ -325,5 +338,152 @@ impl<'a, const SIZE: usize> IoBase<'a> for &'a IoMem<'_, SIZE> {
     fn as_view(self) -> Mmio<'a, Self::Target> {
         // SAFETY: Safe as by the invariant of `IoMem`.
         unsafe { Mmio::from_raw(self.io) }
+    }
+}
+
+impl_flags!(
+    /// Flags to be used when remapping memory.
+    #[derive(Debug, Clone, Default, Copy, PartialEq, Eq)]
+    pub struct MemFlags(usize);
+
+    /// Enum mirroring the C MEMREMAP_* eum values
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum MemFlag {
+        /// Matches the default mapping for System RAM on the architecture.
+        ///
+        /// This is usually a read-allocate write-back cache. Moreover, if this flag is specified and
+        /// the requested remap region is RAM, memremap() will bypass establishing a new mapping and
+        /// instead return a pointer into the direct map.
+        WB = bindings::MEMREMAP_WB as usize,
+
+        /// Establish a mapping whereby writes either bypass the cache or are written through to memory
+        /// and never exist in a cache-dirty state with respect to program visibility.
+        ///
+        /// Attempts to map System RAM with this mapping type will fail.
+        WT = bindings::MEMREMAP_WT as usize,
+
+        /// Establish a writecombine mapping, whereby writes may be coalesced together  (e.g. in the
+        /// CPU's write buffers), but is otherwise uncached.
+        ///
+        /// Attempts to map System RAM with this mapping type will fail.
+        WC = bindings::MEMREMAP_WC as usize,
+        // Note: Skipping MEMREMAP_ENC/DEC since they are under-documented and have zero
+        // users outside of arch/x86.
+    }
+);
+
+/// Represents a non-MMIO memory block. This is like [`IoMem`], but for cases where it is known
+/// that the resource being mapped does not have I/O side effects.
+// Invariants:
+// `ptr` is a non-null and valid address of at least `usize` bytes and returned by a `memremap`
+// call.
+// ```
+pub struct Mem {
+    ptr: NonNull<crate::ffi::c_void>,
+    size: usize,
+}
+
+impl Mem {
+    /// Tries to create a new instance of a memory block from a Resource.
+    ///
+    /// The resource described by `res` is mapped into the CPU's address space so that it can be
+    /// accessed directly. It is also consumed by this function so that it can't be mapped again
+    /// to a different address.
+    ///
+    /// If multiple caching flags are specified, the different mapping types will be attempted in
+    /// the order [`MemFlag::WB`], [`MemFlag::WT`], [`MemFlag::WC`].
+    ///
+    /// # Flags
+    ///
+    /// * [`MemFlag::WB`]: Matches the default mapping for System RAM on the architecture.
+    ///   This is usually a read-allocate write-back cache. Moreover, if this flag is specified and
+    ///   the requested remap region is RAM, memremap() will bypass establishing a new mapping and
+    ///   instead return a pointer into the direct map.
+    ///
+    /// * [`MemFlag::WT`]: Establish a mapping whereby writes either bypass the cache or are written
+    ///   through to memory and never exist in a cache-dirty state with respect to program visibility.
+    ///   Attempts to map System RAM with this mapping type will fail.
+    /// * [`MemFlag::WC`]: Establish a writecombine mapping, whereby writes may be coalesced together
+    ///   (e.g. in the CPU's write buffers), but is otherwise uncached. Attempts to map System RAM with
+    ///   this mapping type will fail.
+    ///
+    /// # Safety
+    ///
+    /// Callers must ensure that either (a) the resulting interface cannot be used to initiate DMA
+    /// operations, or (b) that DMA operations initiated via the returned interface use DMA handles
+    /// allocated through the `dma` module.
+    pub unsafe fn try_new(res: Resource, flags: MemFlags) -> Result<Self> {
+        let size: usize = res.size().try_into()?;
+
+        let addr = unsafe { bindings::memremap(res.start(), size, flags.into()) };
+        let ptr = NonNull::new(addr).ok_or(ENOMEM)?;
+        // INVARIANT: `ptr` is non-null and was returned by `memremap`, so it is valid.
+        Ok(Self { ptr, size })
+    }
+
+    /// Returns the base address of the memory mapping as a raw pointer.
+    ///
+    /// It is up to the caller to use this pointer safely, depending on the requirements of the
+    /// hardware backing this memory block.
+    pub fn ptr(&self) -> *mut u8 {
+        self.ptr.cast().as_ptr()
+    }
+
+    /// Returns the size of this mapped memory block.
+    pub fn size(&self) -> usize {
+        self.size
+    }
+}
+
+impl Drop for Mem {
+    fn drop(&mut self) {
+        // SAFETY: By the type invariant, `self.ptr` is a value returned by a previous successful
+        // call to `memremap`.
+        unsafe { bindings::memunmap(self.ptr.as_ptr()) };
+    }
+}
+
+#[cfg(CONFIG_64BIT)]
+#[kunit_tests(rust_io_mem_resource)]
+mod tests {
+    use super::*;
+
+    fn detached(name: *const core::ffi::c_char) -> bindings::resource {
+        // Only resource-tree bookkeeping is exercised. No mapping is created
+        // and no hardware address is accessed. Keep the synthetic interval
+        // above the physical address ranges supported by 64-bit platforms.
+        let start = bindings::resource_size_t::MAX & !0xfffff;
+        bindings::resource {
+            start,
+            end: start + 0xfff,
+            name,
+            flags: bindings::IORESOURCE_MEM as _,
+            desc: 0,
+            parent: core::ptr::null_mut(),
+            sibling: core::ptr::null_mut(),
+            child: core::ptr::null_mut(),
+        }
+    }
+
+    #[test]
+    fn exclusive_claims_share_global_tree() -> Result {
+        let mut first_raw = detached(c"rust-io-first".as_ptr());
+        let mut second_raw = detached(c"rust-io-second".as_ptr());
+        // SAFETY: Both descriptors remain live for this test and are accessed
+        // only through their respective Resource wrappers until their last use.
+        let first = unsafe { Resource::from_raw(&raw mut first_raw) };
+        // SAFETY: As above, for the distinct second descriptor.
+        let second = unsafe { Resource::from_raw(&raw mut second_raw) };
+        assert!(!core::ptr::eq(first, second));
+
+        let claim = reserve_exclusive_region(first)?;
+        // Separate device descriptors must still conflict through the global
+        // tree. Reserving children of the detached descriptors misses this.
+        assert_eq!(reserve_exclusive_region(second).err(), Some(EBUSY));
+        drop(claim);
+        // Region::drop must release the same global reservation, so the next
+        // descriptor can acquire it without a leaked or dangling child.
+        drop(reserve_exclusive_region(second)?);
+        Ok(())
     }
 }

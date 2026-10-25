@@ -43,8 +43,11 @@ config PCIE_APPLE_MSI_DOORBELL_ADDR
 config PCIE_APPLE
 	tristate "Apple PCIe controller"
 	depends on ARCH_APPLE || COMPILE_TEST
+	depends on APPLE_DART || !APPLE_DART
 	depends on OF
 	depends on PCI_MSI
+	depends on PAGE_SIZE_16KB || COMPILE_TEST
+	select APPLE_TUNABLE
 	select PCI_HOST_COMMON
 	select IRQ_MSI_LIB
 	help
@@ -53,6 +56,22 @@ config PCIE_APPLE
 	  type-A ports, Ethernet, Wi-Fi, and Bluetooth.
 
 	  If unsure, say Y if you have an Apple Silicon system.
+
+config PCIE_APPLE_PIODMA_DIAG
+	bool "J700 PIODMA diagnostic (requires full reset after use)"
+	depends on PCIE_APPLE=y && ARCH_APPLE && IOMMU_DMA
+	depends on PCIEASPM
+	help
+	  Build the experimental SID17 retained bootstrap provider. It submits
+	  one fixed request, validates typed ECAM and then enumerates the two
+	  Neo radio functions when the board device tree links the PCIe host
+	  to this engine. The enumerate=0 parameter keeps the host on its
+	  root-port-only path instead.
+	  The host and supplier must both be built in: supplier removal cannot
+	  release a published DMA arena safely. Suspend-to-idle sleep retains that
+	  arena and restores the configuration without repeating a request.
+	  Hibernation and deeper suspend are rejected after activation.
+	  This does not qualify memory reuse or arbitrary downstream devices.
 
 config PCI_VERSATILE
 	bool "ARM Versatile PB PCI controller"

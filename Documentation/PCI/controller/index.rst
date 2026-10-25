@@ -9,3 +9,4 @@ PCI Native Host Bridge and Endpoint Drivers
 
    pci-controller-drivers
    rcar-pcie-firmware
+   apple-t8140

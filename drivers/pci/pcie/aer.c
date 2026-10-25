@@ -257,7 +257,7 @@ int pcie_aer_is_native(struct pci_dev *dev)
 {
 	struct pci_host_bridge *host = pci_find_host_bridge(dev->bus);
 
-	if (!dev->aer_cap)
+	if (!dev->aer_cap || host->reset_sensitive)
 		return 0;
 
 	return pcie_ports_native || host->native_aer;

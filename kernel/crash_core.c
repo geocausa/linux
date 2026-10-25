@@ -135,7 +135,11 @@ void __noclone __crash_kexec(struct pt_regs *regs)
 	 * sufficient.  But since I reuse the memory...
 	 */
 	if (kexec_trylock()) {
-		if (kexec_crash_image) {
+		if (!kexec_crash_image_allowed(!!kexec_crash_image)) {
+			if (kexec_crash_image)
+				pr_emerg("crash kexec refused by active interlock; first reason: %s\n",
+					 kexec_block_reason());
+		} else {
 			struct pt_regs fixed_regs;
 
 			crash_setup_regs(&fixed_regs, regs);

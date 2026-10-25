@@ -512,16 +512,38 @@ static ssize_t dev_rescan_store(struct device *dev,
 static struct device_attribute dev_attr_dev_rescan = __ATTR(rescan, 0200, NULL,
 							    dev_rescan_store);
 
+int pci_sysfs_remove_check(struct pci_dev *pdev)
+{
+	/* Bus/bridge references keep this immutable host property alive. */
+	return pci_find_host_bridge(pdev->bus)->no_user_remove ? -EOPNOTSUPP : 0;
+}
+
+int pci_sysfs_reset_check(struct pci_dev *pdev)
+{
+	/* Uncoordinated resets can invalidate retained DMA ownership. */
+	return pci_find_host_bridge(pdev->bus)->reset_sensitive ? -EOPNOTSUPP : 0;
+}
+
 static ssize_t remove_store(struct device *dev, struct device_attribute *attr,
 			    const char *buf, size_t count)
 {
+	struct pci_dev *pdev = to_pci_dev(dev);
 	unsigned long val;
 
 	if (kstrtoul(buf, 0, &val) < 0)
 		return -EINVAL;
 
-	if (val && device_remove_file_self(dev, attr))
-		pci_stop_and_remove_bus_device_locked(to_pci_dev(dev));
+	if (val) {
+		int ret = pci_sysfs_remove_check(pdev);
+
+		if (ret) {
+			dev_warn_ratelimited(&pdev->dev,
+					     "userspace removal is disabled by the host bridge\n");
+			return ret;
+		}
+		if (device_remove_file_self(dev, attr))
+			pci_stop_and_remove_bus_device_locked(pdev);
+	}
 	return count;
 }
 static DEVICE_ATTR_IGNORE_LOCKDEP(remove, 0220, NULL,
@@ -564,7 +586,15 @@ static ssize_t reset_subordinate_store(struct device *dev,
 		return -EINVAL;
 
 	if (val) {
-		int ret = pci_try_reset_bridge(pdev);
+		int ret;
+
+		ret = pci_sysfs_reset_check(pdev);
+		if (ret) {
+			dev_warn_ratelimited(&pdev->dev,
+					     "userspace reset is disabled by the host bridge\n");
+			return ret;
+		}
+		ret = pci_try_reset_bridge(pdev);
 
 		if (ret)
 			return ret;
@@ -1565,6 +1595,13 @@ static ssize_t reset_store(struct device *dev, struct device_attribute *attr,
 
 	if (val != 1)
 		return -EINVAL;
+
+	result = pci_sysfs_reset_check(pdev);
+	if (result) {
+		dev_warn_ratelimited(&pdev->dev,
+				     "userspace reset is disabled by the host bridge\n");
+		return result;
+	}
 
 	pm_runtime_get_sync(dev);
 	result = pci_reset_function(pdev);
