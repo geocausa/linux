@@ -16,7 +16,7 @@
 //! | `asahi.t8122_sgx_setup` | `t6030`: SGX+0xd14000 = 0x70001 | `none` |
 //! | `asahi.t8122_unit_mask_a` | `0x700000003` | nonzero, within `0x700000003` |
 //! | `asahi.t8122_unit_mask_b` | `0x7` | nonzero, within `0x7` |
-//! | `asahi.t8122_pstate_cap` | `1` | 1 to 5 |
+//! | `asahi.t8122_pstate_cap` | `1` | 1 to 6 |
 //!
 //! The defaults are the T8122 table's values. A parameter given with a value it does not accept
 //! refuses the start. Without `asahi.t8122_start=1` nothing here runs, and T8122 is refused.
@@ -301,10 +301,10 @@ pub(crate) fn arm(dev: &device::Device, soc: &Soc) -> Result<Option<Experiment>>
         e.mapping_count(),
         storage::IOMAP_BASE
     );
-    // J613/J615 have no SoC die temperature zone yet, so a cap above the no-feedback limit runs
-    // the fanless GPU without any temperature feedback (`m3_thermal` holds the cap but gets no
-    // reading). The runtime cap and the firmware ceiling stay equal, because the cap is at most
-    // the no-feedback limit.
+    // J613/J615 have no SoC die temperature zone yet, so an explicitly armed cap above the
+    // ordinary no-feedback limit runs the fanless GPU without temperature feedback. The T8122
+    // experiment deliberately makes its selected ceiling the fixed/safe runtime cap; normal M3
+    // boots retain the ordinary ADT_MAX_PSTATE_LIMIT.
     if v.pstate_cap > knobs::PSTATE_CAP {
         dev_warn!(
             dev,

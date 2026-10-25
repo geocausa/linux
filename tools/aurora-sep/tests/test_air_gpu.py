@@ -402,7 +402,7 @@ class OneShotTest(unittest.TestCase):
 
     def test_refuses_bad_knobs(self):
         for args, why in [(["bogus=1"], 'unknown knob "bogus"'),
-                          (["t8122_pstate_cap=6"], "takes"),   # the kernel bounds the cap to 1..5
+                          (["t8122_pstate_cap=7"], "takes"),   # the kernel bounds the cap to 1..6
                           (["t8122_pstate_cap=16"], "takes"),
                           (["t8122_clkgen=e2c"], "takes e1c|e5c|none"), (["t8122_start=0"], "takes 1"),
                           (["t8122_unit_mask_a=0x700000003"], "outside what the kernel accepts"),

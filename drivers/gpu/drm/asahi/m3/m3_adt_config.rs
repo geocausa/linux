@@ -210,7 +210,10 @@ impl PstatePolicy {
                 table_max
             );
         }
-        if thermal == ThermalMode::Off && max > ADT_MAX_PSTATE_LIMIT {
+        // The ordinary backend never exceeds the no-feedback limit with the thermal limit off.
+        // An explicitly armed T8122 start experiment supplies `ceiling`; that experiment is the
+        // only path allowed to raise its fixed/safe cap above ADT_MAX_PSTATE_LIMIT.
+        if thermal == ThermalMode::Off && ceiling.is_none() && max > ADT_MAX_PSTATE_LIMIT {
             dev_info!(
                 dev,
                 "M3: performance cap {} lowered to {}: device-tree InitData leaves the fast-die temperature controller off and the thermal limit is off (asahi.m3_thermal=off)\n",
@@ -230,11 +233,13 @@ impl PstatePolicy {
                 max = ceiling;
             }
         }
-        // Without the thermal limit the runtime cap is the ceiling; with it, the runtime cap
-        // starts at (and never goes below) the cap used without it.
+        // Without the thermal limit the runtime cap is the ceiling. With it, normal boots start
+        // at the ordinary no-feedback safe cap. An explicitly armed T8122 experiment is its own
+        // bounded opt-in: its ceiling is also its safe/runtime cap, even above that ordinary cap.
+        let safe_limit = ceiling.unwrap_or(ADT_MAX_PSTATE_LIMIT);
         let safe = match thermal {
             ThermalMode::Off => max,
-            ThermalMode::Hold | ThermalMode::On => max.min(ADT_MAX_PSTATE_LIMIT),
+            ThermalMode::Hold | ThermalMode::On => max.min(safe_limit),
         };
         let boot = m3_params::boot_pstate_param()
             .unwrap_or(u64::from(safe))
