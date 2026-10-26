@@ -27,11 +27,11 @@ pub(crate) const UNIT_MASK_A_LIMIT: u64 = 0x7_0000_0003;
 pub(crate) const UNIT_MASK_B_LIMIT: u64 = 0x7;
 /// Initial J615 7.3 port ceiling: retain the qualified 338 MHz state.
 pub(crate) const PSTATE_CAP: u32 = 1;
-/// The highest performance-state ceiling the experiment accepts. This is deliberately one state
-/// above the ordinary no-feedback limit (`m3_adt_config::ADT_MAX_PSTATE_LIMIT`): only an armed
-/// T8122 experiment may use that extra state, and J613/J615 still have no SoC-die temperature
+/// The highest performance-state ceiling the experiment accepts. This is deliberately above
+/// the ordinary no-feedback limit (`m3_adt_config::ADT_MAX_PSTATE_LIMIT`): only an armed
+/// T8122 experiment may use those extra states, and J613/J615 still have no SoC-die temperature
 /// zone, so the start path logs that it runs without temperature feedback.
-pub(crate) const PSTATE_CAP_MAX: u32 = 6;
+pub(crate) const PSTATE_CAP_MAX: u32 = 7;
 
 /// Parse a decimal or `0x`-prefixed hexadecimal `u64`. A leading sign is not accepted.
 fn number(text: &str) -> Option<u64> {
@@ -198,7 +198,7 @@ pub(crate) fn resolve(raw: &Raw) -> Result<Values, Refusal> {
         .ok_or(refuse("t8122_unit_mask_b", "nonzero, no bits outside 0x7"))? as u32;
     let pstate_cap = given(raw.pstate_cap, PSTATE_CAP as u64)
         .filter(|v| (1..=u64::from(PSTATE_CAP_MAX)).contains(v))
-        .ok_or(refuse("t8122_pstate_cap", "1 to 6"))? as u32;
+        .ok_or(refuse("t8122_pstate_cap", "1 to 7"))? as u32;
     Ok(Values {
         initdata_version,
         fender,
@@ -253,14 +253,14 @@ mod tests {
             r.sgx_setup = parse_sgx_setup("none");
             r.unit_mask_a = parse_number("1");
             r.unit_mask_b = parse_number("0x1");
-            r.pstate_cap = parse_number("6");
+            r.pstate_cap = parse_number("7");
         }))
         .unwrap();
         assert_eq!(v.initdata_version, 0x1234_5678_9abc_def0);
         assert_eq!(v.fender, 0x12_c000);
         assert_eq!(v.clock_gen, ClockGen::At(0xe5_c000));
         assert_eq!(v.sgx_setup, None);
-        assert_eq!((v.unit_mask_a, v.unit_mask_b, v.pstate_cap), (1, 1, 6));
+        assert_eq!((v.unit_mask_a, v.unit_mask_b, v.pstate_cap), (1, 1, 7));
         let v = resolve(&with(|r| r.clkgen = parse_clkgen("none"))).unwrap();
         assert_eq!(v.clock_gen, ClockGen::Absent);
         // Numbers and names give the same values.
@@ -287,7 +287,7 @@ mod tests {
             (|r| r.unit_mask_b = parse_number("0xf"), "t8122_unit_mask_b"),
             (|r| r.unit_mask_b = 0, "t8122_unit_mask_b"),
             (|r| r.pstate_cap = 0, "t8122_pstate_cap"),
-            (|r| r.pstate_cap = 7, "t8122_pstate_cap"),
+            (|r| r.pstate_cap = 8, "t8122_pstate_cap"),
             (|r| r.pstate_cap = 16, "t8122_pstate_cap"),
             (|r| r.pstate_cap = parse_number("-1"), "t8122_pstate_cap"),
         ];
@@ -297,14 +297,14 @@ mod tests {
     }
 
     #[test]
-    fn pstate_cap_accepts_one_to_six_only() {
+    fn pstate_cap_accepts_one_to_seven_only() {
         for cap in 1..=PSTATE_CAP_MAX {
             assert_eq!(resolve(&with(|r| r.pstate_cap = u64::from(cap))).unwrap().pstate_cap, cap);
         }
-        for cap in [0u64, 7, 8, 15, 16] {
+        for cap in [0u64, 8, 15, 16] {
             assert!(resolve(&with(|r| r.pstate_cap = cap)).is_err(), "cap {cap}");
         }
-        assert_eq!(PSTATE_CAP_MAX, 6);
+        assert_eq!(PSTATE_CAP_MAX, 7);
     }
 
     #[test]

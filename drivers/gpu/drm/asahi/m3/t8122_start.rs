@@ -16,7 +16,7 @@
 //! | `asahi.t8122_sgx_setup` | `t6030`: SGX+0xd14000 = 0x70001 | `none` |
 //! | `asahi.t8122_unit_mask_a` | `0x700000003` | nonzero, within `0x700000003` |
 //! | `asahi.t8122_unit_mask_b` | `0x7` | nonzero, within `0x7` |
-//! | `asahi.t8122_pstate_cap` | `1` | 1 to 6 |
+//! | `asahi.t8122_pstate_cap` | `1` | 1 to 7 |
 //!
 //! The defaults are the T8122 table's values. A parameter given with a value it does not accept
 //! refuses the start. Without `asahi.t8122_start=1` nothing here runs, and T8122 is refused.
