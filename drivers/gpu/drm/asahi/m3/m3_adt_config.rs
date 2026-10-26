@@ -211,8 +211,9 @@ impl PstatePolicy {
             );
         }
         // The ordinary backend never exceeds the no-feedback limit with the thermal limit off.
-        // An explicitly armed T8122 start experiment supplies `ceiling`; that experiment is the
-        // only path allowed to raise its fixed/safe cap above ADT_MAX_PSTATE_LIMIT.
+        // An explicitly armed T8122 start experiment may publish a higher ceiling; with thermal
+        // control enabled, the live cap still starts at ADT_MAX_PSTATE_LIMIT and rises only from
+        // fresh temperature feedback.
         if thermal == ThermalMode::Off && ceiling.is_none() && max > ADT_MAX_PSTATE_LIMIT {
             dev_info!(
                 dev,
@@ -233,14 +234,16 @@ impl PstatePolicy {
                 max = ceiling;
             }
         }
-        // Without the thermal limit the runtime cap is the ceiling. With it, normal boots start
-        // at the ordinary no-feedback safe cap. An explicitly armed T8122 experiment is its own
-        // bounded opt-in: its ceiling is also its safe/runtime cap, even above that ordinary cap.
-        let safe_limit = ceiling.unwrap_or(ADT_MAX_PSTATE_LIMIT);
-        let safe = match thermal {
-            ThermalMode::Off => max,
-            ThermalMode::Hold | ThermalMode::On => max.min(safe_limit),
-        };
+        // Without the thermal limit the runtime cap is the ceiling. With it, the runtime cap
+        // starts at the ordinary fail-safe limit even when an explicitly armed T8122 experiment
+        // publishes a higher ceiling. Fresh, plausible die-temperature feedback may then raise
+        // the live cap toward that ceiling; missing/stale/implausible feedback falls back here.
+        // This keeps the published/requested ceiling separate from the enforced runtime cap.
+        let safe = crate::m3::m3_thermal_policy::initial_runtime_cap(
+            thermal != ThermalMode::Off,
+            max,
+            ADT_MAX_PSTATE_LIMIT,
+        );
         let boot = m3_params::boot_pstate_param()
             .unwrap_or(u64::from(safe))
             .clamp(1, u64::from(safe)) as u32;

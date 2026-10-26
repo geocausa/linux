@@ -46,6 +46,17 @@ pub(crate) const IGNORED_NS: i64 = 3 * S;
 pub(crate) const COOL_BELOW_MC: i32 = 10_000;
 pub(crate) const CRITICAL_ABOVE_MC: i32 = 8_000;
 
+/// Initial enforced runtime cap. With thermal feedback enabled, a published/requested ceiling may
+/// be higher than the fail-safe cap; the thermal policy starts at the fail-safe cap and can raise
+/// it only after a fresh plausible reading. With thermal feedback disabled, the ceiling is fixed.
+pub(crate) fn initial_runtime_cap(thermal_feedback: bool, ceiling: u32, safe_limit: u32) -> u32 {
+    if thermal_feedback {
+        ceiling.min(safe_limit)
+    } else {
+        ceiling
+    }
+}
+
 /// The latest sensor reading.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Reading {
@@ -259,7 +270,7 @@ impl Policy {
 
 #[cfg(test)]
 mod zone_tests {
-    use super::required_zones;
+    use super::{initial_runtime_cap, required_zones};
 
     #[test]
     fn every_t8122_board_requires_the_die_zone() {
@@ -269,6 +280,13 @@ mod zone_tests {
         }
         assert_eq!(required_zones(b"apple,j613\0"), 1);
         assert_eq!(required_zones(b"apple,j615\0"), 1);
+    }
+
+    #[test]
+    fn thermal_feedback_keeps_a_high_ceiling_separate_from_the_fail_safe_cap() {
+        assert_eq!(initial_runtime_cap(true, 8, 5), 5);
+        assert_eq!(initial_runtime_cap(true, 4, 5), 4);
+        assert_eq!(initial_runtime_cap(false, 8, 5), 8);
     }
 
     #[test]

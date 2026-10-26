@@ -28,9 +28,9 @@ pub(crate) const UNIT_MASK_B_LIMIT: u64 = 0x7;
 /// Initial J615 7.3 port ceiling: retain the qualified 338 MHz state.
 pub(crate) const PSTATE_CAP: u32 = 1;
 /// The highest performance-state ceiling the experiment accepts. This is deliberately above
-/// the ordinary no-feedback limit (`m3_adt_config::ADT_MAX_PSTATE_LIMIT`): only an armed
-/// T8122 experiment may use those extra states, and J613/J615 still have no SoC-die temperature
-/// zone, so the start path logs that it runs without temperature feedback.
+/// the ordinary fail-safe limit (`m3_adt_config::ADT_MAX_PSTATE_LIMIT`). With thermal control
+/// enabled, a higher ceiling does not raise the initial live cap: fresh die-temperature feedback
+/// is required for the runtime governor to move above the fail-safe state.
 pub(crate) const PSTATE_CAP_MAX: u32 = 8;
 
 /// Parse a decimal or `0x`-prefixed hexadecimal `u64`. A leading sign is not accepted.

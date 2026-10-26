@@ -301,17 +301,17 @@ pub(crate) fn arm(dev: &device::Device, soc: &Soc) -> Result<Option<Experiment>>
         e.mapping_count(),
         storage::IOMAP_BASE
     );
-    // J613/J615 have no SoC die temperature zone yet, so an explicitly armed cap above the
-    // ordinary no-feedback limit runs the fanless GPU without temperature feedback. The T8122
-    // experiment deliberately makes its selected ceiling the fixed/safe runtime cap; normal M3
-    // boots retain the ordinary ADT_MAX_PSTATE_LIMIT.
-    if v.pstate_cap > knobs::PSTATE_CAP {
+    // A ceiling above the ordinary fail-safe cap is useful only when the runtime thermal policy
+    // has fresh die-temperature feedback. With thermal control enabled, missing/stale/implausible
+    // feedback keeps or returns the live cap to ADT_MAX_PSTATE_LIMIT; explicitly disabling the
+    // thermal policy remains a lab-only way to make the selected ceiling fixed.
+    if v.pstate_cap > crate::m3::m3_adt_config::ADT_MAX_PSTATE_LIMIT {
         dev_warn!(
             dev,
-            "M3 G15G start: pstate_cap={} is above {}: no SoC die temperature zone on this board, so states up to {} run with no temperature feedback\n",
+            "M3 G15G start: pstate_cap={} publishes a ceiling above the fail-safe state {}: thermal control must have fresh die-temperature feedback to raise the live cap above {}\n",
             v.pstate_cap,
-            knobs::PSTATE_CAP,
-            v.pstate_cap
+            crate::m3::m3_adt_config::ADT_MAX_PSTATE_LIMIT,
+            crate::m3::m3_adt_config::ADT_MAX_PSTATE_LIMIT
         );
     }
     Ok(Some(e))
