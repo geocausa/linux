@@ -79,6 +79,19 @@ static const struct macsmc_hwmon_board {
 	const char *pressure_key;
 } macsmc_hwmon_boards[] = {
 	/*
+	 * MacBook Air (15-inch, M3). On a physical J615 the twelve Tg0*
+	 * keys below were quiescent sentinels with the GPU powered down,
+	 * rose to plausible die temperatures under GPU-only load, and did
+	 * not react to a matched CPU-only load. All twelve were present and
+	 * the resulting macsmc_soc_die zone was consumed successfully by the
+	 * Asahi thermal governor. mTPL is present as a readable si32 key.
+	 */
+	{
+		.compatible = "apple,j615",
+		.die_keys = "Tg0C,Tg0D,Tg0O,Tg0P,Tg0W,Tg0X,Tg0a,Tg0b,Tg0i,Tg0j,Tg0u,Tg0v",
+		.pressure_key = "mTPL",
+	},
+	/*
 	 * MacBook Pro (16-inch, M3 Pro): key names used for the CPU
 	 * performance-core and GPU die sensors of M3-family machines. They
 	 * are not confirmed on this machine: the debugfs key list shows which
